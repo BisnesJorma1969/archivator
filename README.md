@@ -6,7 +6,12 @@ parity protecting both stored data and recovery metadata.
 
 They should remain restorable **decades from now**, using off-the-shelf Linux
 tools—zstd, OpenSSL, PAR2, tar, and coreutils—even if Archivator itself is no longer
-available.
+available. **Loss of separate metadata must not mean loss of file contents.**
+The minimum for manual data recovery should be the intact backup data files,
+retaining their chunk filenames, and the private decryption key when encrypted.
+Everything else should use standard formats and tooling wherever possible.
+Metadata may still be needed to recover original paths for standalone large-file
+streams and to verify that a backup is complete.
 
 Run the PoC commands below from the repository root on **Ubuntu 26.04**, using Bash.
 
