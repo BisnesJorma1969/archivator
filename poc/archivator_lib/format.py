@@ -3,6 +3,7 @@
 import re
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 
 from .common import ArchiveError, IntegrityError
 
@@ -61,6 +62,18 @@ def parity_prefix(archive, parity, metadata=False):
     if metadata:
         return f"archive-{archive}_metadata_parity-{parity}"
     return f"archive-{archive}_parity-{parity}"
+
+
+def stored_path(root, name, metadata_id):
+    """Group files by the existing ID of the parity set protecting them."""
+    if "_metadata_" in name:
+        parity = metadata_id
+    else:
+        match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
+        if not match:
+            raise IntegrityError(f"Cannot identify parity set for archive file: {name!r}")
+        parity = match[1]
+    return Path(root) / parity[:2] / name
 
 
 def recovery_blocks(lengths, slice_size):

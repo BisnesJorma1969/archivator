@@ -11,7 +11,13 @@ from the repository root; `--help` lists their arguments.
 
 `work/` is gitignored. Test fixtures and restore scratch are created there and
 cleaned up after use. Keep sufficient space there for a parity set, metadata, and
-unfinished streams; backup temporary files instead live in `ARCHIVE_DIR/.tmp/`.
+unfinished streams; backup temporary files instead live in `ARCHIVE_DIR/.tmp/`
+and the metadata shard's `.tmp/`.
+
+Stored files use two-character shard directories from their protecting parity-set
+ID. All metadata, including markers and data-set manifests, shares the metadata
+set's shard. Directories are created only when publishing files. Continue passing
+the archive root, not an individual shard, to commands.
 
 Backup and restore destinations must be absent or empty. Source and destination
 must not overlap. The source, archive being read, or restore target must not
@@ -82,8 +88,8 @@ all discovered IDs and reports incomplete archives. Repair and restore require
 `--archive-id ID` when more than one ID exists; verify also accepts that selector.
 Duplicate identical filenames anywhere in the selected hierarchy are ambiguous
 and rejected. Moving directories or changing archive-file mtimes is harmless.
-For in-place repair, scattered files of the selected archive are gathered beside
-its valid completion marker using renames. This requires one filesystem; repair
+For in-place repair, scattered files of the selected archive are gathered into
+their parity-set shards under the supplied archive root using renames. This requires one filesystem; repair
 does not fall back to copying across filesystems. Other archives are not moved.
 
 Exit codes for all commands:

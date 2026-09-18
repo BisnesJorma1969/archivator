@@ -13,6 +13,14 @@ All metadata and its PAR2 files share the prefix `archive-<aid>_metadata_`, so
 they group together in directory listings. Files containing `_chunk-` hold the
 actual backed-up content. A stream inventory describes files; it is not payload.
 
+Files are stored under `<archive-root>/<first-two-parity-ID-characters>/`.
+Data chunks and their PAR2 files use their data-set ID; all metadata and metadata
+PAR2 files use the metadata recovery set's ID, including manifests describing
+data sets and both completion markers. Shards are created only when populated;
+different sets may share a shard. No additional ID or hash is calculated.
+These directories are a storage layout, not part of file identity: catalogs and
+PAR2 retain basenames, and readers find files recursively in any layout.
+
 | Filename suffix after `archive-<aid>_` | Contents |
 | --- | --- |
 | `metadata_format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
@@ -127,7 +135,8 @@ pid=REPLACE_WITH_PARITY_SET_ID
 archive=/absolute/path/to/archive
 scratch=/absolute/path/to/manual-scratch
 mkdir -p "$scratch"
-cp "$archive"/archive-"$aid"_parity-"$pid"* "$scratch/"
+shard=${pid:0:2}
+cp "$archive/$shard"/archive-"$aid"_parity-"$pid"* "$scratch/"
 cd "$scratch"
 
 base="archive-${aid}_parity-${pid}"

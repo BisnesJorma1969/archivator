@@ -38,7 +38,7 @@ class EncryptionTests(ArchiveTest):
             with patch("poc.archivator_lib.backup.encrypt", side_effect=check_and_encrypt):
                 backup(self.source, self.archive, certificate, SMALL)
             self.assertTrue(encrypted_chunks)
-            chunk = next(self.archive.glob("*.zst.enc"))
+            chunk = next(self.archive.rglob("*.zst.enc"))
             decoded = self.root / "decoded.zst"
             for reuse_output in (False, True):
                 with self.subTest(reuse_output=reuse_output):

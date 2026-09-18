@@ -68,16 +68,16 @@ class RestoreTests(ArchiveTest):
         key, certificate = self.certificate()
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, certificate, SMALL)
-        flip(next(self.archive.glob("*.enc")))
+        flip(next(self.archive.rglob("*.enc")))
         before = snapshot(self.archive)
-        for path in self.archive.iterdir():
+        for path in self.archive.rglob("archive-*"):
             path.chmod(0o444)
         self.archive.chmod(0o555)
         try:
             restore(self.archive, self.restored, key=key, certificate=certificate)
         finally:
             self.archive.chmod(0o755)
-            for path in self.archive.iterdir():
+            for path in self.archive.rglob("archive-*"):
                 path.chmod(0o644)
         self.assertEqual(snapshot(self.archive), before)
         self.assertEqual(compare(self.source, self.restored), 0)
@@ -85,7 +85,7 @@ class RestoreTests(ArchiveTest):
     def test_missing_chunk_repaired_only_in_scratch(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        missing = next(self.archive.glob("*_chunk-*.zst"))
+        missing = next(self.archive.rglob("*_chunk-*.zst"))
         missing.unlink()
         restore(self.archive, self.restored)
         self.assertFalse(missing.exists())
@@ -94,7 +94,7 @@ class RestoreTests(ArchiveTest):
     def test_restore_copies_only_damaged_input_and_keeps_archive_unchanged(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        damaged = next(self.archive.glob("*_chunk-*.zst"))
+        damaged = next(self.archive.rglob("*_chunk-*.zst"))
         flip(damaged)
         before = snapshot(self.archive)
         with patch("shutil.copyfile", wraps=shutil.copyfile) as copying:
@@ -140,7 +140,7 @@ class RestoreTests(ArchiveTest):
 
     def test_unrecoverable_damage_never_succeeds(self):
         backup(self.source, self.archive, settings=SMALL)
-        for path in list(self.archive.glob("*_chunk-*.zst")) + list(self.archive.glob("*.par2")):
+        for path in list(self.archive.rglob("*_chunk-*.zst")) + list(self.archive.rglob("*.par2")):
             path.unlink()
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored)

@@ -18,7 +18,8 @@ def flip(path, offset=100):
 
 
 def snapshot(directory):
-    return {path.name: (sha256(path), path.stat().st_mtime_ns) for path in directory.iterdir() if path.is_file()}
+    return {str(path.relative_to(directory)): (sha256(path), path.stat().st_mtime_ns)
+            for path in directory.rglob("*") if path.is_file()}
 
 
 class RecoveryTests(ArchiveTest):
@@ -28,23 +29,23 @@ class RecoveryTests(ArchiveTest):
 
     def test_in_place_repair_never_copies_or_links_archive_members(self):
         self.make_archive()
-        original_names = {path.name for path in self.archive.iterdir()}
-        flip(next(self.archive.glob("*_chunk-*.zst")))
-        next(self.archive.glob("*_metadata_streams.jsonl.zst")).unlink()
-        next(self.archive.glob("*_metadata_parity-*.vol*.par2")).unlink()
+        original_names = {path.relative_to(self.archive) for path in self.archive.rglob("archive-*")}
+        flip(next(self.archive.rglob("*_chunk-*.zst")))
+        next(self.archive.rglob("*_metadata_streams.jsonl.zst")).unlink()
+        next(self.archive.rglob("*_metadata_parity-*.vol*.par2")).unlink()
         with patch("shutil.copyfile", side_effect=AssertionError("No repair copies")), \
                 patch("shutil.copyfileobj", side_effect=AssertionError("No repair copies")), \
                 patch("os.link", side_effect=AssertionError("No repair hard links")), \
                 patch("os.symlink", side_effect=AssertionError("No repair symlinks")):
             repair(self.archive)
-        self.assertEqual({path.name for path in self.archive.iterdir()}, original_names)
+        self.assertEqual({path.relative_to(self.archive) for path in self.archive.rglob("archive-*")}, original_names)
         self.assertEqual(verify(self.archive), 0)
 
     def test_scattered_members_are_repaired_using_renames_not_copies(self):
         self.make_archive()
         bucket = self.archive / "scattered"
         bucket.mkdir()
-        for path in list(self.archive.iterdir()):
+        for path in list(self.archive.rglob("archive-*")):
             if path.is_file() and "_complete" not in path.name:
                 path.rename(bucket / path.name)
         unrelated = bucket / "notes.txt"
@@ -60,7 +61,7 @@ class RecoveryTests(ArchiveTest):
     def test_verify_intact_and_repairable_without_changing_archive(self):
         self.make_archive()
         self.assertEqual(verify(self.archive), 0)
-        flip(next(self.archive.glob("*_chunk-*.zst")))
+        flip(next(self.archive.rglob("*_chunk-*.zst")))
         before = snapshot(self.archive)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
@@ -72,10 +73,10 @@ class RecoveryTests(ArchiveTest):
 
     def test_repair_missing_chunk_and_parity_only_damage(self):
         self.make_archive()
-        next(self.archive.glob("*_chunk-*.zst")).unlink()
+        next(self.archive.rglob("*_chunk-*.zst")).unlink()
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
-        volume = next(path for path in self.archive.glob("*.vol*.par2") if "_metadata_" not in path.name)
+        volume = next(path for path in self.archive.rglob("*.vol*.par2") if "_metadata_" not in path.name)
         volume.unlink()
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)
@@ -85,7 +86,7 @@ class RecoveryTests(ArchiveTest):
     def test_damaged_catalog_and_checksum_index_are_recovered_in_scratch(self):
         self.make_archive()
         for pattern in ("*_metadata_streams.jsonl.zst", "*_metadata_checksums.json.zst"):
-            path = next(self.archive.glob(pattern))
+            path = next(self.archive.rglob(pattern))
             path.unlink()
             before = snapshot(self.archive)
             self.assertEqual(verify(self.archive), 1)
@@ -95,7 +96,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_all_parity_can_be_regenerated_from_intact_data(self):
         self.make_archive()
-        for path in self.archive.glob("*.par2"):
+        for path in self.archive.rglob("*.par2"):
             path.unlink()
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)
@@ -103,14 +104,14 @@ class RecoveryTests(ArchiveTest):
 
     def test_damage_beyond_capacity_fails(self):
         self.make_archive()
-        manifests = [read_zstd_json(path) for path in self.archive.glob("*_metadata_parity-*_manifest.json.zst")]
+        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_metadata_parity-*_manifest.json.zst")]
         manifest = next(item for item in manifests if item["member_count"] == 8)
         largest = sorted(manifest["members"], key=lambda member: member["stored_length"], reverse=True)[:2]
         missing_blocks = sum((member["stored_length"] + manifest["slice_size"] - 1) // manifest["slice_size"]
                              for member in largest)
         self.assertGreater(missing_blocks, manifest["recovery_blocks"])
         for member in largest:
-            (self.archive / member["filename"]).unlink()
+            next(self.archive.rglob(member["filename"])).unlink()
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
             self.assertEqual(verify(self.archive), 1)
@@ -124,7 +125,7 @@ class RecoveryTests(ArchiveTest):
         other_source.mkdir()
         other_archive = self.root / "other-archive"
         backup(other_source, other_archive, settings=SMALL)
-        for path in other_archive.iterdir():
+        for path in other_archive.rglob("archive-*"):
             shutil.copyfile(path, self.archive / path.name)
         self.assertEqual(verify(self.archive), 0)
         with self.assertRaises(ArchiveError):
@@ -133,7 +134,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_incomplete_archive_is_reported(self):
         self.make_archive()
-        for path in self.archive.glob("*_complete*.json"):
+        for path in self.archive.rglob("*_complete*.json"):
             path.unlink()
         self.assertEqual(verify(self.archive), 1)
         with self.assertRaises(IntegrityError):
@@ -141,7 +142,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()
-        volume = next(self.archive.glob("*_metadata_parity-*.vol*.par2"))
+        volume = next(self.archive.rglob("*_metadata_parity-*.vol*.par2"))
         flip(volume)
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)

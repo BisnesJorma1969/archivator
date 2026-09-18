@@ -40,7 +40,7 @@ class MetadataTests(ArchiveTest):
     def test_either_marker_copy_supports_read_only_restore_and_repair(self):
         (self.source / "document").write_text("a small document")
         archive_id = backup(self.source, self.archive, settings=SMALL)
-        markers = [self.archive / name for name in completion_names(archive_id)]
+        markers = [next(self.archive.rglob(name)) for name in completion_names(archive_id)]
         self.assertEqual(markers[0].read_bytes(), markers[1].read_bytes())
         for index, marker in enumerate(markers):
             with self.subTest(marker=marker.name):
@@ -57,7 +57,7 @@ class MetadataTests(ArchiveTest):
 
     def test_marker_checksum_detects_valid_json_corruption(self):
         archive_id = backup(self.source, self.archive, settings=SMALL)
-        marker = self.archive / completion_names(archive_id)[0]
+        marker = next(self.archive.rglob(completion_names(archive_id)[0]))
         complete = read_json(marker)
         complete["metadata_recovery_blocks"] += 1
         write_json(marker, complete)
@@ -68,7 +68,7 @@ class MetadataTests(ArchiveTest):
 
     def test_two_valid_but_conflicting_markers_are_not_guessed(self):
         archive_id = backup(self.source, self.archive, settings=SMALL)
-        marker = self.archive / completion_names(archive_id)[0]
+        marker = next(self.archive.rglob(completion_names(archive_id)[0]))
         complete = read_json(marker)
         complete["metadata_recovery_blocks"] += 1
         complete["marker_sha256"] = completion_digest(complete)
@@ -79,20 +79,20 @@ class MetadataTests(ArchiveTest):
     def test_compressed_metadata_is_repaired_before_decompression(self):
         (self.source / "document").write_text("content" * 100)
         archive_id = backup(self.source, self.archive, settings=SMALL)
-        complete = read_json(self.archive / completion_names(archive_id)[0])
+        complete = read_json(next(self.archive.rglob(completion_names(archive_id)[0])))
         metadata_names = [*complete["metadata_members"], *complete["metadata_parity"],
                           *completion_names(archive_id)]
         self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata_") for name in metadata_names))
-        self.assertTrue(all((self.archive / name).is_file() for name in metadata_names))
+        self.assertTrue(all(next(self.archive.rglob(name)).is_file() for name in metadata_names))
         self.assertTrue(complete["checksum_index"].endswith(".json.zst"))
-        inventories = list(self.archive.glob("*_metadata_stream-*_inventory.jsonl.zst"))
+        inventories = list(self.archive.rglob("*_metadata_stream-*_inventory.jsonl.zst"))
         self.assertTrue(inventories)
-        self.assertFalse(list(self.archive.glob("*_metadata_stream-*_inventory.jsonl")))
-        self.assertFalse(list(self.archive.glob("*_metadata_checksums.json")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_stream-*_inventory.jsonl")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_checksums.json")))
         self.assertEqual(verify(self.archive), 0)
         for name in (inventories[0].name, complete["checksum_index"]):
             with self.subTest(name=name):
-                path = self.archive / name
+                path = next(self.archive.rglob(name))
                 original_digest = sha256(path)
                 # Damage the frame header: decompression before PAR2 would fail.
                 with path.open("r+b") as output:

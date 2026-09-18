@@ -203,6 +203,14 @@ hierarchies may be moved or nested while preserving archive filenames. Readers
 index filenames once and reject duplicate archive filenames in the searched
 hierarchy rather than choosing one arbitrarily.
 
+Output is sharded under `ARCHIVE_DIR/<first-two-parity-ID-characters>/` using the
+existing random parity-set ID, not a new ID or hash. Data chunks and their PAR2
+files share their data set's shard. All metadata, including data-set manifests,
+certificates, completion markers, and metadata PAR2, shares the metadata set's
+shard. Create a directory only when publishing files into it; never pre-create
+all 256 possible shards. Multiple sets may share a directory. Filenames and PAR2
+member names remain basenames, so flat, nested, and mixed layouts remain readable.
+
 ---
 
 # 7. Source scanning
@@ -731,6 +739,7 @@ Incomplete backup files belong only under:
 
 ```text
 ARCHIVE_DIR/.tmp/
+ARCHIVE_DIR/<metadata-shard>/.tmp/
 ```
 
 The implementation processes TAR streams before direct-file streams, using the
@@ -779,9 +788,10 @@ regenerate missing/damaged PAR2 files to restore the original protection. Intact
 stored data can regenerate a completely lost parity set. Unrecoverable data or
 metadata causes a hard failure.
 
-PAR2 requires one target directory for its basename-only members. If selected
-archive files are scattered, gather them beside a valid completion marker with
-same-filesystem renames, never copies or links. Reject cross-filesystem layouts
+PAR2 requires one target directory per set for its basename-only members. If
+selected archive files are scattered, gather them into their protecting sets'
+shards under the supplied archive root with same-filesystem renames, never copies
+or links. Reject cross-filesystem layouts
 before moving anything. Other archive IDs are left alone.
 
 This is not an all-or-nothing transaction: failure can leave partial changes.

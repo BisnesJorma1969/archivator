@@ -22,12 +22,15 @@ class ParityWriter:
         self.settings = settings
         self.staging = archive / ".tmp"
         self.parity_id = new_id()
+        self.metadata_id = new_id()
+        self.metadata = archive / self.metadata_id[:2]
         self.members = []
         self.manifests = []
-        self.parity_files = []
+        self.parity_checksums = {}
 
     def publish(self, path):
-        os.replace(path, self.archive / path.name)
+        self.metadata.mkdir(exist_ok=True)
+        os.replace(path, self.metadata / path.name)
 
     def add(self, path, stream, offset, length, hashes, encrypted):
         name = chunk_name(self.archive_id, self.parity_id, len(self.members),
@@ -38,7 +41,9 @@ class ParityWriter:
             "plaintext_sha256": hashes["sha256"], "plaintext_sha512": hashes["sha512"],
             "stored_sha256": sha256(path),
         }
-        os.replace(path, self.archive / name)
+        shard = self.archive / self.parity_id[:2]
+        shard.mkdir(exist_ok=True)
+        os.replace(path, shard / name)
         self.members.append(member)
         print(f"Stored chunk: {length:,} plaintext bytes -> {member['stored_length']:,} stored bytes", flush=True)
         if len(self.members) == self.settings.parity_members:
@@ -54,11 +59,12 @@ class ParityWriter:
         # goes into staging; no data copies or links are needed for creation.
         directory = self.staging / "parity"
         directory.mkdir()
-        files = create_parity(self.archive, prefix, [member["filename"] for member in self.members],
+        shard = self.archive / self.parity_id[:2]
+        files = create_parity(shard, prefix, [member["filename"] for member in self.members],
                               self.settings.slice_size, blocks, output_directory=directory)
         for path in files:
-            self.parity_files.append(path.name)
-            self.publish(path)
+            self.parity_checksums[path.name] = sha256(path)
+            os.replace(path, shard / path.name)
         shutil.rmtree(directory)
         manifest = {
             "version": 1, "archive": self.archive_id, "parity": self.parity_id,
@@ -196,19 +202,18 @@ def write_tar(source, entries, sink):
     return inventory
 
 
-def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_size,
-                      parity_checksums=None, metadata_id=None):
+def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, slice_size, metadata_id):
+    # Here archive is the metadata shard; all PAR2 inputs stay beside its index.
     staging = archive / ".tmp"
+    staging.mkdir(mode=0o700, exist_ok=True)
     metadata_names = [store_metadata(archive / name) for name in metadata_names]
     index_name = f"archive-{archive_id}_metadata_checksums.json"
-    checksums = {name: sha256(archive / name) for name in sorted(metadata_names + parity_files)}
-    if parity_checksums:
-        checksums.update(parity_checksums)
+    checksums = {name: sha256(archive / name) for name in sorted(metadata_names)}
+    checksums.update(parity_checksums)
     write_json(staging / index_name, checksums)
     os.replace(staging / index_name, archive / index_name)
     index_name = store_metadata(archive / index_name)
     metadata_names = sorted(metadata_names + [index_name])
-    metadata_id = metadata_id or new_id()
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
     directory = staging / "metadata"
     directory.mkdir()
@@ -232,6 +237,8 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_s
     for complete_name in completion_names(archive_id):
         write_json(staging / complete_name, complete)
         os.replace(staging / complete_name, archive / complete_name)
+    if not any(staging.iterdir()):
+        staging.rmdir()
 
 
 def backup(source, archive, certificate=None, settings=None):
@@ -262,7 +269,7 @@ def backup(source, archive, certificate=None, settings=None):
             name = f"archive-{archive_id}_metadata_recipient.pem"
             fingerprint = normalize_certificate(certificate, staging / name)
             parity.publish(staging / name)
-            certificate = archive / name
+            certificate = parity.metadata / name
             metadata.append(name)
 
         for group in bundles(entries, settings):
@@ -320,7 +327,8 @@ def backup(source, archive, certificate=None, settings=None):
                 output.write(f"{key}={value}\n")
         parity.publish(staging / format_name)
         metadata.extend([catalog_name, format_name, *parity.manifests])
-        finalize_metadata(archive, archive_id, metadata, parity.parity_files, settings.slice_size)
+        finalize_metadata(parity.metadata, archive_id, metadata, parity.parity_checksums,
+                          settings.slice_size, parity.metadata_id)
     finally:
         progress.update("Removing backup temporary files")
         shutil.rmtree(staging)

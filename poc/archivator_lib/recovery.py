@@ -11,7 +11,7 @@ from .backup import finalize_metadata
 from .common import ArchiveError, IntegrityError, read_json, read_jsonl, scratch, sha256
 from .external import check_parity, create_parity
 from .filesystem import relative_path
-from .format import ARCHIVE_NAME, ID, archive_filename, parity_prefix, parse_chunk
+from .format import ARCHIVE_NAME, ID, archive_filename, parity_prefix, parse_chunk, stored_path
 from .metadata import completion_digest, completion_names, unpack_metadata
 from .progress import progress
 
@@ -467,35 +467,46 @@ def verify(root, archive_id=None):
     return result
 
 
-def prepare_in_place(archive_id, files):
-    """Put scattered members beside a valid marker using same-filesystem renames."""
-    _, damaged_markers = read_completion(archive_id, files)
-    base = next(files[name].parent for name in completion_names(archive_id)
-                if name not in damaged_markers)
+def prepare_in_place(root, archive_id, files):
+    """Put scattered members into their set's shard using filesystem renames."""
+    complete, _ = read_completion(archive_id, files)
+    metadata_id = complete["metadata_prefix"].split("_parity-")[1]
+    base = Path(root)
     device = base.stat().st_dev
-    staging = base / ".tmp"
-    if staging.is_symlink() or (staging.exists() and not staging.is_dir()):
-        raise ArchiveError(f"Repair staging must be a directory, not a link: {staging}")
-    # PAR2 stores basenames and needs one target directory. Check all moves before
-    # changing anything; never turn a cross-filesystem rename into a hidden copy.
+    destinations = {name: stored_path(base, name, metadata_id) for name in files}
+    # PAR2 needs one directory per set, not one directory for the whole archive.
+    # Check all moves before changing anything; never turn a cross-filesystem
+    # rename into a hidden copy.
+    for directory in {path.parent for path in destinations.values()}:
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ArchiveError(f"Shard must be a directory, not a link: {directory}")
+        if directory.exists() and directory.stat().st_dev != device:
+            raise ArchiveError("In-place repair requires the selected archive on one filesystem")
+        staging = directory / ".tmp"
+        if staging.is_symlink() or (staging.exists() and not staging.is_dir()):
+            raise ArchiveError(f"Repair staging must be a directory, not a link: {staging}")
     for path in files.values():
         if path.is_symlink() or not path.is_file():
             raise IntegrityError(f"Archive member is not a regular file: {path}")
         if path.stat().st_dev != device:
             raise ArchiveError("In-place repair requires the selected archive on one filesystem")
     for name, path in files.items():
-        if path.parent != base:
-            progress.update(f"Moving scattered archive member into repair directory: {name!r}")
-            path.rename(base / name)
-            files[name] = base / name
-    return base
+        target = destinations[name]
+        if path != target:
+            progress.update(f"Moving archive member into shard {target.parent.name}: {name!r}")
+            target.parent.mkdir(exist_ok=True)
+            path.rename(target)
+            files[name] = target
+    return metadata_id
 
 
 def repair(root, archive_id=None):
     archives = discover(root)
     selected = select(archives, archive_id)[0]
     files = archives[selected]
-    base = prepare_in_place(selected, files)
+    base = Path(root)
+    metadata_id = prepare_in_place(base, selected, files)
+    metadata_directory = base / metadata_id[:2]
     completed_sets = 0
     changed = False
     try:
@@ -503,30 +514,28 @@ def repair(root, archive_id=None):
             changed = bool(archive.metadata_damage)
             for index, manifest in enumerate(archive.manifests, 1):
                 print(f"Checking/repairing recovery set {index}/{len(archive.manifests)} in place", flush=True)
-                data_damage, parity_damage = recover_set(archive, manifest, base, replenish=True)
+                shard = base / manifest["parity"][:2]
+                if not shard.is_dir():
+                    raise IntegrityError(f"Unrecoverable parity set {manifest['parity']}: all files missing")
+                data_damage, parity_damage = recover_set(archive, manifest, shard, replenish=True)
                 if data_damage or parity_damage:
                     changed = True
                     completed_sets += 1
                     print(f"{selected}: repaired parity set {manifest['parity']}", flush=True)
             if changed:
-                staging = base / ".tmp"
-                staging.mkdir(exist_ok=True)
                 metadata_names = [name for name in archive.complete["metadata_members"]
                                   if name != archive.complete["checksum_index"]]
-                parity_checksums = {name: sha256(base / name) for name in archive.checksums
+                parity_checksums = {name: sha256(stored_path(base, name, metadata_id)) for name in archive.checksums
                                     if name.endswith(".par2")}
-                metadata_id = archive.complete["metadata_prefix"].split("_parity-")[1]
-                finalize_metadata(base, selected, metadata_names, [],
-                                  archive.complete["metadata_slice_size"], parity_checksums, metadata_id)
-                if not any(staging.iterdir()):
-                    staging.rmdir()
+                finalize_metadata(metadata_directory, selected, metadata_names, parity_checksums,
+                                  archive.complete["metadata_slice_size"], metadata_id)
         # Re-read the resulting checksum root and verify in place too. Calling
         # the read-only verify workflow here would unnecessarily stage inputs.
         with open_archive(selected, discover(root)[selected], in_place=True) as archive:
             if archive.metadata_damage:
                 raise IntegrityError("Archive metadata is still damaged after repair")
             for manifest in archive.manifests:
-                data_damage, parity_damage, status = inspect_set(archive, manifest, base)
+                data_damage, parity_damage, status = inspect_set(archive, manifest, base / manifest["parity"][:2])
                 if data_damage or parity_damage or status != 0:
                     raise IntegrityError("Archive is still damaged after repair")
     except (ArchiveError, OSError):

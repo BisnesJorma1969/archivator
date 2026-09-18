@@ -41,7 +41,7 @@ class DemoTests(ArchiveTest):
     def test_bitrot_byte_budget_matches_changed_bytes_then_restores(self):
         (self.source / "file").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        before = {path.name: path.read_bytes() for path in self.archive.iterdir()}
+        before = {path.name: path.read_bytes() for path in self.archive.rglob("archive-*")}
         report = bitrot([self.archive], percent=1, report_path=self.root / "damage.json", damage="bitflip")
         self.assertEqual(report["status"], "applied")
         self.assertEqual({group["category"] for group in report["groups"]},
@@ -56,7 +56,7 @@ class DemoTests(ArchiveTest):
                 expected = bytes(value ^ change["xor_mask"] for value in original)
                 self.assertEqual(Path(change["path"]).read_bytes()[start:start + length], expected)
         budget = round(sum(map(len, before.values())) / 100)
-        changed_bytes = sum(sum(left != right for left, right in zip(data, (self.archive / name).read_bytes()))
+        changed_bytes = sum(sum(left != right for left, right in zip(data, next(self.archive.rglob(name)).read_bytes()))
                             for name, data in before.items())
         self.assertEqual(changed_bytes, budget)
         self.assertEqual(report["archives"][0]["affected_bytes"], budget)
@@ -179,7 +179,7 @@ class DemoTests(ArchiveTest):
                 archive = self.root / f"archive-{damage}"
                 target = self.root / f"target-{damage}"
                 backup(self.source, archive, settings=SMALL)
-                original_size = sum(path.stat().st_size for path in archive.iterdir() if path.is_file())
+                original_size = sum(path.stat().st_size for path in archive.rglob("archive-*") if path.is_file())
                 report = bitrot([archive], percent=1, damage=damage,
                                 report_path=self.root / f"{damage}.json")
                 changes = [change for group in report["groups"] for change in group["changes"]]
@@ -187,7 +187,7 @@ class DemoTests(ArchiveTest):
                 self.assertEqual(report["archives"][0]["original_bytes"], original_size)
                 inserted = sum(change["length"] for change in changes if change["operation"] == "insert")
                 deleted = sum(change["length"] for change in changes if change["operation"] == "delete")
-                self.assertEqual(sum(path.stat().st_size for path in archive.iterdir() if path.is_file()),
+                self.assertEqual(sum(path.stat().st_size for path in archive.rglob("archive-*") if path.is_file()),
                                  original_size + inserted - deleted)
                 ends = {}
                 for change in sorted(changes, key=lambda item: (item["path"], item["offset"])):
