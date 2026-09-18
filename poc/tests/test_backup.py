@@ -17,7 +17,7 @@ class BackupTests(ArchiveTest):
         generated_sets = []
 
         def generate(directory, prefix, members, slice_size, blocks, output_directory):
-            if "_metadata_" in prefix:
+            if prefix.endswith("_metadata"):
                 self.assertEqual(directory, self.archive)
             else:
                 self.assertEqual(directory.parent, self.archive)
@@ -36,7 +36,7 @@ class BackupTests(ArchiveTest):
                 patch("os.link", side_effect=AssertionError("Backup must not hard-link PAR2 inputs")), \
                 patch("os.symlink", side_effect=AssertionError("Backup must not symlink PAR2 inputs")):
             backup(self.source, self.archive, settings=SMALL)
-        self.assertTrue(any("_metadata_parity-" in prefix for prefix in generated_sets))
+        self.assertTrue(any(prefix.endswith("_metadata") for prefix in generated_sets))
         self.assertGreater(len(generated_sets), 2)
         self.assertFalse((self.archive / ".tmp").exists())
 
@@ -44,6 +44,8 @@ class BackupTests(ArchiveTest):
         archive_id = backup(self.source, self.archive, settings=SMALL)
         marker = next(self.archive.rglob(f"archive-{archive_id}_metadata_complete.json"))
         complete = read_json(marker)
+        self.assertEqual(complete["metadata_prefix"], f"archive-{archive_id}_metadata")
+        self.assertTrue((self.archive / f"archive-{archive_id}_metadata.par2").is_file())
         self.assertEqual(len(complete["metadata_parity"]), 5)
         self.assertEqual(check_parity(marker.parent, complete["metadata_prefix"]), 0)
         inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst")))

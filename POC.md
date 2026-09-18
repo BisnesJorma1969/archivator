@@ -174,16 +174,16 @@ archive-<aid>_parity-<pid>_manifest.json.zst
 ```
 
 Archive-level metadata, completion markers, and metadata PAR2 share the prefix
-`archive-<aid>_metadata_` and live at the archive root. Data-set manifests instead
+`archive-<aid>_metadata` and live at the archive root. Data-set manifests instead
 share their data group's prefix and shard. Stream inventories use
 `metadata_inventory_stream-<sid>.jsonl.zst`: these contain file descriptions,
 not file contents.
 
-The metadata recovery set has its own parity-set ID:
+There is one metadata recovery set per archive, identified by the archive ID:
 
 ```text
-archive-<aid>_metadata_parity-<pid>.par2
-archive-<aid>_metadata_parity-<pid>.vol000+032.par2
+archive-<aid>_metadata.par2
+archive-<aid>_metadata.vol000+032.par2
 ```
 
 Chunk numbers use four decimal digits and are local to a parity set. Plaintext

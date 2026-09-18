@@ -125,7 +125,7 @@ def validate_complete(complete, archive_id):
     if complete["version"] != 1 or complete["archive"] != archive_id:
         raise IntegrityError("Unsupported or inconsistent completion marker")
     prefix = complete["metadata_prefix"]
-    if not re.fullmatch(rf"archive-{archive_id}_metadata_parity-{ID}", prefix):
+    if prefix != f"archive-{archive_id}_metadata":
         raise IntegrityError("Invalid metadata recovery prefix")
     names = complete["metadata_members"]
     if not isinstance(names, list) or len(set(names)) != len(names):
@@ -474,7 +474,6 @@ def verify(root, archive_id=None):
 def prepare_in_place(root, archive_id, files):
     """Restore the root-metadata/data-shard layout using filesystem renames."""
     complete, _ = read_completion(archive_id, files)
-    metadata_id = complete["metadata_prefix"].split("_parity-")[1]
     base = Path(root)
     device = base.stat().st_dev
     # Include missing metadata: PAR2 may need to recreate a sharded manifest.
@@ -503,7 +502,6 @@ def prepare_in_place(root, archive_id, files):
             target.parent.mkdir(exist_ok=True)
             path.rename(target)
             files[name] = target
-    return metadata_id
 
 
 def repair(root, archive_id=None):
@@ -511,7 +509,7 @@ def repair(root, archive_id=None):
     selected = select(archives, archive_id)[0]
     files = archives[selected]
     base = Path(root)
-    metadata_id = prepare_in_place(base, selected, files)
+    prepare_in_place(base, selected, files)
     completed_sets = 0
     changed = False
     try:
@@ -533,7 +531,7 @@ def repair(root, archive_id=None):
                 parity_checksums = {name: sha256(stored_path(base, name)) for name in archive.checksums
                                     if name.endswith(".par2")}
                 finalize_metadata(base, selected, metadata_names, parity_checksums,
-                                  archive.complete["metadata_slice_size"], metadata_id)
+                                  archive.complete["metadata_slice_size"])
         # Re-read the resulting checksum root and verify in place too. Calling
         # the read-only verify workflow here would unnecessarily stage inputs.
         with open_archive(selected, discover(root)[selected], in_place=True) as archive:

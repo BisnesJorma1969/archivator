@@ -16,7 +16,7 @@ class ShardingTests(ArchiveTest):
         backup(self.source, self.archive, settings=SMALL)
         expected_shards = set()
         for path in self.archive.rglob("archive-*"):
-            if "_metadata_" in path.name:
+            if "_metadata_" in path.name or "_metadata." in path.name:
                 self.assertEqual(path.parent, self.archive)
             elif "_chunk-" in path.name:
                 parity_id = parse_chunk(path.name)["parity"]

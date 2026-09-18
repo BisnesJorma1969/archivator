@@ -82,7 +82,7 @@ class MetadataTests(ArchiveTest):
         complete = read_json(next(self.archive.rglob(completion_names(archive_id)[0])))
         metadata_names = [*complete["metadata_members"], *complete["metadata_parity"],
                           *completion_names(archive_id)]
-        self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata_")
+        self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata")
                             or name.endswith("_manifest.json.zst") for name in metadata_names))
         self.assertTrue(all(next(self.archive.rglob(name)).is_file() for name in metadata_names))
         self.assertTrue(complete["checksum_index"].endswith(".json.zst"))

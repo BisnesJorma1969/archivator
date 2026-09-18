@@ -58,15 +58,13 @@ def parse_chunk(name):
     return result
 
 
-def parity_prefix(archive, parity, metadata=False):
-    if metadata:
-        return f"archive-{archive}_metadata_parity-{parity}"
+def parity_prefix(archive, parity):
     return f"archive-{archive}_parity-{parity}"
 
 
 def stored_path(root, name):
     """Keep archive metadata at the root and data-set files in their shard."""
-    if "_metadata_" in name:
+    if "_metadata_" in name or "_metadata." in name:
         return Path(root) / name
     else:
         match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)

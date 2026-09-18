@@ -9,7 +9,7 @@ All archive IDs, stream IDs, and parity-set IDs are independent random 128-bit
 values written as 32 lowercase hexadecimal digits. Archive-generated names use
 lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 
-Archive-level metadata and its PAR2 files share the prefix `archive-<aid>_metadata_`
+Archive-level metadata and its PAR2 files share the prefix `archive-<aid>_metadata`
 and live at the archive root. Files containing `_chunk-` hold the actual backed-up
 content. A stream inventory describes files; it is not payload.
 
@@ -32,7 +32,7 @@ in those locations, in scratch for restore/verify or by renames for in-place rep
 | `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `metadata_checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
-| `metadata_parity-<mpid>.par2` and `metadata_parity-<mpid>.vol<start>+<count>.par2` | Separate metadata recovery set, with its own ID `<mpid>` |
+| `metadata.par2` and `metadata.vol<start>+<count>.par2` | One metadata recovery set per archive; no separate set ID |
 | `metadata_complete.json`, `metadata_complete-copy.json` | Identical, self-checksummed bootstrap copies |
 
 The two completion-marker copies, `metadata_format.txt`, and `metadata_recipient.pem` always stay
@@ -116,11 +116,11 @@ Copy the metadata members named in either completion-marker copy and their metad
 PAR2 files to scratch, keeping data-set manifests under their two-character data
 shards and other metadata at the scratch root. Run PAR2 from that root.
 If both markers are lost, metadata PAR2 filenames still have
-the `archive-<aid>_metadata_parity-` prefix and contain the protected member names.
+the `archive-<aid>_metadata` prefix and contain the protected member names.
 
 ```sh
-par2 verify archive-<aid>_metadata_parity-<pid>.par2
-par2 repair archive-<aid>_metadata_parity-<pid>.par2
+par2 verify archive-<aid>_metadata.par2
+par2 repair archive-<aid>_metadata.par2
 ```
 
 These angle-bracket filenames are notation, not literal shell commands. Use actual

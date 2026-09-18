@@ -32,7 +32,7 @@ class RecoveryTests(ArchiveTest):
         original_names = {path.relative_to(self.archive) for path in self.archive.rglob("archive-*")}
         flip(next(self.archive.rglob("*_chunk-*.zst")))
         next(self.archive.rglob("*_metadata_streams.jsonl.zst")).unlink()
-        next(self.archive.rglob("*_metadata_parity-*.vol*.par2")).unlink()
+        next(self.archive.rglob("*_metadata.vol*.par2")).unlink()
         with patch("shutil.copyfile", side_effect=AssertionError("No repair copies")), \
                 patch("shutil.copyfileobj", side_effect=AssertionError("No repair copies")), \
                 patch("os.link", side_effect=AssertionError("No repair hard links")), \
@@ -76,7 +76,7 @@ class RecoveryTests(ArchiveTest):
         next(self.archive.rglob("*_chunk-*.zst")).unlink()
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
-        volume = next(path for path in self.archive.rglob("*.vol*.par2") if "_metadata_" not in path.name)
+        volume = next(path for path in self.archive.rglob("*.vol*.par2") if "_metadata." not in path.name)
         volume.unlink()
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)
@@ -142,7 +142,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()
-        volume = next(self.archive.rglob("*_metadata_parity-*.vol*.par2"))
+        volume = next(self.archive.rglob("*_metadata.vol*.par2"))
         flip(volume)
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)

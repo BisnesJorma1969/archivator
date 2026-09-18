@@ -22,7 +22,6 @@ class ParityWriter:
         self.settings = settings
         self.staging = archive / ".tmp"
         self.parity_id = new_id()
-        self.metadata_id = new_id()
         self.members = []
         self.manifests = []
         self.parity_checksums = {}
@@ -200,7 +199,7 @@ def write_tar(source, entries, sink):
     return inventory
 
 
-def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, slice_size, metadata_id):
+def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, slice_size):
     staging = archive / ".tmp"
     owns_staging = not staging.exists()
     staging.mkdir(mode=0o700, exist_ok=True)
@@ -212,7 +211,7 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, sli
     os.replace(staging / index_name, archive / index_name)
     index_name = store_metadata(archive / index_name)
     metadata_names = sorted(metadata_names + [index_name])
-    prefix = parity_prefix(archive_id, metadata_id, metadata=True)
+    prefix = f"archive-{archive_id}_metadata"
     directory = staging / "metadata"
     directory.mkdir()
     # PAR2 records relative paths for sharded manifests and reads originals directly.
@@ -328,7 +327,7 @@ def backup(source, archive, certificate=None, settings=None):
         parity.publish(staging / format_name)
         metadata.extend([catalog_name, format_name, *parity.manifests])
         finalize_metadata(archive, archive_id, metadata, parity.parity_checksums,
-                          settings.slice_size, parity.metadata_id)
+                          settings.slice_size)
     finally:
         progress.update("Removing backup temporary files")
         shutil.rmtree(staging)
