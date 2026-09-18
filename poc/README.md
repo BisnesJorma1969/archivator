@@ -53,6 +53,10 @@ for key management, metadata authentication, and post-quantum requirements.
 Commands announce major stages and emit a status line to stderr every five seconds
 while running, including during quiet zstd, OpenSSL, and PAR2 operations. Status
 shows elapsed time, the current activity, and byte/entry counts where available.
+Compare shows completed/total file pairs, cumulative MiB read from both trees,
+average read/hash throughput, and the current source or target filename. These
+are five-second snapshots, not a delay between files. It reads every matching
+regular file on both sides; the final summary includes total bytes and duration.
 It is an activity indicator, not an estimated completion percentage. Lines are
 flushed immediately and also appear when output is redirected.
 

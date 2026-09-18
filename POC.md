@@ -907,6 +907,13 @@ differences always fail comparison.
 
 Report all differences found.
 
+After scanning, announce the number of shared entries, comparable regular-file
+pairs, and bytes to read across both trees. The five-second heartbeat reports
+completed/total file pairs, cumulative MiB read, average MiB/s, and the current
+source or target filename. Counters do not reset per file. Print total bytes read,
+comparison duration, and average throughput at completion. This is progress
+reporting, not per-file throttling; both copies are read fully for SHA-256.
+
 Exit:
 
 ```text

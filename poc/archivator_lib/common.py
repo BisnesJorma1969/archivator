@@ -60,16 +60,21 @@ def file_hashes(path, lookup=False):
     return hashes.values()
 
 
-def sha256(path):
+def sha256(path, on_read=None):
+    """Hash a file; callers may report cumulative progress across multiple files."""
     digest = hashlib.sha256()
-    total = Path(path).stat().st_size
+    if on_read is None:
+        total = Path(path).stat().st_size
+        progress.update(f"Checking SHA-256: 0/{total:,} bytes; {Path(path).name!r}")
     completed = 0
-    progress.update(f"Checking SHA-256: 0/{total:,} bytes; {Path(path).name!r}")
     with open(path, "rb") as source:
         while data := source.read(BUFFER_SIZE):
             digest.update(data)
-            completed += len(data)
-            progress.update(f"Checking SHA-256: {completed:,}/{total:,} bytes; {Path(path).name!r}")
+            if on_read is not None:
+                on_read(len(data))
+            else:
+                completed += len(data)
+                progress.update(f"Checking SHA-256: {completed:,}/{total:,} bytes; {Path(path).name!r}")
     return digest.hexdigest()
 
 
