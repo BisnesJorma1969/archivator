@@ -32,16 +32,21 @@ unencrypted test private key:
 
 ```sh
 mkdir -p poc/work
-openssl req -x509 -newkey rsa:2048 -nodes \
+openssl req -x509 -newkey rsa:3072 -noenc \
   -keyout poc/work/recipient-key.pem \
   -out poc/work/recipient.pem \
   -subj '/CN=Archivator test' -days 1
 ```
 
+Encryption requires an RSA key of at least 3072 bits. Each `.zst.enc` chunk uses
+CMS AES-256-GCM with RSA-OAEP, SHA-256, and MGF1-SHA-256.
 The archive stores only the normalized public certificate and its SHA-256
 fingerprint. Catalogs, inventories, paths, sizes, and checksums remain plaintext.
 Only compressed chunk contents are encrypted. The PoC's CLI accepts private keys
 without a passphrase; it does not prompt for passwords or manage keys.
+Plaintext staging uses owner-only directories and compressed/decrypted chunk files.
+See [intentional cryptographic limitations](../POC.md#25-cryptographic-limitations-and-production-requirements)
+for key management, metadata authentication, and post-quantum requirements.
 
 ## Commands and exit codes
 

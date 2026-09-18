@@ -16,7 +16,7 @@ lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 | `stream-<sid>_files.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
 | `recipient.pem` | Optional normalized public X.509 certificate |
 | `parity-<pid>_manifest.json.zst` | Chunk coordinates, hashes, lengths, and recovery capacity |
-| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.cms]` | Independent stored chunk |
+| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
 | `parity-<pid>_metadata.par2` and `_metadata.vol<start>+<count>.par2` | Separate metadata recovery set |
@@ -42,8 +42,10 @@ normal authoritative content digest; restore also verifies recorded SHA-512.
 Each chunk is an independent zstd frame, compressed at level 3 with
 `--single-thread --check` and no dictionary. Frames contain no source filename or
 timestamp. Encrypted chunks wrap that zstd data in binary OpenSSL CMS
-AuthEnvelopedData with AES-256-GCM and DER encoding. Encryption does not change
-plaintext stream coordinates. No private key is copied into archive metadata.
+AuthEnvelopedData with AES-256-GCM and DER encoding, stored as `.zst.enc`.
+The recipient uses RSA of at least 3072 bits with RSA-OAEP, SHA-256, and
+MGF1-SHA-256. These algorithm parameters are encoded in CMS. Encryption does not
+change plaintext stream coordinates. No private key is copied into archive metadata.
 
 ## Recovery capacity and metadata bootstrap
 

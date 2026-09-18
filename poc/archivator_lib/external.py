@@ -1,5 +1,6 @@
 """Zstd, OpenSSL, and PAR2 commands with explicit subprocess lifetimes."""
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -36,7 +37,9 @@ class ZstdWriter:
         self.output = None
         self.errors = None
         try:
-            self.output = open(target, "wb")
+            # Compressed data is still plaintext until CMS encryption finishes.
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self.output = os.fdopen(descriptor, "wb")
             # A file avoids a full stderr pipe blocking the compressor.
             self.errors = tempfile.TemporaryFile(dir=Path(target).parent)
             self.process = subprocess.Popen(
@@ -85,7 +88,9 @@ class ZstdWriter:
 
 def encrypt(source, target, certificate):
     run([executable("openssl"), "cms", "-encrypt", "-binary", "-aes-256-gcm",
-         "-outform", "DER", "-in", str(source), "-out", str(target), str(certificate)],
+         "-outform", "DER", "-in", str(source), "-out", str(target),
+         "-recip", str(certificate), "-keyopt", "rsa_padding_mode:oaep",
+         "-keyopt", "rsa_oaep_md:sha256", "-keyopt", "rsa_mgf1_md:sha256"],
         activity="Encrypting chunk with OpenSSL CMS")
 
 
@@ -95,15 +100,38 @@ def decrypt(source, target, key, certificate):
                  "-passin", "pass:"]
     if certificate:
         arguments.extend(["-recip", str(certificate)])
+    # OpenSSL may write plaintext before it checks the authentication tag.
+    # Restrict the output before starting it, including when reusing a scratch file.
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
     try:
         run(arguments, activity="Decrypting and authenticating chunk with OpenSSL CMS")
     except ArchiveError as error:
+        Path(target).unlink(missing_ok=True)
         raise IntegrityError(f"CMS decryption/authentication failed: {error}") from error
 
 
 def normalize_certificate(source, target):
     # x509 writes only the public certificate, even if the input PEM also has a key.
     run([executable("openssl"), "x509", "-in", str(source), "-out", str(target)])
+    details = run([executable("openssl"), "x509", "-in", str(target),
+                   "-noout", "-text", "-certopt", "no_extensions", "-modulus"])
+    lines = [line.strip() for line in details.splitlines()]
+    # Check the subject key, not the certificate's signature algorithm.
+    # RSA-PSS keys are signing-only and cannot transport the CMS content key.
+    if "Public Key Algorithm: rsaEncryption" not in lines:
+        raise ArchiveError("Encryption requires an RSA recipient key of at least 3072 bits")
+    modulus = next((line.removeprefix("Modulus=") for line in lines
+                    if line.startswith("Modulus=")), "")
+    try:
+        bits = int(modulus, 16).bit_length()
+    except ValueError as error:
+        raise ArchiveError("Cannot read the recipient certificate's RSA modulus") from error
+    if bits < 3072:
+        raise ArchiveError(f"Recipient RSA key is {bits} bits; at least 3072 bits are required")
     result = run([executable("openssl"), "x509", "-in", str(target), "-noout",
                   "-fingerprint", "-sha256"])
     return result.strip().split("=", 1)[1].replace(":", "").lower()

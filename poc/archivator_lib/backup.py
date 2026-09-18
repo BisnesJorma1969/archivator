@@ -114,7 +114,7 @@ class StreamWriter:
         self.compressed = None
         path = self.parity.staging / "chunk.zst"
         if self.certificate:
-            encrypted = self.parity.staging / "chunk.zst.cms"
+            encrypted = self.parity.staging / "chunk.zst.enc"
             encrypt(path, encrypted, self.certificate)
             path.unlink()
             path = encrypted
@@ -249,7 +249,8 @@ def backup(source, archive, certificate=None, settings=None):
     print(f"Source: {len(files):,} files, {sum(entry['size'] for entry in files):,} bytes", flush=True)
     empty_destination(archive)
     staging = archive / ".tmp"
-    staging.mkdir()
+    # This directory holds compressed plaintext before encryption.
+    staging.mkdir(mode=0o700)
     archive_id = new_id()
     parity = ParityWriter(archive, archive_id, settings)
     metadata = []

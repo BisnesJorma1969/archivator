@@ -150,7 +150,7 @@ No spaces. No Unicode. Lowercase only.
 Example encrypted chunk:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst.cms
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst.enc
 ```
 
 Unencrypted:
@@ -382,12 +382,26 @@ plaintext
 -> stored chunk
 ```
 
-Use OpenSSL CMS with an X.509 recipient certificate.
+Use OpenSSL CMS with an X.509 recipient certificate containing an RSA encryption
+key of at least **3072 bits**. Reject weaker RSA keys and other key types before
+packing source data.
 
 Use binary CMS AuthEnvelopedData with AES-256-GCM and DER encoding, via
-`openssl cms -encrypt -binary -aes-256-gcm -outform DER`.
+`openssl cms -encrypt -binary -aes-256-gcm -outform DER`, with
+`-recip recipient.pem -keyopt rsa_padding_mode:oaep -keyopt rsa_oaep_md:sha256
+-keyopt rsa_mgf1_md:sha256`. RSA-OAEP transports the random per-chunk content key;
+both OAEP and MGF1 explicitly use SHA-256.
+[OpenSSL CMS options](https://docs.openssl.org/3.5/man1/openssl-cms/)
 
-Each chunk is encrypted independently.
+Each chunk is encrypted independently and stored with the **`.zst.enc`** suffix.
+OpenSSL generates the content key and GCM nonce; restore checks authentication
+before decompression and removes failed decryption output.
+
+Backup creates its `.tmp` staging directory with owner-only access (`0700`) and
+compressed plaintext chunks with owner-only read/write access (`0600`), independent
+of a permissive caller umask. Restore uses owner-only scratch directories and
+sets decryption output to `0600` before invoking OpenSSL. No streaming encryption
+pipeline is required for this PoC.
 
 Do not use:
 
@@ -410,6 +424,8 @@ for passwords. `--decrypt-key` is required for encrypted restore;
 Only compressed chunk contents are encrypted. Catalogs, inventories, original
 paths, metadata, and checksums remain unencrypted, even when compressed. Verify and repair do not need a
 private key and do not validate plaintext or CMS authentication; restore does.
+Deferred security requirements are recorded in
+[section 25](#25-cryptographic-limitations-and-production-requirements).
 
 ---
 
@@ -1040,3 +1056,52 @@ PoC**. Cloud support is outside this PoC's scope.
 Provider-native CRC variants, cloud-compatible encodings, multipart composition,
 and fixed upload-block checksum generation are mandatory production work, deferred
 here to preserve the PoC's scope and standard-library-only Python implementation.
+
+---
+
+## 25. Cryptographic limitations and production requirements
+
+The PoC uses AES-256-GCM with RSA-OAEP/SHA-256 and RSA keys of at least 3072 bits.
+RSA-3072 provides approximately 128-bit classical security; AES-256 does not make
+the entire construction 256-bit secure or post-quantum secure.
+[NIST key-strength guidance, Table 2](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)
+
+The following gaps are recognized; their production remedies are intentionally
+**not implemented in this PoC**:
+
+1. **Private-key management.** The CLI accepts externally supplied, unencrypted
+   private keys only. Password handling, encrypted-key support, key stores/HSMs,
+   rotation, escrow, and recovery procedures are production work. Keep the private
+   key separate from the archive; the PoC neither stores it nor manages its permissions.
+2. **Recipient trust.** Key type and size are checked, but certificate identity,
+   chain, validity, and revocation are not. Self-signed test certificates are
+   supported. The operator must supply the intended public certificate through a
+   trusted channel. Its fingerprint inside unsigned archive metadata is not a
+   trust anchor. Production needs an explicit trust/pinning policy, with long-term
+   decryption remaining possible after a certificate expires.
+3. **Archive authenticity and context binding.** Metadata and completion markers
+   are unsigned. SHA-256 and PAR2 detect/repair accidental damage, not malicious
+   replacement. Chunk GCM tags do not authenticate the backup's author or bind
+   external archive IDs, stream IDs, offsets, and catalogs. Anyone with the public
+   certificate can construct a replacement encrypted archive. Production needs a
+   trusted authenticated manifest/signature covering those relationships and an
+   explicit rollback policy.
+4. **Metadata confidentiality.** Paths, sizes, inventories, and checksums remain
+   readable; compression is not encryption. Production must define which metadata
+   is confidential and how it is protected without preventing recovery bootstrap.
+5. **Plaintext on disk.** Staging/scratch permissions restrict access to the running
+   user, but cleanup is not secure erasure. Crashes, snapshots, filesystem journals,
+   privileged users, and storage remnants are not addressed. Use encrypted working
+   storage when the threat model includes offline disk access; a production design
+   must explicitly cover plaintext staging and restore destinations.
+6. **Post-quantum key establishment.** RSA remains vulnerable to a sufficiently
+   capable quantum computer, including later decryption of archives collected now.
+   Ubuntu 26.04 provides OpenSSL 3.5.x: it has ML-KEM primitives, but CMS KEM recipient
+   support was added in OpenSSL 3.6. This is not an AES algorithm substitution:
+   supported CMS tooling, recipient-key/certificate handling, and interoperability
+   testing are required. A standardized post-quantum key-establishment design is
+   mandatory production work for long-lived confidential archives, deferred here.
+   [Ubuntu OpenSSL package](https://packages.ubuntu.com/en/resolute/openssl),
+   [OpenSSL CMS KEM support](https://docs.openssl.org/3.6/man3/CMS_get0_RecipientInfos/),
+   [ML-KEM in CMS (RFC 9936)](https://www.rfc-editor.org/rfc/rfc9936.html),
+   [NIST post-quantum guidance](https://www.nist.gov/cybersecurity-and-privacy/what-post-quantum-cryptography)

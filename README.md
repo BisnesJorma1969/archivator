@@ -61,7 +61,7 @@ the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
 The damager accepts arbitrary files and already-damaged archives without validating
 their format or metadata.
 
-You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
+You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.enc`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
 damaged data blocks**. Deleting PAR2 files reduces that capacity. Automatic

@@ -68,7 +68,7 @@ class RestoreTests(ArchiveTest):
         key, certificate = self.certificate()
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, certificate, SMALL)
-        flip(next(self.archive.glob("*.cms")))
+        flip(next(self.archive.glob("*.enc")))
         before = snapshot(self.archive)
         for path in self.archive.iterdir():
             path.chmod(0o444)

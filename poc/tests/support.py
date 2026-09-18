@@ -39,10 +39,10 @@ class ArchiveTest(unittest.TestCase):
     def data(self, size, seed=1):
         return random.Random(seed).randbytes(size)
 
-    def certificate(self, name="recipient"):
+    def certificate(self, name="recipient", algorithm="rsa:3072"):
         key = self.root / (name + "-key.pem")
         certificate = self.root / (name + ".pem")
-        run([executable("openssl"), "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        run([executable("openssl"), "req", "-x509", "-newkey", algorithm, "-noenc",
              "-keyout", str(key), "-out", str(certificate), "-subj", "/CN=PoC test",
              "-days", "1"])
         return key, certificate

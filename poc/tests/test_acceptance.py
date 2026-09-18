@@ -64,7 +64,7 @@ class AcceptanceTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"restored-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                chunks = list(archive.glob("*_chunk-*.cms" if encrypted else "*_chunk-*.zst"))
+                chunks = list(archive.glob("*_chunk-*.enc" if encrypted else "*_chunk-*.zst"))
                 max(chunks, key=lambda path: path.stat().st_size).unlink()
                 self.assertEqual(verify(archive), 1)
                 restore(archive, target, key=key if encrypted else None, certificate=certificate if encrypted else None)
@@ -105,7 +105,7 @@ class AcceptanceTests(ArchiveTest):
         manual.mkdir()
         for path in self.archive.iterdir():
             shutil.copyfile(path, manual / path.name)
-        chunks = list(manual.glob(f"*_stream-{stream['stream']}_*.cms"))
+        chunks = list(manual.glob(f"*_stream-{stream['stream']}_*.enc"))
         missing = chunks[0]
         missing.unlink()
         prefix = missing.name.split("_chunk-", 1)[0]
