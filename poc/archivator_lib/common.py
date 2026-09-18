@@ -6,6 +6,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from .progress import progress
+
 BUFFER_SIZE = 1024 * 1024
 WORK_DIR = Path(__file__).resolve().parents[1] / "work"
 
@@ -47,27 +49,39 @@ class Hashes:
 
 def file_hashes(path, lookup=False):
     hashes = Hashes(lookup)
+    total = Path(path).stat().st_size
+    completed = 0
+    progress.update(f"Hashing file: 0/{total:,} bytes; {Path(path).name!r}")
     with open(path, "rb") as source:
         while data := source.read(BUFFER_SIZE):
             hashes.update(data)
+            completed += len(data)
+            progress.update(f"Hashing file: {completed:,}/{total:,} bytes; {Path(path).name!r}")
     return hashes.values()
 
 
 def sha256(path):
     digest = hashlib.sha256()
+    total = Path(path).stat().st_size
+    completed = 0
+    progress.update(f"Checking SHA-256: 0/{total:,} bytes; {Path(path).name!r}")
     with open(path, "rb") as source:
         while data := source.read(BUFFER_SIZE):
             digest.update(data)
+            completed += len(data)
+            progress.update(f"Checking SHA-256: {completed:,}/{total:,} bytes; {Path(path).name!r}")
     return digest.hexdigest()
 
 
 def write_json(path, value):
+    progress.update(f"Writing metadata: {Path(path).name!r}")
     with open(path, "w", encoding="utf-8", newline="\n") as output:
         json.dump(value, output, ensure_ascii=True, indent=2, sort_keys=True)
         output.write("\n")
 
 
 def read_json(path):
+    progress.update(f"Reading metadata: {Path(path).name!r}")
     try:
         with open(path, encoding="utf-8") as source:
             return json.load(source)
@@ -77,11 +91,13 @@ def read_json(path):
 
 def write_jsonl(path, entries):
     with open(path, "w", encoding="utf-8", newline="\n") as output:
-        for entry in entries:
+        for index, entry in enumerate(entries, 1):
+            progress.update(f"Writing inventory entry {index:,}: {Path(path).name!r}")
             output.write(json.dumps(entry, ensure_ascii=True, sort_keys=True) + "\n")
 
 
 def read_jsonl(path):
+    progress.update(f"Reading inventory: {Path(path).name!r}")
     try:
         with open(path, encoding="utf-8") as source:
             return [json.loads(line) for line in source if line.strip()]

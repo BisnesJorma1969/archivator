@@ -6,6 +6,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 from .common import ArchiveError, IntegrityError
+from .progress import progress
 
 
 def ensure_disjoint(first, second):
@@ -31,12 +32,14 @@ def identity(info):
 
 def scan(root):
     root = Path(root)
+    progress.update(f"Scanning {str(root)!r}: 0 entries")
     if root.is_symlink() or not root.is_dir():
         raise ArchiveError(f"Source must be a directory, not a symlink: {root}")
     entries = []
     pending = [root]
     while pending:
         path = pending.pop()
+        progress.update(f"Scanning: {len(entries):,} entries found; {str(path)!r}")
         info = path.lstat()
         relative = path.relative_to(root).as_posix()
         entry = {
@@ -90,7 +93,8 @@ def restore_metadata(root, entries):
     directories.sort(key=lambda entry: len(relative_path(entry["path"]).parts), reverse=True)
     # Creating children changes directory mtimes. Restrictive directory modes
     # must also wait until their children have been created and verified.
-    for entry in files + directories:
+    for index, entry in enumerate(files + directories, 1):
+        progress.update(f"Applying modes and timestamps: {index:,}/{len(entries):,} entries; {entry['path']!r}")
         path = root / entry["path"]
         symlink = entry["type"] == "symlink"
         if not symlink:

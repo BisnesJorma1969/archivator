@@ -11,6 +11,7 @@ from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR,
 from .external import decrypt, executable
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import copy_set, discover, open_archive, recover_set, select
+from .progress import progress
 
 
 def unpack_chunk(directory, member, output, encrypted, key, certificate):
@@ -21,6 +22,7 @@ def unpack_chunk(directory, member, output, encrypted, key, certificate):
         decrypt(stored, compressed, key, certificate)
     hashes = Hashes()
     length = 0
+    progress.update(f"Decompressing and checking chunk: 0/{member['length']:,} plaintext bytes")
     with tempfile.TemporaryFile(dir=directory) as errors, subprocess.Popen(
             [executable("zstd"), "-q", "-d", "-c", "--", str(compressed)],
             stdout=subprocess.PIPE, stderr=errors) as process:
@@ -31,6 +33,7 @@ def unpack_chunk(directory, member, output, encrypted, key, certificate):
                     raise IntegrityError("Decompressed chunk exceeds its declared length")
                 hashes.update(data)
                 output.write(data)
+                progress.update(f"Decompressing and checking chunk: {length:,}/{member['length']:,} plaintext bytes")
             if process.wait():
                 errors.seek(0)
                 message = errors.read().decode("utf-8", errors="replace").strip()
@@ -58,6 +61,7 @@ def extract_tar(path, target, inventory):
                 if name not in expected or name in seen:
                     raise IntegrityError(f"Unexpected or duplicate TAR entry: {name!r}")
                 seen.add(name)
+                progress.update(f"Extracting TAR entry {len(seen):,}/{len(expected):,}: {name!r}")
                 entry = expected[name]
                 destination = target / name
                 if entry["type"] == "directory":
@@ -92,6 +96,7 @@ def finish_stream(path, stream, archive, target):
     if hashes["sha256"] != stream["sha256"] or hashes["sha512"] != stream["sha512"]:
         raise IntegrityError("Reconstructed whole-stream checksum mismatch")
     if stream["type"] == "file":
+        progress.update(f"Writing restored file: {stream['path']!r} ({stream['size']:,} bytes)")
         with path.open("rb") as source, (target / stream["path"]).open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
     else:
@@ -118,7 +123,8 @@ def restore(root, target, archive_id=None, key=None, certificate=None):
         empty_destination(target)
         directories = [entry for entry in archive.entries if entry["type"] == "directory" and entry["path"] != "."]
         directories.sort(key=lambda entry: len(relative_path(entry["path"]).parts))
-        for entry in directories:
+        for index, entry in enumerate(directories, 1):
+            progress.update(f"Creating restored directories: {index:,}/{len(directories):,}")
             (target / entry["path"]).mkdir()
 
         streams = {stream["stream"]: stream for stream in archive.streams}

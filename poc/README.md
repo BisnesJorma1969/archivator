@@ -45,6 +45,12 @@ without a passphrase; it does not prompt for passwords or manage keys.
 
 ## Commands and exit codes
 
+Commands announce major stages and emit a status line to stderr every five seconds
+while running, including during quiet zstd, OpenSSL, and PAR2 operations. Status
+shows elapsed time, the current activity, and byte/entry counts where available.
+It is an activity indicator, not an estimated completion percentage. Lines are
+flushed immediately and also appear when output is redirected.
+
 | Command | Meaning |
 | --- | --- |
 | `backup SOURCE_DIR ARCHIVE_DIR` | Create an archive from the source tree. |
@@ -102,6 +108,7 @@ as tested.
 `archivator_lib/` contains small modules with concrete responsibilities:
 
 - `cli.py`: argument parsing and exit codes
+- `progress.py`: periodic status display; does not parallelize archive processing
 - `filesystem.py`, `common.py`, `format.py`: scanning, checksums, names, and defaults
 - `external.py`: streaming zstd compression, OpenSSL, and PAR2 subprocesses
 - `backup.py`: TAR/direct streams, independent chunks, parity, and finalization

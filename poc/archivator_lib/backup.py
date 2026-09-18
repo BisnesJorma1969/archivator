@@ -9,6 +9,7 @@ from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_j
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, empty_destination, ensure_disjoint, public_entry, scan
 from .format import Settings, chunk_name, new_id, parity_prefix, recovery_blocks
+from .progress import progress
 
 
 class ParityWriter:
@@ -52,7 +53,8 @@ class ParityWriter:
         # already-published data remains identifiable but is not marked complete.
         directory = self.staging / "parity"
         directory.mkdir()
-        for member in self.members:
+        for index, member in enumerate(self.members, 1):
+            progress.update(f"Staging data for PAR2: chunk {index}/{len(self.members)}")
             shutil.copyfile(self.archive / member["filename"], directory / member["filename"])
         files = create_parity(directory, prefix, [member["filename"] for member in self.members],
                               self.settings.slice_size, blocks)
@@ -95,6 +97,8 @@ class StreamWriter:
                 self.compressed = ZstdWriter(self.parity.staging / "chunk.zst")
             count = min(len(remaining), self.parity.settings.chunk_size - self.chunk_length)
             piece = remaining[:count]
+            progress.update(f"Compressing stream: {self.size:,} plaintext bytes read; "
+                            f"current chunk {self.chunk_length:,}/{self.parity.settings.chunk_size:,} bytes")
             self.compressed.write(piece)
             self.hashes.update(piece)
             self.chunk_hashes.update(piece)
@@ -176,7 +180,8 @@ def bundles(entries, settings):
 def write_tar(source, entries, sink):
     inventory = []
     with tarfile.open(fileobj=sink, mode="w|", format=tarfile.PAX_FORMAT) as output:
-        for entry in entries:
+        for index, entry in enumerate(entries, 1):
+            progress.update(f"Packing TAR entry {index:,}/{len(entries):,}: {entry['path']!r}")
             path = source / entry["path"]
             check_unchanged(path, entry)
             record = public_entry(entry)
@@ -206,7 +211,8 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_s
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
     directory = staging / "metadata"
     directory.mkdir()
-    for name in metadata_names:
+    for index, name in enumerate(metadata_names, 1):
+        progress.update(f"Staging metadata for PAR2: file {index}/{len(metadata_names)}")
         shutil.copyfile(archive / name, directory / name)
     blocks = recovery_blocks([(directory / name).stat().st_size for name in metadata_names], slice_size)
     files = create_parity(directory, prefix, metadata_names, slice_size, blocks)
@@ -258,6 +264,7 @@ def backup(source, archive, certificate=None, settings=None):
             metadata.append(name)
 
         for group in bundles(entries, settings):
+            print(f"Packing TAR stream: {len(group):,} entries", flush=True)
             stream_id = new_id()
             sink = StreamWriter(parity, stream_id, certificate)
             try:
@@ -276,6 +283,7 @@ def backup(source, archive, certificate=None, settings=None):
             if entry["type"] != "file" or entry["size"] < settings.large_file_size:
                 continue
             path = source / entry["path"]
+            print(f"Archiving large file: {entry['path']!r} ({entry['size']:,} bytes)", flush=True)
             check_unchanged(path, entry)
             stream_id = new_id()
             sink = StreamWriter(parity, stream_id, certificate)
@@ -290,7 +298,8 @@ def backup(source, archive, certificate=None, settings=None):
             streams.append({**public_entry(entry), "stream": stream_id, **sink.hashes.values()})
 
         parity.finish_set()
-        for entry in entries:
+        for index, entry in enumerate(entries, 1):
+            progress.update(f"Checking source remained unchanged: {index:,}/{len(entries):,} entries")
             check_unchanged(source / entry["path"], entry)
         catalog_name = f"archive-{archive_id}_streams.jsonl"
         write_jsonl(staging / catalog_name, streams)
@@ -311,5 +320,6 @@ def backup(source, archive, certificate=None, settings=None):
         metadata.extend([catalog_name, format_name, *parity.manifests])
         finalize_metadata(archive, archive_id, metadata, parity.parity_files, settings.slice_size)
     finally:
+        progress.update("Removing backup temporary files")
         shutil.rmtree(staging)
     return archive_id

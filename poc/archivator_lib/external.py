@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .common import ArchiveError, IntegrityError, WORK_DIR
+from .progress import progress
 
 
 def executable(name):
@@ -18,7 +19,8 @@ def executable(name):
     raise ArchiveError(f"Required executable not found: {name}; see poc/README.md")
 
 
-def run(arguments, cwd=None):
+def run(arguments, cwd=None, activity=None):
+    progress.update(activity or f"Running {Path(arguments[0]).name} {arguments[1] if len(arguments) > 1 else ''}")
     result = subprocess.run(arguments, cwd=cwd, capture_output=True, text=True, errors="replace")
     if result.returncode:
         message = (result.stderr or result.stdout).strip()
@@ -51,6 +53,7 @@ class ZstdWriter:
             raise ArchiveError("Zstd compressor stopped while writing a chunk") from error
 
     def finish(self):
+        progress.update("Finishing zstd frame; waiting for compressor")
         try:
             try:
                 self.process.stdin.close()
@@ -82,7 +85,8 @@ class ZstdWriter:
 
 def encrypt(source, target, certificate):
     run([executable("openssl"), "cms", "-encrypt", "-binary", "-aes-256-gcm",
-         "-outform", "DER", "-in", str(source), "-out", str(target), str(certificate)])
+         "-outform", "DER", "-in", str(source), "-out", str(target), str(certificate)],
+        activity="Encrypting chunk with OpenSSL CMS")
 
 
 def decrypt(source, target, key, certificate):
@@ -92,7 +96,7 @@ def decrypt(source, target, key, certificate):
     if certificate:
         arguments.extend(["-recip", str(certificate)])
     try:
-        run(arguments)
+        run(arguments, activity="Decrypting and authenticating chunk with OpenSSL CMS")
     except ArchiveError as error:
         raise IntegrityError(f"CMS decryption/authentication failed: {error}") from error
 
@@ -109,7 +113,8 @@ def create_parity(directory, prefix, members, slice_size, blocks):
     if blocks > 32768:
         raise ArchiveError("PAR2 recovery block limit exceeded; increase the internal slice size")
     run([executable("par2"), "create", "-q", "-t1", "-T1", f"-s{slice_size}",
-         f"-c{blocks}", "-u", "-n4", "--", prefix + ".par2", *members], cwd=directory)
+         f"-c{blocks}", "-u", "-n4", "--", prefix + ".par2", *members], cwd=directory,
+        activity=f"PAR2: creating {blocks:,} recovery blocks for {len(members):,} files")
     files = sorted(directory.glob(prefix + "*.par2"))
     if len(files) != 5:
         raise ArchiveError("PAR2 did not produce one index and four recovery volumes")
@@ -126,6 +131,8 @@ def check_parity(directory, prefix, repair=False):
     if not index.exists():
         index = files[0]
     operation = "repair" if repair else "verify"
+    role = "metadata" if prefix.endswith("_metadata") else "data"
+    progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
     arguments = [executable("par2"), operation, "-q", "-t1", "-T1", "--", index.name]
     result = subprocess.run(arguments, cwd=directory, capture_output=True, text=True, errors="replace")
     # par2: 0 = intact, 1 = repair possible, 2 = insufficient recovery data,

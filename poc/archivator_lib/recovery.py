@@ -12,6 +12,7 @@ from .common import ArchiveError, IntegrityError, read_json, read_jsonl, scratch
 from .external import check_parity, create_parity
 from .filesystem import relative_path
 from .format import ARCHIVE_NAME, ID, archive_filename, new_id, parity_prefix, parse_chunk
+from .progress import progress
 
 
 @dataclass
@@ -31,12 +32,14 @@ class Archive:
 
 def discover(root):
     root = Path(root)
+    progress.update(f"Discovering archive files in {str(root)!r}")
     if root.is_symlink() or not root.is_dir():
         raise ArchiveError(f"Archive location must be a directory: {root}")
     archives = {}
     # Enumerate names once. Never open unrelated archive contents, and never
     # let PAR2 search this potentially mixed hierarchy directly.
     for directory, subdirectories, names in os.walk(root, followlinks=False):
+        progress.update(f"Discovering archives: {len(archives)} IDs found; scanning {directory!r}")
         subdirectories[:] = sorted(name for name in subdirectories if name != ".tmp")
         for name in sorted(names):
             match = ARCHIVE_NAME.match(name)
@@ -64,7 +67,8 @@ def select(archives, archive_id, allow_all=False):
 
 def copy_existing(files, names, destination):
     destination.mkdir(parents=True, exist_ok=True)
-    for name in names:
+    for index, name in enumerate(names, 1):
+        progress.update(f"Copying archive files to scratch: {index}/{len(names)}; {name!r}")
         path = files.get(name)
         if path is None:
             continue
@@ -245,6 +249,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
 
 
 def load_metadata(archive_id, files, directory):
+    print(f"Loading and checking metadata for archive {archive_id}", flush=True)
     complete_name = f"archive-{archive_id}_complete.json"
     if complete_name not in files:
         raise IntegrityError(f"Archive {archive_id} is incomplete: no completion marker")
@@ -352,7 +357,8 @@ def verify(root, archive_id=None):
                 unrecoverable = False
                 if archive.metadata_damage:
                     print(f"{selected}: repairable metadata/protection damage ({len(archive.metadata_damage)} files)")
-                for manifest in archive.manifests:
+                for index, manifest in enumerate(archive.manifests, 1):
+                    print(f"Checking recovery set {index}/{len(archive.manifests)}", flush=True)
                     with scratch("verify-") as temporary:
                         directory = Path(temporary)
                         copy_set(archive, manifest, directory)
@@ -380,6 +386,7 @@ def verify(root, archive_id=None):
 
 
 def publish_repair(source, destination):
+    progress.update(f"Publishing repaired file: {destination.name!r}")
     temporary = destination.parent / ".tmp"
     if temporary.is_symlink():
         raise ArchiveError(f"Repair staging must not be a symlink: {temporary}")
@@ -407,7 +414,8 @@ def repair(root, archive_id=None):
         changed = bool(archive.metadata_damage)
         completed_sets = 0
         try:
-            for manifest in archive.manifests:
+            for index, manifest in enumerate(archive.manifests, 1):
+                print(f"Checking/repairing recovery set {index}/{len(archive.manifests)}", flush=True)
                 with scratch("repair-") as temporary:
                     directory = Path(temporary)
                     copy_set(archive, manifest, directory)
@@ -431,6 +439,7 @@ def repair(root, archive_id=None):
                     metadata_names = [name for name in archive.complete["metadata_members"]
                                       if name != archive.complete["checksum_index"]]
                     for name in metadata_names:
+                        progress.update(f"Staging repaired metadata: {name!r}")
                         shutil.copyfile(archive.metadata / name, directory / name)
                     parity_checksums = {name: sha256(archive.files[name]) for name in archive.checksums
                                         if name.endswith(".par2")}

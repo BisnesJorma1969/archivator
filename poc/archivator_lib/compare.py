@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .common import sha256
 from .filesystem import check_unchanged, scan
+from .progress import progress
 
 
 def compare(source, target):
@@ -17,7 +18,9 @@ def compare(source, target):
         differences.append(f"Missing: {name!r}")
     for name in sorted(restored.keys() - original.keys()):
         differences.append(f"Unexpected: {name!r}")
-    for name in sorted(original.keys() & restored.keys()):
+    shared = sorted(original.keys() & restored.keys())
+    for index, name in enumerate(shared, 1):
+        progress.update(f"Comparing entry {index:,}/{len(shared):,}: {name!r}")
         left, right = original[name], restored[name]
         if left["type"] != right["type"]:
             differences.append(f"Type differs: {name!r}")
