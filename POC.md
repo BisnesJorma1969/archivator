@@ -23,9 +23,10 @@ Use PAR2 for corruption detection/recovery.
 
 No cloud support. No networking. No workers. No benchmarking.
 
-Implementation, tests, and usage documentation live under `poc/`. The root
-`README.md` is intentionally empty. Generated development data, test certificates,
-and verification/repair/restore scratch use gitignored `poc/work/`.
+Implementation, tests, and detailed usage documentation live under `poc/`. The root
+`README.md` provides a minimal Ubuntu 26.04 demo. Synthetic workload generation
+and block-based bitrot tools live under `poc/demo/`. Generated development data,
+test certificates, and verification/repair/restore scratch use gitignored `poc/work/`.
 
 Keep code human-readable: straightforward functions and control flow, descriptive
 names, comments for non-obvious reasoning, and no unnecessary abstractions.
@@ -38,6 +39,7 @@ Use:
 
 ```text
 python 3.11+
+zstd
 openssl 3.x
 par2cmdline
 ```
@@ -48,7 +50,7 @@ OpenSSL must support CMS AES-GCM. The par2cmdline build must support `-t` and `-
 both main processing and file hashing are limited to one thread.
 
 Executables are found on `PATH`, with `poc/work/tools/usr/bin/` as a local fallback.
-The independent manual-recovery test also needs `gzip`, GNU `dd`, and `sha256sum`.
+The independent manual-recovery test also needs GNU `dd` and `sha256sum`.
 Integration testing is performed on Linux; Windows/macOS execution is not claimed
 as tested.
 
@@ -178,13 +180,13 @@ No spaces. No Unicode. Lowercase only.
 Example encrypted chunk:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.gz.cms
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst.cms
 ```
 
 Unencrypted:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.gz
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst
 ```
 
 PAR2:
@@ -306,7 +308,6 @@ mode
 mtime_ns
 symlink_target
 
-crc16_ccitt_false
 crc32
 md5
 sha1
@@ -320,8 +321,8 @@ SHA-256 is the normal authoritative content checksum.
 
 Hash file contents while building the TAR. Do not reread merely to calculate another hash.
 
-Checksums are lowercase hexadecimal strings; CRC16-CCITT-FALSE has four digits
-and CRC32 eight. Non-file entries have metadata but no file-content hashes.
+Checksums are lowercase hexadecimal strings; ZIP-compatible CRC32 has eight
+digits. Non-file entries have metadata but no file-content hashes.
 
 ---
 
@@ -370,18 +371,23 @@ The format must not depend on chunks being processed or restored in directory-li
 
 # 11. Compression
 
-Compress every chunk independently with standard gzip:
+Compress every chunk independently with standard zstd:
 
 ```text
 plaintext chunk
-    -> gzip
+    -> zstd
 ```
 
-Do not gzip an entire 40 TB stream as one compression stream.
+Do not zstd an entire 40 TB stream as one compression stream.
 
-Each `.gz` must be independently decompressible with ordinary `gzip`.
+Each `.zst` must be independently decompressible with ordinary `zstd`.
 
-Gzip headers use an empty filename and a zero timestamp.
+Use `zstd -q -3 --single-thread --check -c`: level 3, one thread for compression
+and I/O, and a frame content checksum. No dictionaries are required. Frames do
+not store source filenames or timestamps. Stream input and output through bounded
+buffers; do not hold an entire chunk in memory.
+
+[Zstd command documentation](https://github.com/facebook/zstd/blob/dev/programs/zstd.1.md)
 
 ---
 
@@ -393,7 +399,7 @@ Without encryption:
 
 ```text
 plaintext
--> gzip
+-> zstd
 -> stored chunk
 ```
 
@@ -401,7 +407,7 @@ With encryption:
 
 ```text
 plaintext
--> gzip
+-> zstd
 -> CMS AES-256-GCM
 -> stored chunk
 ```
@@ -584,7 +590,7 @@ archive-<aid>_streams.jsonl
 format=archivator
 version=1
 archive=<aid>
-compression=gzip
+compression=zstd
 encryption=none
 chunk-size=268435456
 parity=par2-v2
@@ -676,7 +682,7 @@ for each stream:
     for each chunk:
         determine current parity set and local chunk number
         calculate plaintext hashes
-        gzip
+        zstd
         optionally CMS-encrypt
         calculate stored SHA-256
         write completed chunk to temp filename
@@ -844,7 +850,7 @@ par2 verify archive-..._parity-....par2
 par2 repair archive-..._parity-....par2 archive-..._parity-...*
 
 openssl cms ...
-gzip -dc ...
+zstd -dc ...
 sha256sum ...
 ```
 
@@ -855,7 +861,7 @@ The custom PoC is automation.
 It must not be the only implementation capable of recovery.
 
 The automated suite independently reconstructs an encrypted direct-file stream
-with PAR2, OpenSSL, gzip, GNU `dd`, and `sha256sum`, without invoking the PoC's
+with PAR2, OpenSSL, zstd, GNU `dd`, and `sha256sum`, without invoking the PoC's
 restore code. Step-by-step commands are in [poc/FORMAT.md](poc/FORMAT.md).
 
 ---
@@ -1008,3 +1014,57 @@ Both commands must exit `0`, including when parity protection needed replenishin
 The same test must also pass with encryption disabled.
 
 That is the PoC. Anything not required to prove this path should wait.
+
+---
+
+## 24. Mandatory checksum requirements for a real implementation
+
+The following gaps are recognized and intentionally **not implemented in this
+PoC**. Cloud support is outside this PoC's scope.
+
+### Current coverage
+
+| Bytes being checked | Implemented checksums |
+| --- | --- |
+| Source files inside TAR streams | MD5, SHA-1, SHA-256, SHA-512, ZIP-compatible CRC32 |
+| Direct-file sources | SHA-256, SHA-512 only |
+| Plaintext chunks and whole streams | SHA-256, SHA-512 |
+| Stored chunks after compression and optional encryption | SHA-256 only |
+| Ordinary metadata and PAR2 files | SHA-256 through the checksum hierarchy |
+| Completion marker | No independent checksum or PAR2 protection |
+| Cloud upload blocks and multipart/composite checksums | Not recorded |
+
+### Requirements beyond the PoC
+
+1. **Consistent source-file lookup checksums.** Record MD5, SHA-1, SHA-2 digests,
+   and relevant CRCs for every source file, including direct files. Calculate them
+   together during the source read. MD5, SHA-1, and CRCs serve compatibility and
+   lookup, not authoritative integrity or authentication. The PoC's CRC32 is
+   ZIP-compatible.
+   [Python CRC32 documentation](https://docs.python.org/3/library/binascii.html#binascii.crc32)
+2. **Stored-object checksums.** Checksum the exact bytes written after compression
+   and encryption, separately from plaintext. Retain modern authoritative hashes
+   and the additional algorithms and encodings needed to compare directly with
+   S3/Azure checksums. Cover every stored object, not only payload chunks. Define
+   a non-circular integrity/bootstrap design for checksum metadata itself.
+3. **Fixed upload blocks.** Use **8 MiB upload-checksum blocks**, independently of
+   256 MiB plaintext compression chunks and 1 MiB PAR2 slices. Record each block's
+   offset, actual length (including the final short block), algorithm, and digest
+   over stored bytes. The uploader must use exactly those boundaries. Handle
+   provider part-count/object-size limits explicitly; do not silently resize parts
+   while retaining incompatible recorded checksums. No upload blocks are currently
+   calculated or uploaded by this PoC.
+4. **Provider checksum semantics.** Distinguish whole-object digests from
+   multipart/composite values, record the composition rules and wire encoding,
+   and select algorithms explicitly in upload requests. S3 checksum support and
+   full-object versus composite behavior depend on the algorithm and upload mode;
+   a multipart ETag is not a full-file MD5. Azure Put Block supports transactional
+   MD5 or CRC64 validation, which is not the same as a persisted full-blob digest.
+   Do not treat Azure ETags as content hashes.
+   [S3 checksum documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html),
+   [S3 multipart limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html),
+   [Azure Put Block](https://learn.microsoft.com/en-us/rest/api/storageservices/put-block)
+
+Provider-native CRC variants, cloud-compatible encodings, multipart composition,
+and fixed upload-block checksum generation are mandatory production work, deferred
+here to preserve the PoC's scope and standard-library-only Python implementation.

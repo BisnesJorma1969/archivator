@@ -16,7 +16,7 @@ lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 | `stream-<sid>_files.jsonl` | Original paths, types, metadata, and small-file checksums |
 | `recipient.pem` | Optional normalized public X.509 certificate |
 | `parity-<pid>_manifest.json` | Chunk coordinates, hashes, lengths, and recovery capacity |
-| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.gz[.cms]` | Independent stored chunk |
+| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.cms]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `checksums.json` | SHA-256 map for ordinary metadata and data-set PAR2 files |
 | `parity-<pid>_metadata.par2` and `_metadata.vol<start>+<count>.par2` | Separate metadata recovery set |
@@ -29,11 +29,12 @@ plaintext stream bytes**, never compressed bytes. Directory order is irrelevant.
 TAR streams use POSIX/PAX. The inventory includes the source root as path `.` so
 even empty trees retain root metadata. Original names are JSON strings, including
 escaped tabs, newlines, Unicode, and filesystem surrogate escapes. File digests are
-lowercase hex; CRC16-CCITT-FALSE is four digits and CRC32 eight. SHA-256 is the
+lowercase hex; ZIP-compatible CRC32 uses eight digits. SHA-256 is the
 normal authoritative content digest; restore also verifies recorded SHA-512.
 
-Each chunk is gzip-compressed independently with an empty gzip filename and zero
-gzip timestamp. Encrypted chunks wrap that gzip data in binary OpenSSL CMS
+Each chunk is an independent zstd frame, compressed at level 3 with
+`--single-thread --check` and no dictionary. Frames contain no source filename or
+timestamp. Encrypted chunks wrap that zstd data in binary OpenSSL CMS
 AuthEnvelopedData with AES-256-GCM and DER encoding. Encryption does not change
 plaintext stream coordinates. No private key is copied into archive metadata.
 
@@ -64,6 +65,13 @@ incomplete archive; manual recovery can still use the PAR2 files and catalogs.
 PAR2 identifies protected content; manifests automate selection and carry the
 additional SHA-256/SHA-512 checks. After repair, stored bytes must still match
 their recorded content hashes. All archive-file filesystem mtimes are ignored.
+
+Version 1 does not record cloud-compatible checksum variants or fixed upload-block
+digests. Direct-file sources also lack the MD5/SHA-1/CRC lookup digests recorded
+for TAR-contained files. Consistent source checksums, stored-object compatibility,
+and separate 8 MiB upload-checksum blocks are
+[mandatory production requirements](../POC.md#24-mandatory-checksum-requirements-for-a-real-implementation),
+not features of this format.
 
 ## Manual recovery with ordinary tools
 
@@ -116,14 +124,14 @@ For an encrypted chunk:
 ```bash
 chunk=REPLACE_WITH_ACTUAL_CHUNK_FILENAME
 openssl cms -decrypt -binary -inform DER \
-  -in "$chunk" -out chunk.gz \
+  -in "$chunk" -out chunk.zst \
   -inkey /absolute/path/to/recipient-key.pem \
   -recip /absolute/path/to/recipient.pem
-gzip -dc chunk.gz > chunk.plain
+zstd -dc chunk.zst > chunk.plain
 sha256sum chunk.plain
 ```
 
-For an unencrypted chunk, use `gzip -dc "$chunk" > chunk.plain` directly. Check
+For an unencrypted chunk, use `zstd -dc "$chunk" > chunk.plain` directly. Check
 the plaintext checksum and byte length against its manifest. Do not concatenate
 pieces in directory-listing order.
 

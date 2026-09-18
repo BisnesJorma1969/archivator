@@ -1,19 +1,20 @@
 # Archivator PoC
 
 A local-filesystem implementation of [the specification](../POC.md), using Python's
-standard library, ordinary gzip, OpenSSL CMS AES-256-GCM, and PAR2.
+standard library, ordinary zstd, OpenSSL CMS AES-256-GCM, and PAR2.
 
 ## Requirements and entry points
 
 - Python 3.11 or newer
+- Zstd command-line executable
 - OpenSSL 3.x with CMS AES-GCM support
 - par2cmdline with `-t` and `-T` thread controls
-- For the independent manual-recovery test: `gzip`, GNU `dd`, and `sha256sum`
+- For the independent manual-recovery test: GNU `dd` and `sha256sum`
 
 On Debian/Ubuntu, install the external tools with:
 
 ```sh
-sudo apt-get install python3 openssl par2 coreutils gzip
+sudo apt-get install python3 openssl par2 coreutils zstd
 ```
 
 Run from the repository root; no Python package installation is needed:
@@ -94,7 +95,7 @@ Verify returns **1 for any damage**, even when everything is recoverable. Its
 output distinguishes data loss from damage that can be repaired. Verification
 checks stored bytes and PAR2 capacity; it does not decrypt encrypted chunks or
 promise that a particular private key will work. Restore verifies CMS
-authentication, gzip, chunk hashes, whole-stream hashes, and TAR entry hashes.
+authentication, zstd, chunk hashes, whole-stream hashes, and TAR entry hashes.
 
 Example after deliberately deleting or corrupting a recoverable chunk:
 
@@ -172,6 +173,18 @@ It covers all twenty required scenarios, a 2,001-file multi-TAR round trip,
 encrypted and unencrypted loss/corruption, strict verification, explicit repair,
 metadata recovery, read-only archives, CLI exit codes, and unsafe extraction.
 It also reconstructs an encrypted direct-file stream using only PAR2, OpenSSL,
-gzip, GNU dd, and sha256sum, without calling the PoC restore implementation.
+zstd, GNU dd, and sha256sum, without calling the PoC restore implementation.
 
 See [FORMAT.md](FORMAT.md) for format details and manual recovery commands.
+
+## Synthetic demo and checksum scope
+
+The [Ubuntu quick start](../README.md) and [demo guide](demo/README.md) generate
+office-like files, SQL-like backups, and many small logs, then exercise damage to
+data, protected metadata, and their PAR2 files. The completion marker remains an
+unprotected bootstrap; the demo can optionally corrupt it to test failure.
+
+The PoC does not provide uniform MD5/SHA-1/CRC coverage for direct-file sources,
+cloud-compatible stored-object checksums, or fixed upload-block checksums. These
+are [mandatory requirements for a real implementation](../POC.md#24-mandatory-checksum-requirements-for-a-real-implementation),
+with 8 MiB upload blocks selected for that future work.
