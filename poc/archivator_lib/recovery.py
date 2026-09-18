@@ -104,8 +104,7 @@ def validate_complete(complete, archive_id):
         raise IntegrityError("Invalid metadata member list")
     for name in names:
         archive_filename(name, archive_id)
-    index_name = f"archive-{archive_id}_checksums.json"
-    if complete["checksum_index"] not in (index_name, index_name + ".zst"):
+    if complete["checksum_index"] != f"archive-{archive_id}_checksums.json.zst":
         raise IntegrityError("Invalid checksum index filename")
     if complete["checksum_index"] not in names or not valid_digest(complete["checksum_index_sha256"]):
         raise IntegrityError("Missing checksum index reference")

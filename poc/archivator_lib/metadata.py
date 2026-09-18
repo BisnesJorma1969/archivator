@@ -6,7 +6,11 @@ import os
 
 from .external import executable, run
 
-METADATA_COMPRESSION_MIN = 64 * 1024
+# These bootstrap/inspection files remain directly readable. All other metadata
+# is zstd-compressed, regardless of size or compression ratio.
+UNCOMPRESSED_METADATA_SUFFIXES = (
+    "_complete.json", "_complete-copy.json", "_format.txt", "_recipient.pem",
+)
 
 
 def completion_names(archive_id):
@@ -23,19 +27,16 @@ def completion_digest(complete):
 
 
 def store_metadata(path):
-    """Return the stored filename, leaving only the useful representation."""
-    if path.suffix == ".zst" or path.stat().st_size < METADATA_COMPRESSION_MIN:
+    """Apply the fixed metadata policy and return the stored filename."""
+    if path.suffix == ".zst" or path.name.endswith(UNCOMPRESSED_METADATA_SUFFIXES):
         return path.name
     compressed = path.parent / ".tmp" / (path.name + ".zst")
     compressed.parent.mkdir(exist_ok=True)
     run([executable("zstd"), "-q", "-3", "--single-thread", "--check",
          str(path), "-o", str(compressed)], activity=f"Compressing metadata: {path.name!r}")
-    if compressed.stat().st_size < path.stat().st_size:
-        os.replace(compressed, path.with_name(compressed.name))
-        path.unlink()
-        return compressed.name
-    compressed.unlink()
-    return path.name
+    os.replace(compressed, path.with_name(compressed.name))
+    path.unlink()
+    return compressed.name
 
 
 def unpack_metadata(path):

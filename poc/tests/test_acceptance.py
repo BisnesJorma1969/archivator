@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -7,12 +8,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from poc.archivator_lib.backup import backup
-from poc.archivator_lib.common import read_json, read_jsonl
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
-from poc.tests.support import ArchiveTest, SMALL
+from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl
 from poc.tests.test_recovery import flip, snapshot
 
 
@@ -24,7 +24,7 @@ class AcceptanceTests(ArchiveTest):
         for index in range(2001):
             (self.source / f"tiny-{index:04d}").write_bytes(f"file {index}\n".encode())
         backup(self.source, self.archive, settings=settings)
-        streams = read_jsonl(next(self.archive.glob("*_streams.jsonl")))
+        streams = read_zstd_jsonl(next(self.archive.glob("*_streams.jsonl.zst")))
         self.assertGreater(len(streams), 1)
         self.assertTrue(all(stream["type"] == "tar" and stream["entry_count"] <= 400 for stream in streams))
         restore(self.archive, self.restored)
@@ -40,8 +40,8 @@ class AcceptanceTests(ArchiveTest):
                 target = self.root / f"restored-{encrypted}"
                 (self.source / "large").write_bytes(self.data(160000))
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                manifest = next(read_json(path) for path in archive.glob("*_manifest.json")
-                                if read_json(path)["member_count"] == 8)
+                manifest = next(read_zstd_json(path) for path in archive.glob("*_manifest.json.zst")
+                                if read_zstd_json(path)["member_count"] == 8)
                 # Damage one data slice and lose a whole recovery volume. The
                 # other three volumes retain more than enough recovery blocks.
                 flip(archive / manifest["members"][0]["filename"])
@@ -64,7 +64,7 @@ class AcceptanceTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"restored-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                chunks = list(archive.glob("*.cms" if encrypted else "*.zst"))
+                chunks = list(archive.glob("*_chunk-*.cms" if encrypted else "*_chunk-*.zst"))
                 max(chunks, key=lambda path: path.stat().st_size).unlink()
                 self.assertEqual(verify(archive), 1)
                 restore(archive, target, key=key if encrypted else None, certificate=certificate if encrypted else None)
@@ -98,7 +98,8 @@ class AcceptanceTests(ArchiveTest):
         original = self.data(80000)
         (self.source / "large").write_bytes(original)
         backup(self.source, self.archive, certificate, SMALL)
-        streams = read_jsonl(next(self.archive.glob("*_streams.jsonl")))
+        catalog = next(self.archive.glob("*_streams.jsonl.zst"))
+        streams = [json.loads(line) for line in run([executable("zstd"), "-dc", str(catalog)]).splitlines()]
         stream = next(entry for entry in streams if entry["type"] == "file")
         manual = self.root / "manual"
         manual.mkdir()
@@ -133,7 +134,7 @@ class AcceptanceTests(ArchiveTest):
         result = command("backup", self.source, self.archive)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(command("verify", self.archive).returncode, 0)
-        next(self.archive.glob("*.zst")).unlink()
+        next(self.archive.glob("*_chunk-*.zst")).unlink()
         self.assertEqual(command("verify", self.archive).returncode, 1)
         result = command("restore", self.archive, self.restored)
         self.assertEqual(result.returncode, 0, result.stderr)

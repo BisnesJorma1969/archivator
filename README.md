@@ -15,7 +15,7 @@ sudo apt install -y python3 zstd openssl par2 coreutils tar
 | Package | Requirement / purpose |
 | --- | --- |
 | `python3` | Python 3.11+; standard library only, no virtual environment needed |
-| `zstd` | Chunk compression/decompression; `--single-thread` and `--check` support |
+| `zstd` | Data and metadata compression/decompression; `--single-thread` and `--check` support |
 | `openssl` | OpenSSL 3.x with CMS AES-GCM, for encryption and encrypted tests |
 | `par2` | par2cmdline with `-t` and `-T` thread controls, for recovery |
 | `coreutils` | GNU `dd` and `sha256sum`, used by independent recovery tests and manual recovery |

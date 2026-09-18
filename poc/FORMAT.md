@@ -12,21 +12,22 @@ lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 | Filename suffix after `archive-<aid>_` | Contents |
 | --- | --- |
 | `format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
-| `streams.jsonl` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
-| `stream-<sid>_files.jsonl` | Original paths, types, metadata, and small-file checksums |
+| `streams.jsonl.zst` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
+| `stream-<sid>_files.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
 | `recipient.pem` | Optional normalized public X.509 certificate |
-| `parity-<pid>_manifest.json` | Chunk coordinates, hashes, lengths, and recovery capacity |
+| `parity-<pid>_manifest.json.zst` | Chunk coordinates, hashes, lengths, and recovery capacity |
 | `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.cms]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
-| `checksums.json` | SHA-256 map for ordinary metadata and data-set PAR2 files |
+| `checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
 | `parity-<pid>_metadata.par2` and `_metadata.vol<start>+<count>.par2` | Separate metadata recovery set |
 | `complete.json`, `complete-copy.json` | Identical, self-checksummed bootstrap copies |
 
-Ordinary metadata and `checksums.json` use an appended `.zst` suffix when their
-uncompressed size is at least 64 KiB and zstd level 3 makes them smaller. Only the
-selected representation is stored. Catalog references retain logical filenames;
-the checksum index and completion markers list exact stored filenames. The two
-bootstrap copies always stay plain JSON. Metadata is not encrypted.
+The two completion-marker copies, `format.txt`, and `recipient.pem` always stay
+uncompressed for bootstrap and inspection. All other metadata is always compressed
+with the same zstd settings as data chunks, regardless of size or compression ratio;
+no uncompressed copies are retained. Catalog references retain logical filenames;
+the checksum index and completion markers list exact stored filenames. Metadata
+is not encrypted.
 
 Chunk numbers are four decimal digits, local to a parity set. Offsets are twenty
 decimal digits and lengths twelve. Offsets/lengths always describe **uncompressed
@@ -54,7 +55,7 @@ for small or strongly compressed sets. Metadata uses the same capacity rule.
 
 Checksums have a deliberately non-circular dependency order:
 
-1. `checksums.json` covers catalogs, inventories, format, certificate, manifests,
+1. `checksums.json.zst` covers catalogs, inventories, format, certificate, manifests,
    and the five PAR2 files for each data set.
 2. A separate metadata PAR2 set protects those metadata files and the checksum
    index. Data-set PAR2 files are checksummed but are not metadata PAR2 members.

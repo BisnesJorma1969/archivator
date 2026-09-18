@@ -84,7 +84,7 @@ class RestoreTests(ArchiveTest):
     def test_missing_chunk_repaired_only_in_scratch(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        missing = next(self.archive.glob("*.zst"))
+        missing = next(self.archive.glob("*_chunk-*.zst"))
         missing.unlink()
         restore(self.archive, self.restored)
         self.assertFalse(missing.exists())
@@ -118,7 +118,7 @@ class RestoreTests(ArchiveTest):
 
     def test_unrecoverable_damage_never_succeeds(self):
         backup(self.source, self.archive, settings=SMALL)
-        for path in list(self.archive.glob("*.zst")) + list(self.archive.glob("*.par2")):
+        for path in list(self.archive.glob("*_chunk-*.zst")) + list(self.archive.glob("*.par2")):
             path.unlink()
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored)

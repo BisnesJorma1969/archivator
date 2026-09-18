@@ -112,7 +112,7 @@ as tested.
 - `progress.py`: periodic status display; does not parallelize archive processing
 - `filesystem.py`, `common.py`, `format.py`: scanning, checksums, names, and defaults
 - `external.py`: streaming zstd compression, OpenSSL, and PAR2 subprocesses
-- `metadata.py`: selective metadata compression and completion-marker checksums
+- `metadata.py`: fixed per-role zstd compression and completion-marker checksums
 - `backup.py`: TAR/direct streams, independent chunks, parity, and finalization
 - `recovery.py`: archive discovery, metadata validation, verify, and explicit repair
 - `restore.py`, `compare.py`: reconstruction, safe extraction, and tree comparison

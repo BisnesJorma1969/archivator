@@ -1,6 +1,7 @@
 import random
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,15 @@ from poc.archivator_lib.format import Settings
 
 SMALL = Settings(chunk_size=16384, large_file_size=32768, tar_size=16384,
                  tar_entries=100, parity_members=8, slice_size=1024)
+
+
+def read_zstd_json(path):
+    return json.loads(run([executable("zstd"), "-qdc", str(path)]))
+
+
+def read_zstd_jsonl(path):
+    return [json.loads(line) for line in run([executable("zstd"), "-qdc", str(path)]).splitlines()
+            if line.strip()]
 
 
 class ArchiveTest(unittest.TestCase):

@@ -169,7 +169,7 @@ archive-<aid>_parity-<pid>.vol000+032.par2
 Parity-set convenience manifest:
 
 ```text
-archive-<aid>_parity-<pid>_manifest.json
+archive-<aid>_parity-<pid>_manifest.json.zst
 ```
 
 The metadata recovery set has a distinct role suffix:
@@ -262,10 +262,10 @@ not TAR headers/padding. Even an empty source produces a TAR with root metadata.
 
 A TAR bundle receives a normal random stream ID and then enters exactly the same chunk pipeline as a large file.
 
-Create a plaintext inventory:
+Create an unencrypted, zstd-compressed JSON-lines inventory:
 
 ```text
-archive-<aid>_stream-<sid>_files.jsonl
+archive-<aid>_stream-<sid>_files.jsonl.zst
 ```
 
 Each original entry records as applicable:
@@ -508,7 +508,7 @@ Do not use exponentially increasing Usenet-style recovery-volume sizes.
 For each data parity set create:
 
 ```text
-archive-<aid>_parity-<pid>_manifest.json
+archive-<aid>_parity-<pid>_manifest.json.zst
 ```
 
 It contains these JSON fields:
@@ -551,7 +551,7 @@ Create:
 
 ```text
 archive-<aid>_format.txt
-archive-<aid>_streams.jsonl
+archive-<aid>_streams.jsonl.zst
 ```
 
 `format.txt` contains simple `key=value` fields such as:
@@ -602,16 +602,21 @@ TAR:
 }
 ```
 
-Ordinary metadata and the checksum index are compressed independently with zstd
-at level 3 when at least 64 KiB and the compressed output is smaller. Only that
-representation is retained, with `.zst` appended to the logical filename. Catalog
-references use logical names; the checksum index and completion marker record
-exact stored names. Small metadata stays uncompressed. Completion-marker copies
-always remain plain JSON to keep the bootstrap readable with basic tools.
+Metadata storage is fixed by file role, not size or compression ratio:
+
+| Metadata | Storage |
+| --- | --- |
+| Completion-marker copies, `format.txt`, public `recipient.pem` | Uncompressed for bootstrap and inspection |
+| Stream catalogs, file inventories, data-set manifests, checksum index | Always zstd-compressed, with `.zst` appended |
+
+Use the same zstd level 3, single-threaded, checksummed frames as data chunks.
+Only the compressed representation of compressed metadata is retained, even for
+tiny files or when compression increases size. Catalog references use logical
+names; the checksum index and completion markers record exact stored names.
 
 Metadata protection has a non-circular dependency order:
 
-1. `archive-<aid>_checksums.json` maps exact filenames to SHA-256 values for the
+1. `archive-<aid>_checksums.json.zst` maps exact filenames to SHA-256 values for the
    format, catalogs, inventories, optional certificate, data-set manifests, and
    all data-set PAR2 files.
 2. A separate PAR2 metadata recovery set protects the ordinary metadata and
@@ -686,8 +691,8 @@ finalize short parity set using increased redundancy rule
 check source entries for observable changes
 write archive catalog and format
 
-compress large metadata when worthwhile
-write checksum index and compress it when worthwhile
+compress metadata according to its fixed file role
+write and compress checksum index
 protect metadata and checksum index with PAR2
 
 write both completion-marker copies last
