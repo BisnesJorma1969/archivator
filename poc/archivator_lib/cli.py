@@ -1,0 +1,60 @@
+"""The five deliberately small command-line interfaces."""
+
+import argparse
+import sys
+from pathlib import Path
+
+from .common import ArchiveError, IntegrityError
+
+
+def parser():
+    result = argparse.ArgumentParser(prog="archivator", description="Local-filesystem archive PoC")
+    commands = result.add_subparsers(dest="command", required=True)
+    backup = commands.add_parser("backup", help="Create a complete archive")
+    backup.add_argument("source", type=Path)
+    backup.add_argument("archive", type=Path)
+    backup.add_argument("--encrypt-cert", type=Path)
+    for name in ("verify", "repair", "restore"):
+        command = commands.add_parser(name)
+        command.add_argument("archive", type=Path)
+        command.add_argument("--archive-id")
+        if name == "restore":
+            command.add_argument("target", type=Path)
+            command.add_argument("--decrypt-key", type=Path)
+            command.add_argument("--decrypt-cert", type=Path)
+    compare = commands.add_parser("compare", help="Compare two filesystem trees")
+    compare.add_argument("source", type=Path)
+    compare.add_argument("target", type=Path)
+    return result
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        if args.command == "backup":
+            from .backup import backup
+            archive = backup(args.source, args.archive, args.encrypt_cert)
+            print(f"Complete archive: {archive}")
+            return 0
+        if args.command == "verify":
+            from .recovery import verify
+            return verify(args.archive, args.archive_id)
+        if args.command == "repair":
+            from .recovery import repair
+            repair(args.archive, args.archive_id)
+            return 0
+        if args.command == "restore":
+            from .restore import restore
+            restore(args.archive, args.target, args.archive_id, args.decrypt_key, args.decrypt_cert)
+            return 0
+        from .compare import compare
+        return compare(args.source, args.target)
+    except IntegrityError as error:
+        print(f"Integrity failure: {error}", file=sys.stderr)
+        return 1
+    except (ArchiveError, OSError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("Interrupted; no unfinished backup is marked complete.", file=sys.stderr)
+        return 2
