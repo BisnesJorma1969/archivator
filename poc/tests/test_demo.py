@@ -66,10 +66,39 @@ class DemoTests(ArchiveTest):
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
         self.assertEqual(snapshot(self.archive), damaged)
-        with self.assertRaises(IntegrityError):
-            bitrot([self.archive], report_path=self.root / "repeat.json")
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
+
+    def test_arbitrary_files_and_invalid_markers_can_be_damaged_repeatedly(self):
+        self.archive.mkdir()
+        for directory in (self.archive, self.archive / "nested"):
+            directory.mkdir(exist_ok=True)
+            (directory / "same-name.bin").write_bytes(self.data(1000))
+        marker = self.archive / "archive-anything_complete.json"
+        marker.write_text("not JSON or any valid archive format")
+        for run_number in (1, 2):
+            report = bitrot([self.archive], percent=100, damage="bitflip", seed=run_number,
+                            report_path=self.root / f"random-files-{run_number}.json")
+            self.assertEqual(report["archives"][0]["affected_bytes"], 2000)
+            changes = [change for group in report["groups"] for change in group["changes"]]
+            self.assertEqual({change["relative_path"] for change in changes},
+                             {"same-name.bin", "nested/same-name.bin"})
+            self.assertEqual(marker.read_text(), "not JSON or any valid archive format")
+        report = bitrot([self.archive], percent=100, include_bootstrap=True,
+                        report_path=self.root / "markers-too.json")
+        self.assertTrue(any(group["category"] == "bootstrap" and group["changes"]
+                            for group in report["groups"]))
+
+    def test_empty_damage_directory_and_symlinks_need_no_archive_format(self):
+        self.archive.mkdir()
+        outside = self.root / "outside.bin"
+        outside.write_bytes(b"untouched")
+        (self.archive / "link").symlink_to(outside)
+        (self.archive / "empty").touch()
+        report = bitrot([self.archive], percent=100, report_path=self.root / "empty.json")
+        self.assertEqual(report["archives"][0]["affected_bytes"], 0)
+        self.assertEqual(report["archives"][0]["actual_percent"], 0)
+        self.assertEqual(outside.read_bytes(), b"untouched")
 
     def test_bitrot_dry_run_and_zero_percent_do_not_mutate(self):
         backup(self.source, self.archive, settings=SMALL)

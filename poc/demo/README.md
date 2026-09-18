@@ -63,8 +63,8 @@ Options for `poc/demo/bitrot.py`:
 | Argument / option | Default | Meaning |
 | --- | --- | --- |
 | Archive directories | `poc/work/demo/archive1`, `archive2`, `archive3` | Explicit paths select only those archives |
-| `--percent` | `1` | Percentage of each backup's total stored bytes to damage |
-| `--seed` | `20260918` | Repeatable damage selection for the same intact archives |
+| `--percent` | `1` | Percentage of each supplied directory's current total file bytes to damage |
+| `--seed` | `20260918` | Repeatable damage selection for the same file contents and paths |
 | `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
 | `--dry-run` | Off | Write the damage plan without modifying archives |
 | `--report` | Timestamped JSON under `poc/work/demo/` | Must be outside archives and not already exist |
@@ -72,8 +72,8 @@ Options for `poc/demo/bitrot.py`:
 
 ### Damage model
 
-The byte budget is `round(original_backup_bytes * percent / 100)`, calculated
-separately for each archive ID before damage. It includes stored data, metadata,
+The byte budget is `round(current_file_bytes * percent / 100)`, calculated
+separately for each supplied directory, recursively, before damage. It includes data, metadata,
 and PAR2 files. For example, 2% of a 100 GiB backup means 2 GiB subjected to faults.
 Zero percent does nothing. There are no per-file or per-recovery-set quotas.
 
@@ -97,7 +97,7 @@ The budget counts bytes overwritten, bit-flipped, deleted, or inserted. Insertio
 and deletion count the bytes added/removed, not the entire shifted remainder.
 Overwrites can happen to preserve individual byte values; a wholly unchanged
 zero/copy run falls back to bit flips across that same budget. Copy sources always
-refer to the intact pre-damage files.
+refer to the contents at the start of this invocation.
 
 The report gives the original backup size, requested and applied byte budgets,
 actual percentage, files affected, and each fault's type, original offset, length,
@@ -114,9 +114,12 @@ to include both copies; automatic recovery fails if neither remains valid, even
 with surviving PAR2 data. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 
-All input archives are checked before any changes. Already damaged archives are
-refused; repair or recreate them before another run. This prevents the same seed
-from toggling old damage away. Reports record fault types, original offsets and
+There is no archive-format parsing or integrity precheck. Arbitrary regular files,
+missing or invalid markers, and already damaged archives are accepted. Symlinks
+are skipped. Each run damages the current contents; repeating a seed can revisit
+the same regions and toggle some bit flips back. Filename-based category labels
+are only report hints, not validation or separate damage budgets.
+Reports record fault types, original offsets and
 lengths, region hashes, copy sources, and bit-flip values. Changed files are staged
 beside their originals before replacement, requiring temporary free space up to
 the total size of affected files plus inserted bytes. A report is saved with status

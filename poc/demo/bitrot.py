@@ -17,10 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from poc.archivator_lib.common import ArchiveError, IntegrityError, sha256
-from poc.archivator_lib.format import parity_prefix
-from poc.archivator_lib.metadata import completion_names
-from poc.archivator_lib.recovery import discover, open_archive
+from poc.archivator_lib.common import ArchiveError
 from poc.archivator_lib.progress import progress
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "work" / "demo"
@@ -100,65 +97,54 @@ def sample_bytes(paths, budget, damage, rng):
     return changes
 
 
-def plan_archive(root, percent, rng, include_bootstrap, damage):
-    archives = discover(root)
-    summaries = []
-    groups = []
-    for archive_id in sorted(archives):
-        with open_archive(archive_id, archives[archive_id]) as archive:
-            if archive.metadata_damage:
-                raise IntegrityError("Start from an intact archive; repair or recreate it before another bitrot run")
-            expected = dict(archive.checksums)
-            expected.update(archive.complete["metadata_parity"])
-            expected[archive.complete["checksum_index"]] = archive.complete["checksum_index_sha256"]
-            for manifest in archive.manifests:
-                for member in manifest["members"]:
-                    expected[member["filename"]] = member["stored_sha256"]
-            for name, digest in expected.items():
-                path = archive.files.get(name)
-                if path is None or path.is_symlink() or not path.is_file() or sha256(path) != digest:
-                    raise IntegrityError(f"Archive is already damaged: {name}; repair or recreate it first")
+def file_category(path):
+    """Filename hints for the report only; contents and format are not checked."""
+    name = path.name
+    if name.endswith(("_complete.json", "_complete-copy.json")):
+        return "bootstrap"
+    if name.endswith(".par2"):
+        return "metadata_parity" if "_metadata" in name else "data_parity"
+    if "_chunk-" in name:
+        return "data"
+    return "metadata" if name.startswith("archive-") else "files"
 
-            # Categories describe the report only. They do not get separate budgets.
-            categories = []
-            for manifest in archive.manifests:
-                prefix = parity_prefix(archive_id, manifest["parity"])
-                names = [member["filename"] for member in manifest["members"]]
-                categories.append(("data", manifest["parity"], names))
-                parity_names = [name for name in archive.checksums
-                                if name.startswith(prefix + ".") and name.endswith(".par2")]
-                categories.append(("data_parity", manifest["parity"], parity_names))
-            categories.append(("metadata", "metadata", archive.complete["metadata_members"]))
-            categories.append(("metadata_parity", "metadata", list(archive.complete["metadata_parity"])))
-            markers = completion_names(archive_id)
-            if include_bootstrap:
-                categories.append(("bootstrap", "bootstrap", markers))
-            by_name = {}
-            archive_groups = []
-            for category, parity, names in categories:
-                group = {"archive": str(root), "archive_id": archive_id,
-                         "category": category, "parity": parity, "changes": []}
-                archive_groups.append(group)
-                for name in names:
-                    by_name[name] = group
-            paths = [archive.files[name] for name in sorted(by_name)]
-            total_bytes = sum(archive.files[name].stat().st_size for name in [*expected, *markers])
-            eligible_bytes = sum(path.stat().st_size for path in paths)
-            requested_bytes = round(total_bytes * percent / 100)
-            budget = min(requested_bytes, eligible_bytes)
-            changes = sample_bytes(paths, budget, damage, rng)
-            for change in changes:
-                by_name[change["filename"]]["changes"].append(change)
-            for group in archive_groups:
-                group["affected_bytes"] = sum(change["length"] for change in group["changes"])
-            groups.extend(archive_groups)
-            summaries.append({
-                "archive": str(root), "archive_id": archive_id, "original_bytes": total_bytes,
-                "eligible_bytes": eligible_bytes, "requested_bytes": requested_bytes,
-                "affected_bytes": budget, "actual_percent": 100 * budget / total_bytes,
-                "files_affected": len({change["filename"] for change in changes}),
-            })
-    return summaries, groups
+
+def plan_directory(root, percent, rng, include_bootstrap, damage):
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"Damage target must be a directory, not a symlink: {root}")
+    paths = []
+    for directory, subdirectories, names in os.walk(root, followlinks=False):
+        subdirectories[:] = sorted(name for name in subdirectories
+                                   if not (Path(directory) / name).is_symlink())
+        for name in sorted(names):
+            path = Path(directory) / name
+            if not path.is_symlink() and path.is_file():
+                paths.append(path)
+        progress.update(f"Scanning damage target: {len(paths):,} regular files found")
+    paths.sort()
+    total_bytes = sum(path.stat().st_size for path in paths)
+    eligible = [path for path in paths if include_bootstrap or file_category(path) != "bootstrap"]
+    eligible_bytes = sum(path.stat().st_size for path in eligible)
+    requested_bytes = round(total_bytes * percent / 100)
+    budget = min(requested_bytes, eligible_bytes)
+    groups = {}
+    for path in eligible:
+        category = file_category(path)
+        groups.setdefault(category, {"archive": str(root), "category": category, "changes": []})
+    changes = sample_bytes(eligible, budget, damage, rng)
+    for change in changes:
+        path = Path(change["path"])
+        change["relative_path"] = path.relative_to(root).as_posix()
+        groups[file_category(path)]["changes"].append(change)
+    for group in groups.values():
+        group["affected_bytes"] = sum(change["length"] for change in group["changes"])
+    summary = {
+        "archive": str(root), "original_bytes": total_bytes,
+        "eligible_bytes": eligible_bytes, "requested_bytes": requested_bytes,
+        "affected_bytes": budget, "actual_percent": 100 * budget / total_bytes if total_bytes else 0,
+        "files_affected": len({change["path"] for change in changes}),
+    }
+    return summary, list(groups.values())
 
 
 def copy_bytes(source, output, length):
@@ -251,9 +237,9 @@ def bitrot(archives, percent=1, seed=20260918, include_bootstrap=False, dry_run=
     groups = []
     summaries = []
     for root in roots:
-        print(f"Checking and planning {root}", flush=True)
-        archive_summaries, archive_groups = plan_archive(root, percent, rng, include_bootstrap, damage)
-        summaries.extend(archive_summaries)
+        print(f"Scanning and planning damage in {root}", flush=True)
+        summary, archive_groups = plan_directory(root, percent, rng, include_bootstrap, damage)
+        summaries.append(summary)
         groups.extend(archive_groups)
     report = {"version": 1, "seed": seed, "requested_percent": percent, "damage": damage,
               "unit": "bytes overwritten, bit-flipped, deleted, or inserted", "include_bootstrap": include_bootstrap,
@@ -271,12 +257,12 @@ def bitrot(archives, percent=1, seed=20260918, include_bootstrap=False, dry_run=
             json.dump(report, output, indent=2)
             output.write("\n")
     for summary in summaries:
-        print(f"{Path(summary['archive']).name} ({summary['archive_id']}): "
+        print(f"{Path(summary['archive']).name}: "
               f"{summary['affected_bytes']:,}/{summary['original_bytes']:,} bytes affected "
               f"({summary['actual_percent']:.4f}%), {summary['files_affected']} files")
     for group in groups:
         if group["changes"]:
-            print(f"  {group['category']} {group['parity']}: {group['affected_bytes']:,} bytes, "
+            print(f"  {group['category']}: {group['affected_bytes']:,} bytes, "
                   f"{len(group['changes'])} faults")
     counts = Counter(change["operation"] for group in groups for change in group["changes"])
     print(f"{'Planned' if dry_run else 'Applied'} damage: "
@@ -291,7 +277,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archives", nargs="*", type=Path, help="Default: poc/work/demo/archive1, archive2, archive3")
     parser.add_argument("--percent", type=float, default=1,
-                        help="Percent of each original backup's total stored bytes to damage (default: 1)")
+                        help="Percent of each directory's current total file bytes to damage (default: 1)")
     parser.add_argument("--seed", type=int, default=20260918)
     parser.add_argument("--damage", choices=("mixed", *DAMAGE_TYPES), default="mixed",
                         help="Mixed faults or one specific pattern (default: mixed)")

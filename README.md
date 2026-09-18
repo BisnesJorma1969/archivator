@@ -58,6 +58,8 @@ This damages roughly **1% of the backup's total stored size**, randomly choosing
 files, byte ranges, and fault styles: bit flips, zeroing, copied data, insertion,
 or deletion. `--dry-run` previews the plan; the report shows affected bytes and
 the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
+The damager accepts arbitrary files and already-damaged archives without validating
+their format or metadata.
 
 You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
