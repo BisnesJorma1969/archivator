@@ -53,9 +53,10 @@ Do not implement custom cryptography or custom parity.
 Command signatures and options are in the [CLI reference](poc/README.md).
 The [root README](README.md) contains the runnable workflow.
 
-`verify`, `repair`, and `restore` accept optional `--archive-id ID`. Without a
+`verify`, `repair`, `restore`, and `scan` accept optional `--archive-id ID`. Without a
 selector, verify checks all discovered archive IDs and reports incomplete
-archives. Repair and restore require a selector when multiple IDs are present.
+archives. Repair, normal restore, and scan require a selector when multiple IDs
+are present. `restore --scan-index INDEX.json.zst` takes its ID from that index.
 
 Exit codes:
 
@@ -879,6 +880,44 @@ Never silently continue after failed verification.
 
 Scratch is cleaned up on normal exit/error. A failed restore can leave verified
 files or partial output in its target; retry into a fresh empty directory.
+
+## 18.4 Filename-only scan and recovery
+
+`scan ARCHIVE_DIR INDEX.json.zst` recursively indexes recognizable data chunk and
+data PAR2 filenames, ignoring separate metadata and reading no archive contents.
+The minimal compressed JSON index contains `format=archivator-scan`, `version=1`,
+the archive ID, and a list of portable basenames. Coordinates and encryption flags
+come only from filenames. No IDs or hashes are generated. Existing output indexes
+are not overwritten; duplicate filenames are rejected rather than guessed.
+
+Use the normal restore command with `--scan-index INDEX.json.zst` to select this
+explicit recovery mode. It does not manufacture completion markers, inventories,
+or authoritative hashes. Other archive files remain untouched. The index selects
+one archive even when the search directory contains multiple archives.
+
+Restore stages sets read-only first. If PAR2 reports repairable damage, copy the
+set's data into scratch before repair because no trusted per-file hashes remain
+to classify individual members. Successful PAR2 recovery can reveal missing chunk
+filenames and entire previously unknown streams. Decode with the same CMS and
+bounded zstd pipeline, checking frame integrity and declared plaintext length;
+only unavailable manifest SHA-256/SHA-512 checks are omitted in this explicit mode.
+
+After recovery, **skip whole streams** with gaps, overlaps, mixed encryption
+flags, or unavailable/undecodable chunks. Do not write fragments or fill holes.
+Recovered non-TAR bytes use `stream-<id>.bin`; recognized TAR bytes are retained as
+`stream-<id>.tar` and safely extracted into separate `stream-<id>/` directories.
+Original stream type is unknown: a standalone source file could itself be TAR,
+so its bytes must not be discarded after extraction. Reject unsafe TAR paths,
+special files, hard links, duplicate entries, non-directory ancestors, and missing
+TAR end markers. No authoritative catalog means no automatic cross-stream merge.
+
+Filename-only recovery cannot prove final stream lengths or detect entirely lost
+streams. Missing tail chunks may be indistinguishable from a shorter intact file.
+Report this limitation, missing original filenames/attributes, and unavailable
+metadata checksums explicitly. Return `1` if any streams were skipped, parity sets
+remain unresolved, or no streams were recovered; `0` means no detected failures,
+not verified completeness of the original backup. Normal restore remains strict.
+The runnable commands are in the [CLI reference](poc/README.md#filename-only-recovery).
 
 ---
 

@@ -149,6 +149,9 @@ needs the private key:
 ./poc/archivator verify poc/work/demo/archive1
 ```
 
+If metadata is lost, use [filename-only scan and recovery](poc/README.md#filename-only-recovery).
+It can recover surviving streams without rebuilding the original metadata first.
+
 ## Automated tests
 
 ```bash

@@ -14,7 +14,7 @@ from .recovery import stage_set, discover, open_archive, recover_set, select
 from .progress import progress
 
 
-def unpack_chunk(directory, member, output, encrypted, key, certificate):
+def unpack_chunk(directory, member, output, encrypted, key, certificate, verify_hashes=True):
     stored = directory / member["filename"]
     compressed = stored
     if encrypted:
@@ -44,8 +44,8 @@ def unpack_chunk(directory, member, output, encrypted, key, certificate):
                 process.kill()
     if length != member["length"]:
         raise IntegrityError("Decompressed chunk length mismatch")
-    if (hashes.values()["sha256"] != member["plaintext_sha256"]
-            or hashes.values()["sha512"] != member["plaintext_sha512"]):
+    if verify_hashes and (hashes.values()["sha256"] != member["plaintext_sha256"]
+                          or hashes.values()["sha512"] != member["plaintext_sha512"]):
         raise IntegrityError("Plaintext chunk checksum mismatch")
     if encrypted:
         compressed.unlink()
@@ -105,11 +105,14 @@ def finish_stream(path, stream, archive, target):
     path.unlink()
 
 
-def restore(root, target, archive_id=None, key=None, certificate=None):
+def restore(root, target, archive_id=None, key=None, certificate=None, scan_index=None):
     root, target = Path(root).absolute(), Path(target).absolute()
     ensure_disjoint(root, target)
     if WORK_DIR.resolve().is_relative_to(root.resolve()) or WORK_DIR.resolve().is_relative_to(target.resolve()):
         raise ArchiveError("Archive and target must not contain the PoC work directory")
+    if scan_index is not None:
+        from .scan import restore_scanned
+        return restore_scanned(root, target, scan_index, archive_id, key, certificate)
     archives = discover(root)
     selected = select(archives, archive_id)[0]
     with open_archive(selected, archives[selected]) as archive:

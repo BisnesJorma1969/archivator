@@ -85,6 +85,9 @@ is intact. Checksums and PAR2 cover stored bytes, before metadata decompression.
 The markers are outside PAR2 and are not signed. Either valid copy enables
 automatic recovery; verify reports a missing/damaged copy and repair replaces it.
 If neither survives, manual recovery can still use PAR2 files and catalogs.
+If metadata itself is unavailable, [filename-only scan and recovery](README.md#filename-only-recovery)
+can reconstruct surviving streams using the same standard formats without
+inventing a complete archive manifest.
 Conflicting valid copies are rejected; interruption between marker updates during
 repair can require manual intervention. Two copies in the same directory do not
 protect against losing the entire storage location.

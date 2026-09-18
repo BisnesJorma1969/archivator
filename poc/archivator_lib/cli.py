@@ -1,4 +1,4 @@
-"""The five deliberately small command-line interfaces."""
+"""The deliberately small command-line interfaces."""
 
 import argparse
 import sys
@@ -23,6 +23,12 @@ def parser():
             command.add_argument("target", type=Path)
             command.add_argument("--decrypt-key", type=Path)
             command.add_argument("--decrypt-cert", type=Path)
+            command.add_argument("--scan-index", type=Path,
+                                 help="Recover streams using a filename-only index instead of archive metadata")
+    scan = commands.add_parser("scan", help="Build a recovery index from filenames without reading archive contents")
+    scan.add_argument("archive", type=Path)
+    scan.add_argument("index", type=Path, help="New recovery index ending in .json.zst")
+    scan.add_argument("--archive-id")
     compare = commands.add_parser("compare", help="Compare two filesystem trees")
     compare.add_argument("source", type=Path)
     compare.add_argument("target", type=Path)
@@ -51,7 +57,11 @@ def main(argv=None):
             if args.command == "restore":
                 from .restore import restore
                 print(f"Restoring {args.archive} to {args.target}; recovery uses scratch copies.", flush=True)
-                restore(args.archive, args.target, args.archive_id, args.decrypt_key, args.decrypt_cert)
+                return restore(args.archive, args.target, args.archive_id, args.decrypt_key,
+                               args.decrypt_cert, args.scan_index) or 0
+            if args.command == "scan":
+                from .scan import scan
+                scan(args.archive, args.index, args.archive_id)
                 return 0
             from .compare import compare
             print(f"Comparing {args.source} with {args.target}", flush=True)

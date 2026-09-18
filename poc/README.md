@@ -61,12 +61,13 @@ flushed immediately and also appear when output is redirected.
 | `verify ARCHIVE_DIR` | Check every archive, report intact/repairable/unrecoverable, and never modify archive files. |
 | `repair ARCHIVE_DIR` | Recover stored chunks and metadata, and replenish lost/damaged PAR2 protection. |
 | `restore ARCHIVE_DIR RESTORE_DIR` | Repair scratch copies automatically, validate stored and plaintext content, then restore the tree. |
+| `scan ARCHIVE_DIR INDEX.json.zst` | Build a filename-only recovery index without reading archive contents; select one archive with `--archive-id ID` if needed. |
 | `compare SOURCE_DIR RESTORE_DIR` | Compare paths, types, file contents, and supported filesystem metadata. |
 
 Verify returns **1 for any damage**, even when everything is recoverable. Its
 output distinguishes data loss from damage that can be repaired. Verification
 checks stored bytes and PAR2 capacity; it does not decrypt encrypted chunks or
-promise that a particular private key will work. Restore verifies CMS
+promise that a particular private key will work. Normal restore verifies CMS
 authentication, zstd, chunk hashes, whole-stream hashes, and TAR entry hashes.
 
 Verify can recover metadata in scratch to finish its diagnosis. Restore never
@@ -103,6 +104,50 @@ is incomplete. A failed restore may leave verified files and partial output in i
 destination; use a fresh empty destination for a retry. Neither command silently
 treats partial work as success.
 
+## Filename-only recovery
+
+If metadata/indexes are lost, scan surviving chunk and data PAR2 filenames.
+Flat, sharded, nested, and mixed directories work; no metadata or payload contents
+are read, no hashes are calculated, and the archive is unchanged. The output is
+a separate zstd-compressed JSON index and must not already exist.
+
+```bash
+./poc/archivator scan poc/work/demo/archive1 poc/work/recovery1.json.zst
+./poc/archivator restore poc/work/demo/archive1 poc/work/recovered1 \
+  --scan-index poc/work/recovery1.json.zst
+```
+
+For encrypted data, add `--decrypt-key poc/work/recipient-key.pem` to restore.
+The index selects its archive ID; optional `--archive-id` must agree with it.
+The recovery target must be absent or empty.
+
+Restore tries available data PAR2 in scratch, including recovery of filenames
+missing at scan time. It checks declared chunk lengths, available zstd frame
+checksums, and CMS authentication when encrypted. Streams with detected gaps,
+overlaps, missing/unreadable chunks, or malformed recognized TARs are **skipped
+entirely**; no fragments or zero-filled gaps are published. Other streams continue.
+
+Without the catalog, original standalone-file names and even stream types are
+unknown. Outputs are named by stream ID:
+
+| Output | Contents |
+| --- | --- |
+| `stream-<id>.bin` | Reconstructed bytes not recognized as TAR |
+| `stream-<id>.tar` | Original reconstructed TAR bytes, retained because a source file could itself have been a TAR |
+| `stream-<id>/` | Extracted view of that TAR, with its embedded paths; separate per stream to avoid collisions |
+
+This is not a verified recreation of the original tree: original metadata hashes,
+final stream lengths, and standalone-file paths/modes/timestamps are unavailable.
+Missing tail chunks and entirely missing streams cannot always be detected.
+TAR extraction uses Python's explicit `data` safety filter, not trusted extraction;
+unsafe paths, special files, hard links, and duplicate entries are rejected.
+[Python TAR extraction filters](https://docs.python.org/3.13/library/tarfile.html#extraction-filters)
+
+Exit `0` means every known stream was recovered without detected gaps or decoding
+errors, **not** that the original backup is provably complete. Exit `1` means
+streams were skipped, PAR2 sets remained unresolved, or nothing was recoverable.
+Normal restore without `--scan-index` retains its full metadata/hash requirements.
+
 ## Filesystem conventions
 
 Directories, regular files, and symlinks are supported. Special files are rejected.
@@ -130,6 +175,7 @@ as tested.
 - `backup.py`: TAR/direct streams, independent chunks, parity, and finalization
 - `recovery.py`: archive discovery, metadata validation, verify, and explicit repair
 - `restore.py`, `compare.py`: reconstruction, safe extraction, and tree comparison
+- `scan.py`: filename-only indexes and recovery when archive metadata is unavailable
 
 Production settings are fixed to the specification. Tests pass a small `Settings`
 instance directly; there are no tuning flags, parallel workers, or plugin layers.
