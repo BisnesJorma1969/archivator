@@ -54,10 +54,10 @@ Intentionally damage its data, metadata, and PAR2 files:
 python3 poc/demo/bitrot.py poc/work/demo/archive1 --percent 1
 ```
 
-This mixes bit flips, zeroed sector runs/strides, copied data, and insertion or
-deletion inside files. The percentage selects original PAR2-sized regions, not
-exact lost recovery capacity. `--dry-run` previews the damage;
-see [damage options](poc/demo/README.md#bitrot-options).
+This damages roughly **1% of the backup's total stored size**, randomly choosing
+files, byte ranges, and fault styles: bit flips, zeroing, copied data, insertion,
+or deletion. `--dry-run` previews the plan; the report shows affected bytes and
+the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
 
 You can also manually delete any chosen data chunks (`.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
@@ -71,8 +71,9 @@ Check the damaged archive:
 ./poc/archivator verify poc/work/demo/archive1
 ```
 
-The 1% demo should report **repairable** damage; a nonzero exit status is expected.
-If your additional deletions exceed recovery capacity, it reports **unrecoverable**.
+A nonzero exit status is expected for damage. Continue below when verify reports
+**repairable**. Random damage or additional deletions can exhaust a recovery set,
+in which case it reports **unrecoverable**.
 
 Restore and compare:
 

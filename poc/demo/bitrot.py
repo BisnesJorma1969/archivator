@@ -20,10 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from poc.archivator_lib.common import ArchiveError, IntegrityError, sha256
 from poc.archivator_lib.format import parity_prefix
 from poc.archivator_lib.recovery import discover, open_archive
+from poc.archivator_lib.progress import progress
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "work" / "demo"
 DAMAGE_TYPES = ("bitflip", "zero", "copy", "delete", "insert")
-SECTOR_SIZE = 512
+MAX_FAULT_SIZE = 4 * 1024 * 1024
 BUFFER_SIZE = 1024 * 1024
 
 
@@ -43,74 +44,64 @@ def read_region(path, offset, length):
     return data
 
 
-def zero_sectors(data, stride):
-    result = bytearray(data)
-    for offset in range(0, len(result), stride):
-        length = min(SECTOR_SIZE, len(result) - offset)
-        result[offset:offset + length] = bytes(length)
-    return bytes(result)
-
-
-def plan_change(path, block, slice_size, damage, sources, rng):
-    operation = rng.choice(DAMAGE_TYPES) if damage == "mixed" else damage
-    start = block * slice_size
-    end = min(path.stat().st_size, start + slice_size)
-    if operation == "bitflip":
-        offset = rng.randrange(start, end)
-        length = 1
-    else:
-        # Sector runs stay inside the selected original block. Short final
-        # sectors are valid, including metadata files smaller than one sector.
-        sectors = (end - start + SECTOR_SIZE - 1) // SECTOR_SIZE
-        offset = start + rng.randrange(sectors) * SECTOR_SIZE
-        remaining_sectors = (end - offset + SECTOR_SIZE - 1) // SECTOR_SIZE
-        length = min(end - offset, rng.randint(1, remaining_sectors) * SECTOR_SIZE)
-    change = {"filename": path.name, "path": str(path), "block": block,
-              "operation": operation, "offset": offset, "length": length}
+def plan_change(path, offset, length, operation, sources, rng):
+    change = {"filename": path.name, "path": str(path), "operation": operation,
+              "offset": offset, "length": length}
     original = read_region(path, offset, length)
     if operation == "zero":
-        change["sector_stride"] = rng.choice((1, 2, 4)) * SECTOR_SIZE
-        replacement = zero_sectors(original, change["sector_stride"])
+        replacement = bytes(length)
     elif operation in ("copy", "insert"):
-        donor = rng.choice(sources)
-        length = min(length, donor.stat().st_size)
-        donor_offset = rng.randrange((donor.stat().st_size - length) // SECTOR_SIZE + 1) * SECTOR_SIZE
+        donors = [source for source in sources if source.stat().st_size >= length]
+        donor = rng.choice(donors)
+        donor_offset = rng.randrange(donor.stat().st_size - length + 1)
         replacement = read_region(donor, donor_offset, length)
-        original = original[:length]
-        change.update(length=length, source_path=str(donor), source_offset=donor_offset,
+        change.update(source_path=str(donor), source_offset=donor_offset,
                       source_sha256=hashlib.sha256(replacement).hexdigest())
     if operation in ("zero", "copy") and replacement == original:
-        # Overwriting zeros with zeros, or copying identical bytes, is not damage.
-        # Record a real bit flip instead of claiming a no-op corrupted a block.
-        change = {"filename": path.name, "path": str(path), "block": block,
-                  "operation": "bitflip", "offset": offset, "length": 1}
-        original = original[:1]
+        # A no-op is not damage. Flip bits across the same byte budget instead.
+        change = {"filename": path.name, "path": str(path), "operation": "bitflip",
+                  "offset": offset, "length": length}
     if change["operation"] == "bitflip":
-        change.update(before=original[0], after=original[0] ^ (1 << rng.randrange(8)))
+        change["xor_mask"] = 1 << rng.randrange(8)
     change["original_sha256"] = hashlib.sha256(original).hexdigest()
     return change
 
 
-def sample_blocks(paths, slice_size, percent, rng, damage, sources):
-    """Sample a flat block space without allocating a list of every block."""
-    ends = []
-    total = 0
-    for path in paths:
-        total += (path.stat().st_size + slice_size - 1) // slice_size
-        ends.append(total)
-    count = min(total, math.ceil(total * percent / 100))
+def sample_bytes(paths, budget, damage, rng):
+    """Allocate one byte budget across non-overlapping, randomly located faults."""
+    sources = [path for path in paths if path.stat().st_size]
+    available = [(path, 0, path.stat().st_size) for path in sources]
+    styles = {}
+    remaining = budget
     changes = []
-    for block in sorted(rng.sample(range(total), count)):
-        file_index = bisect.bisect_right(ends, block)
-        preceding_blocks = ends[file_index - 1] if file_index else 0
-        block_in_file = block - preceding_blocks
-        path = paths[file_index]
-        changes.append(plan_change(path, block_in_file, slice_size, damage, sources, rng))
-    return total, changes
+    while remaining:
+        # Pick among the still-available bytes, so large files are more likely
+        # to be hit than tiny ones. No PAR2 boundaries or per-set quotas apply.
+        ends = []
+        total = 0
+        for _, start, end in available:
+            total += end - start
+            ends.append(total)
+        index = bisect.bisect_right(ends, rng.randrange(total))
+        path, start, end = available.pop(index)
+        max_run = rng.choices((1, 4096, 65536, MAX_FAULT_SIZE), weights=(1, 4, 10, 85), k=1)[0]
+        length = rng.randint(1, min(remaining, end - start, max_run))
+        offset = rng.randint(start, end - length)
+        if path not in styles:
+            styles[path] = rng.choice(DAMAGE_TYPES) if damage == "mixed" else damage
+        changes.append(plan_change(path, offset, length, styles[path], sources, rng))
+        if start < offset:
+            available.append((path, start, offset))
+        if offset + length < end:
+            available.append((path, offset + length, end))
+        remaining -= length
+        progress.update(f"Planning corruption: {budget - remaining:,}/{budget:,} bytes allocated")
+    return changes
 
 
 def plan_archive(root, percent, rng, include_bootstrap, damage):
     archives = discover(root)
+    summaries = []
     groups = []
     for archive_id in sorted(archives):
         with open_archive(archive_id, archives[archive_id]) as archive:
@@ -127,32 +118,46 @@ def plan_archive(root, percent, rng, include_bootstrap, damage):
                 if path is None or path.is_symlink() or not path.is_file() or sha256(path) != digest:
                     raise IntegrityError(f"Archive is already damaged: {name}; repair or recreate it first")
 
-            sources = [archive.files[name] for name in sorted(expected)
-                       if archive.files[name].stat().st_size]
-            pools = []
+            # Categories describe the report only. They do not get separate budgets.
+            categories = []
             for manifest in archive.manifests:
                 prefix = parity_prefix(archive_id, manifest["parity"])
                 names = [member["filename"] for member in manifest["members"]]
-                pools.append(("data", manifest["parity"], manifest["slice_size"], names))
+                categories.append(("data", manifest["parity"], names))
                 parity_names = [name for name in archive.checksums
                                 if name.startswith(prefix + ".") and name.endswith(".par2")]
-                pools.append(("data_parity", manifest["parity"], manifest["slice_size"], parity_names))
-            metadata_slice = archive.complete["metadata_slice_size"]
-            pools.append(("metadata", "metadata", metadata_slice, archive.complete["metadata_members"]))
-            pools.append(("metadata_parity", "metadata", metadata_slice, list(archive.complete["metadata_parity"])))
+                categories.append(("data_parity", manifest["parity"], parity_names))
+            categories.append(("metadata", "metadata", archive.complete["metadata_members"]))
+            categories.append(("metadata_parity", "metadata", list(archive.complete["metadata_parity"])))
+            complete_name = f"archive-{archive_id}_complete.json"
             if include_bootstrap:
-                pools.append(("bootstrap", "bootstrap", metadata_slice, [f"archive-{archive_id}_complete.json"]))
-            for category, parity, slice_size, names in pools:
-                paths = [archive.files[name] for name in sorted(names)]
-                total, changes = sample_blocks(paths, slice_size, percent, rng, damage, sources)
-                groups.append({
-                    "archive": str(root), "archive_id": archive_id, "parity": parity,
-                    "category": category, "block_size": slice_size, "eligible_blocks": total,
-                    "selected_blocks": len(changes),
-                    "actual_percent": 100 * len(changes) / total if total else 0,
-                    "changes": changes,
-                })
-    return groups
+                categories.append(("bootstrap", "bootstrap", [complete_name]))
+            by_name = {}
+            archive_groups = []
+            for category, parity, names in categories:
+                group = {"archive": str(root), "archive_id": archive_id,
+                         "category": category, "parity": parity, "changes": []}
+                archive_groups.append(group)
+                for name in names:
+                    by_name[name] = group
+            paths = [archive.files[name] for name in sorted(by_name)]
+            total_bytes = sum(archive.files[name].stat().st_size for name in [*expected, complete_name])
+            eligible_bytes = sum(path.stat().st_size for path in paths)
+            requested_bytes = round(total_bytes * percent / 100)
+            budget = min(requested_bytes, eligible_bytes)
+            changes = sample_bytes(paths, budget, damage, rng)
+            for change in changes:
+                by_name[change["filename"]]["changes"].append(change)
+            for group in archive_groups:
+                group["affected_bytes"] = sum(change["length"] for change in group["changes"])
+            groups.extend(archive_groups)
+            summaries.append({
+                "archive": str(root), "archive_id": archive_id, "original_bytes": total_bytes,
+                "eligible_bytes": eligible_bytes, "requested_bytes": requested_bytes,
+                "affected_bytes": budget, "actual_percent": 100 * budget / total_bytes,
+                "files_affected": len({change["filename"] for change in changes}),
+            })
+    return summaries, groups
 
 
 def copy_bytes(source, output, length):
@@ -175,9 +180,12 @@ def rewrite_file(path, output, changes):
                 raise ArchiveError(f"Archive changed after planning: {path}")
             operation = change["operation"]
             if operation == "bitflip":
-                output.write(bytes([change["after"]]))
+                # One bit per byte, so both isolated flips and bursts have an
+                # honest affected-byte count without millions of JSON records.
+                table = bytes(value ^ change["xor_mask"] for value in range(256))
+                output.write(original.translate(table))
             elif operation == "zero":
-                output.write(zero_sectors(original, change["sector_stride"]))
+                output.write(bytes(change["length"]))
             elif operation in ("copy", "insert"):
                 replacement = read_region(change["source_path"], change["source_offset"], change["length"])
                 if hashlib.sha256(replacement).hexdigest() != change["source_sha256"]:
@@ -198,7 +206,8 @@ def apply_changes(groups):
             by_file.setdefault(change["path"], []).append(change)
     staged = []
     try:
-        for name, changes in by_file.items():
+        for index, (name, changes) in enumerate(by_file.items(), 1):
+            progress.update(f"Staging damaged file {index}/{len(by_file)}: {Path(name).name!r}")
             path = Path(name)
             # Stage beside the original so replacement works across filesystems.
             # All rewrites finish before publishing, keeping copy donors pristine.
@@ -207,7 +216,8 @@ def apply_changes(groups):
                 staged.append((path, temporary))
                 rewrite_file(path, output, changes)
             shutil.copystat(path, temporary)
-        for path, temporary in staged:
+        for index, (path, temporary) in enumerate(staged, 1):
+            progress.update(f"Publishing damaged file {index}/{len(staged)}: {path.name!r}")
             os.replace(temporary, path)
     finally:
         for _, temporary in staged:
@@ -238,12 +248,15 @@ def bitrot(archives, percent=1, seed=20260918, include_bootstrap=False, dry_run=
         raise ValueError(f"Report already exists: {report_path}")
     rng = random.Random(seed)
     groups = []
+    summaries = []
     for root in roots:
         print(f"Checking and planning {root}", flush=True)
-        groups.extend(plan_archive(root, percent, rng, include_bootstrap, damage))
+        archive_summaries, archive_groups = plan_archive(root, percent, rng, include_bootstrap, damage)
+        summaries.extend(archive_summaries)
+        groups.extend(archive_groups)
     report = {"version": 1, "seed": seed, "requested_percent": percent, "damage": damage,
-              "unit": "selected original PAR2-sized file regions", "include_bootstrap": include_bootstrap,
-              "status": "dry-run" if dry_run else "planned", "groups": groups}
+              "unit": "bytes overwritten, bit-flipped, deleted, or inserted", "include_bootstrap": include_bootstrap,
+              "status": "dry-run" if dry_run else "planned", "archives": summaries, "groups": groups}
     report_path.parent.mkdir(parents=True, exist_ok=True)
     # Save the full plan before touching any archive, so interrupted runs still
     # have a record of intended damage. Only a completed run changes status to applied.
@@ -256,16 +269,20 @@ def bitrot(archives, percent=1, seed=20260918, include_bootstrap=False, dry_run=
         with report_path.open("w", encoding="utf-8") as output:
             json.dump(report, output, indent=2)
             output.write("\n")
+    for summary in summaries:
+        print(f"{Path(summary['archive']).name} ({summary['archive_id']}): "
+              f"{summary['affected_bytes']:,}/{summary['original_bytes']:,} bytes affected "
+              f"({summary['actual_percent']:.4f}%), {summary['files_affected']} files")
     for group in groups:
-        print(f"{Path(group['archive']).name} {group['category']} {group['parity']}: "
-              f"{group['selected_blocks']}/{group['eligible_blocks']} original regions "
-              f"({group['actual_percent']:.2f}%)")
+        if group["changes"]:
+            print(f"  {group['category']} {group['parity']}: {group['affected_bytes']:,} bytes, "
+                  f"{len(group['changes'])} faults")
     counts = Counter(change["operation"] for group in groups for change in group["changes"])
     print(f"{'Planned' if dry_run else 'Applied'} damage: "
           + (", ".join(f"{name}={count}" for name, count in sorted(counts.items())) or "none"))
     print(f"Damage report: {report_path}")
-    print("Percentages select original regions, not exact lost recovery blocks. Insert/delete shifts later offsets.")
-    print("Small pools round upward. Recovery depends on each set's remaining PAR2 capacity.")
+    print("Insertion/deletion counts the bytes added/removed, not the length of the shifted remainder.")
+    print("Damage is randomly distributed; recovery depends on each set's remaining PAR2 capacity.")
     return report
 
 
@@ -273,7 +290,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archives", nargs="*", type=Path, help="Default: poc/work/demo/archive1, archive2, archive3")
     parser.add_argument("--percent", type=float, default=1,
-                        help="Percent of original PAR2-sized regions in each pool (default: 1)")
+                        help="Percent of each original backup's total stored bytes to damage (default: 1)")
     parser.add_argument("--seed", type=int, default=20260918)
     parser.add_argument("--damage", choices=("mixed", *DAMAGE_TYPES), default="mixed",
                         help="Mixed faults or one specific pattern (default: mixed)")
@@ -282,11 +299,12 @@ def main(argv=None):
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     archives = args.archives or [DEFAULT_ROOT / f"archive{number}" for number in (1, 2, 3)]
-    try:
-        bitrot(archives, args.percent, args.seed, args.include_bootstrap, args.dry_run, args.report, args.damage)
-    except (ArchiveError, OSError, ValueError) as error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 2
+    with progress.reporting("bitrot"):
+        try:
+            bitrot(archives, args.percent, args.seed, args.include_bootstrap, args.dry_run, args.report, args.damage)
+        except (ArchiveError, OSError, ValueError) as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 2
     return 0
 
 

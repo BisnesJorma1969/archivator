@@ -63,7 +63,7 @@ Options for `poc/demo/bitrot.py`:
 | Argument / option | Default | Meaning |
 | --- | --- | --- |
 | Archive directories | `poc/work/demo/archive1`, `archive2`, `archive3` | Explicit paths select only those archives |
-| `--percent` | `1` | Percentage of blocks selected in each pool |
+| `--percent` | `1` | Percentage of each backup's total stored bytes to damage |
 | `--seed` | `20260918` | Repeatable damage selection for the same intact archives |
 | `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
 | `--dry-run` | Off | Write the damage plan without modifying archives |
@@ -72,41 +72,43 @@ Options for `poc/demo/bitrot.py`:
 
 ### Damage model
 
-`mixed` randomly chooses a fault for each selected original region:
+The byte budget is `round(original_backup_bytes * percent / 100)`, calculated
+separately for each archive ID before damage. It includes stored data, metadata,
+and PAR2 files. For example, 2% of a 100 GiB backup means 2 GiB subjected to faults.
+Zero percent does nothing. There are no per-file or per-recovery-set quotas.
 
-- `bitflip`: change one random bit.
-- `zero`: overwrite a run of 512-byte sectors, either contiguous or every second
-  or fourth sector. A final partial sector is allowed.
-- `copy`: overwrite a sector-sized run with real bytes from another position in
-  the same archive file or another file in that archive.
-- `delete`: remove bytes and shift the remainder left. This can shorten a file
-  internally or truncate its tail, not just remove an entire file.
-- `insert`: insert copied archive bytes and shift the remainder right, making
-  the file oversized. The insertion need not be at the beginning or end.
+Files are selected with probability proportional to their remaining eligible
+bytes. Each chosen file gets a random fault style in `mixed` mode. Fault locations
+and lengths are random, from isolated bytes through runs up to 4 MiB; ranges do
+not overlap in the original files. Larger files are more likely to be hit. Small
+metadata files are eligible but are not guaranteed to be selected on every run.
 
-Copy sources always refer to the intact pre-damage files. A zero/copy operation
-that would leave bytes unchanged is recorded as a bit flip instead. The generator
-models 512-byte sectors; it does not detect the physical storage's sector size.
+- `bitflip`: flip one bit in each selected byte. A one-byte fault changes one bit;
+  longer ranges model bursts of bit errors.
+- `zero`: overwrite selected runs with zero bytes.
+- `copy`: overwrite with real bytes from another position in the same file or
+  another file in that archive.
+- `delete`: remove bytes and shift the remainder left, including internal
+  deletion and tail truncation.
+- `insert`: insert copied archive bytes and shift the remainder right, including
+  internal insertion rather than only appending to the file.
 
-Selection is separate for each data set's data and PAR2 pools, plus each archive's
-protected metadata and metadata-PAR2 pools. A pool's selected count is
-`ceil(block_count * percent / 100)`. Consequently every nonempty pool receives at
-least one fault for a positive percentage, so even small metadata sets are tested.
-Small pools can have actual percentages much higher than requested; the report
-shows both block counts and actual percentages. Zero percent does nothing.
+The budget counts bytes overwritten, bit-flipped, deleted, or inserted. Insertion
+and deletion count the bytes added/removed, not the entire shifted remainder.
+Overwrites can happen to preserve individual byte values; a wholly unchanged
+zero/copy run falls back to bit flips across that same budget. Copy sources always
+refer to the intact pre-damage files.
 
-Regions start at each original file's offset zero, using the set's recorded PAR2
-slice size (normally 1 MiB); the final short region counts too. Each selected
-region receives one fault, with sector runs bounded to that original region.
-Insertions and deletions shift later bytes, so selected-region percentages are
-not exact lost-block percentages. PAR2 must locate surviving content after shifts.
-For PAR2 files these are physical byte windows, not packet boundaries: one fault
-can invalidate multiple packets. Recovery depends on each set's remaining capacity,
-not the archive-wide average.
+The report gives the original backup size, requested and applied byte budgets,
+actual percentage, files affected, and each fault's type, original offset, length,
+and copy source. Faults are not aligned to PAR2 slices. A random distribution can
+exhaust one recovery set even when the archive-wide percentage is small; verify
+reports whether the particular damage is recoverable.
 
 Protected catalogs, manifests, inventories, and the checksum index are eligible
 metadata. `complete.json` is the **unprotected bootstrap** and is preserved by
-default. Add `--include-bootstrap` to test its damage as well; automatic recovery
+default. If the requested budget exceeds eligible bytes, it is capped and the
+actual percentage is reported. Add `--include-bootstrap` to test its damage as well; automatic recovery
 may then fail even with surviving PAR2 data. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 

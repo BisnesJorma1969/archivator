@@ -38,7 +38,7 @@ class DemoTests(ArchiveTest):
         self.assertGreater(ratio, 0.3)
         self.assertLess(ratio, 0.7)
 
-    def test_bitrot_hits_metadata_and_both_parity_types_then_restores(self):
+    def test_bitrot_byte_budget_matches_changed_bytes_then_restores(self):
         (self.source / "file").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         before = {path.name: path.read_bytes() for path in self.archive.iterdir()}
@@ -48,12 +48,18 @@ class DemoTests(ArchiveTest):
                          {"data", "data_parity", "metadata", "metadata_parity"})
         changed_names = set()
         for group in report["groups"]:
-            self.assertGreater(group["selected_blocks"], 0)
             for change in group["changes"]:
                 changed_names.add(change["filename"])
-                self.assertEqual((change["before"] ^ change["after"]).bit_count(), 1)
-                self.assertEqual(before[change["filename"]][change["offset"]], change["before"])
-                self.assertEqual(Path(change["path"]).read_bytes()[change["offset"]], change["after"])
+                self.assertEqual(change["xor_mask"].bit_count(), 1)
+                start, length = change["offset"], change["length"]
+                original = before[change["filename"]][start:start + length]
+                expected = bytes(value ^ change["xor_mask"] for value in original)
+                self.assertEqual(Path(change["path"]).read_bytes()[start:start + length], expected)
+        budget = round(sum(map(len, before.values())) / 100)
+        changed_bytes = sum(sum(left != right for left, right in zip(data, (self.archive / name).read_bytes()))
+                            for name, data in before.items())
+        self.assertEqual(changed_bytes, budget)
+        self.assertEqual(report["archives"][0]["affected_bytes"], budget)
         self.assertFalse(any(name.endswith("_complete.json") for name in changed_names))
         self.assertEqual(verify(self.archive), 1)
         damaged = snapshot(self.archive)
@@ -97,9 +103,9 @@ class DemoTests(ArchiveTest):
         path.write_bytes(original)
         donor.write_bytes(donor_original)
         rng = random.Random(42)
-        deletion = plan_change(path, 1, 1024, "delete", [donor], rng)
-        insertion = plan_change(path, 3, 1024, "insert", [path], rng)
-        overwrite = plan_change(path, 5, 1024, "copy", [donor], rng)
+        deletion = plan_change(path, 1024, 512, "delete", [donor], rng)
+        insertion = plan_change(path, 3072, 1024, "insert", [path], rng)
+        overwrite = plan_change(path, 5120, 512, "copy", [donor], rng)
         donor_flip = plan_change(donor, 0, 1024, "bitflip", [path], rng)
         overwrite["source_offset"] = donor_flip["offset"]
         copied = donor_original[overwrite["source_offset"]:overwrite["source_offset"] + overwrite["length"]]
@@ -129,20 +135,34 @@ class DemoTests(ArchiveTest):
         report = bitrot([self.archive], percent=100, include_bootstrap=True,
                         report_path=self.root / "destruction.json", damage="bitflip")
         self.assertTrue(any(group["category"] == "bootstrap" and group["changes"] for group in report["groups"]))
+        self.assertTrue(all(group["affected_bytes"] > 0 for group in report["groups"]))
+        self.assertEqual(report["archives"][0]["affected_bytes"], report["archives"][0]["original_bytes"])
         self.assertEqual(json.loads((self.root / "destruction.json").read_text())["status"], "applied")
         self.assertEqual(verify(self.archive), 1)
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored)
 
-    def test_all_damage_patterns_restore_with_metadata_and_parity_damage(self):
+    def test_all_damage_patterns_restore(self):
         (self.source / "file").write_bytes(self.data(160000))
         for damage in (*DAMAGE_TYPES, "mixed"):
             with self.subTest(damage=damage):
                 archive = self.root / f"archive-{damage}"
                 target = self.root / f"target-{damage}"
                 backup(self.source, archive, settings=SMALL)
+                original_size = sum(path.stat().st_size for path in archive.iterdir() if path.is_file())
                 report = bitrot([archive], percent=1, damage=damage,
                                 report_path=self.root / f"{damage}.json")
+                changes = [change for group in report["groups"] for change in group["changes"]]
+                self.assertEqual(sum(change["length"] for change in changes), round(original_size / 100))
+                self.assertEqual(report["archives"][0]["original_bytes"], original_size)
+                inserted = sum(change["length"] for change in changes if change["operation"] == "insert")
+                deleted = sum(change["length"] for change in changes if change["operation"] == "delete")
+                self.assertEqual(sum(path.stat().st_size for path in archive.iterdir() if path.is_file()),
+                                 original_size + inserted - deleted)
+                ends = {}
+                for change in sorted(changes, key=lambda item: (item["path"], item["offset"])):
+                    self.assertGreaterEqual(change["offset"], ends.get(change["path"], 0))
+                    ends[change["path"]] = change["offset"] + change["length"]
                 before_restore = snapshot(archive)
                 self.assertEqual(verify(archive), 1)
                 restore(archive, target)

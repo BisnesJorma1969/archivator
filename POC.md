@@ -26,7 +26,7 @@ No cloud support. No networking. No workers. No benchmarking.
 
 Implementation, tests, and detailed usage documentation live under `poc/`. The root
 `README.md` provides a minimal Ubuntu 26.04 demo. Synthetic workload generation
-and block-based bitrot tools live under `poc/demo/`. Generated development data,
+and byte-budget bitrot tools live under `poc/demo/`. Generated development data,
 test certificates, and verification/repair/restore scratch use gitignored `poc/work/`.
 
 Keep code human-readable: straightforward functions and control flow, descriptive
@@ -891,7 +891,7 @@ repair, parity-only damage, lost metadata/checksum indexes, read-only archives,
 CLI exit codes, unsafe extraction, source changes, and metadata precision warnings.
 The multi-TAR test uses 2,001 small files. External-tool integration tests use real
 zstd, OpenSSL, and PAR2 rather than silently skipping missing dependencies.
-Demo tests also cover sector overwrites, zeroed runs/strides, internal byte
+Demo tests also cover byte-budget corruption, zeroed runs, internal byte
 insertion/deletion, original-offset damage reports, and mixed metadata/PAR2 damage.
 
 The test command is in the [root README](README.md#automated-tests).
