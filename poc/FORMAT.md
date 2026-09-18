@@ -9,25 +9,26 @@ All archive IDs, stream IDs, and parity-set IDs are independent random 128-bit
 values written as 32 lowercase hexadecimal digits. Archive-generated names use
 lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 
-All metadata and its PAR2 files share the prefix `archive-<aid>_metadata_`, so
-they group together in directory listings. Files containing `_chunk-` hold the
-actual backed-up content. A stream inventory describes files; it is not payload.
+Archive-level metadata and its PAR2 files share the prefix `archive-<aid>_metadata_`
+and live at the archive root. Files containing `_chunk-` hold the actual backed-up
+content. A stream inventory describes files; it is not payload.
 
-Files are stored under `<archive-root>/<first-two-parity-ID-characters>/`.
-Data chunks and their PAR2 files use their data-set ID; all metadata and metadata
-PAR2 files use the metadata recovery set's ID, including manifests describing
-data sets and both completion markers. Shards are created only when populated;
-different sets may share a shard. No additional ID or hash is calculated.
-These directories are a storage layout, not part of file identity: catalogs and
-PAR2 retain basenames, and readers find files recursively in any layout.
+Data chunks, their PAR2 files, and their one-per-set manifest are stored under
+`<archive-root>/<first-two-data-parity-ID-characters>/`, sharing the prefix
+`archive-<aid>_parity-<pid>`. Shards are created only when populated; different
+sets may share a shard. No additional ID or hash is calculated.
+Catalogs identify files by basename, and readers find them recursively in any
+layout. Data PAR2 records basenames relative to its shard; metadata PAR2 records
+archive-relative paths, including sharded manifests. Recovery arranges inputs
+in those locations, in scratch for restore/verify or by renames for in-place repair.
 
 | Filename suffix after `archive-<aid>_` | Contents |
 | --- | --- |
 | `metadata_format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
 | `metadata_streams.jsonl.zst` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
-| `metadata_stream-<sid>_inventory.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
+| `metadata_inventory_stream-<sid>.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
 | `metadata_recipient.pem` | Optional normalized public X.509 certificate |
-| `metadata_parity-<pid>_manifest.json.zst` | Describes data parity set `<pid>`: chunk coordinates, hashes, lengths, and recovery capacity |
+| `parity-<pid>_manifest.json.zst` | One manifest beside each data set: chunk coordinates, hashes, lengths, and recovery capacity; protected by metadata PAR2 |
 | `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `metadata_checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
@@ -111,8 +112,10 @@ those from the archive.
 
 ### 1. Recover catalogs if necessary
 
-Copy the metadata members named in either completion-marker copy and their metadata PAR2 files
-to a scratch directory. If both markers are lost, metadata PAR2 filenames still have
+Copy the metadata members named in either completion-marker copy and their metadata
+PAR2 files to scratch, keeping data-set manifests under their two-character data
+shards and other metadata at the scratch root. Run PAR2 from that root.
+If both markers are lost, metadata PAR2 filenames still have
 the `archive-<aid>_metadata_parity-` prefix and contain the protected member names.
 
 ```sh

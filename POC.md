@@ -170,13 +170,14 @@ archive-<aid>_parity-<pid>.vol000+032.par2
 Parity-set convenience manifest:
 
 ```text
-archive-<aid>_metadata_parity-<pid>_manifest.json.zst
+archive-<aid>_parity-<pid>_manifest.json.zst
 ```
 
-All metadata, including data-set manifests and completion markers, and its PAR2
-files share the prefix `archive-<aid>_metadata_`. This groups them together and
-distinguishes them from payload chunks and data PAR2 files. Stream inventories
-use `_inventory.jsonl.zst`: these contain file descriptions, not file contents.
+Archive-level metadata, completion markers, and metadata PAR2 share the prefix
+`archive-<aid>_metadata_` and live at the archive root. Data-set manifests instead
+share their data group's prefix and shard. Stream inventories use
+`metadata_inventory_stream-<sid>.jsonl.zst`: these contain file descriptions,
+not file contents.
 
 The metadata recovery set has its own parity-set ID:
 
@@ -205,12 +206,15 @@ index filenames once and reject duplicate archive filenames in the searched
 hierarchy rather than choosing one arbitrarily.
 
 Output is sharded under `ARCHIVE_DIR/<first-two-parity-ID-characters>/` using the
-existing random parity-set ID, not a new ID or hash. Data chunks and their PAR2
-files share their data set's shard. All metadata, including data-set manifests,
-certificates, completion markers, and metadata PAR2, shares the metadata set's
-shard. Create a directory only when publishing files into it; never pre-create
-all 256 possible shards. Multiple sets may share a directory. Filenames and PAR2
-member names remain basenames, so flat, nested, and mixed layouts remain readable.
+existing random data parity-set ID, not a new ID or hash. Data chunks, their PAR2
+files, and their one-per-group manifest share that data set's shard. All other
+metadata, including inventories, certificates, completion markers, and metadata
+PAR2, stays at the archive root. Create a directory only when publishing files
+into it; never pre-create all 256 possible shards. Multiple sets may share a
+directory. Catalogs identify files by basename. Data PAR2 records shard-relative
+basenames; metadata PAR2 records archive-relative paths, including the sharded
+manifests it protects. Readers discover flat, nested, and mixed layouts and
+arrange recovery inputs in the expected locations.
 
 ---
 
@@ -279,7 +283,7 @@ A TAR bundle receives a normal random stream ID and then enters exactly the same
 Create an unencrypted, zstd-compressed JSON-lines inventory:
 
 ```text
-archive-<aid>_metadata_stream-<sid>_inventory.jsonl.zst
+archive-<aid>_metadata_inventory_stream-<sid>.jsonl.zst
 ```
 
 Each original entry records as applicable:
@@ -542,7 +546,7 @@ Do not use exponentially increasing Usenet-style recovery-volume sizes.
 For each data parity set create:
 
 ```text
-archive-<aid>_metadata_parity-<pid>_manifest.json.zst
+archive-<aid>_parity-<pid>_manifest.json.zst
 ```
 
 It contains these JSON fields:
@@ -628,7 +632,7 @@ TAR:
 {
   "stream": "...",
   "type": "tar",
-  "inventory": "archive-..._metadata_stream-..._inventory.jsonl",
+  "inventory": "archive-..._metadata_inventory_stream-....jsonl",
   "entry_count": 12345,
   "size": 987654321,
   "sha256": "...",
@@ -740,7 +744,6 @@ Incomplete backup files belong only under:
 
 ```text
 ARCHIVE_DIR/.tmp/
-ARCHIVE_DIR/<metadata-shard>/.tmp/
 ```
 
 The implementation processes TAR streams before direct-file streams, using the
@@ -789,10 +792,10 @@ regenerate missing/damaged PAR2 files to restore the original protection. Intact
 stored data can regenerate a completely lost parity set. Unrecoverable data or
 metadata causes a hard failure.
 
-PAR2 requires one target directory per set for its basename-only members. If
-selected archive files are scattered, gather them into their protecting sets'
-shards under the supplied archive root with same-filesystem renames, never copies
-or links. Reject cross-filesystem layouts
+If selected archive files are scattered, gather data chunks, data PAR2, and
+data-set manifests into their data shards, and other metadata into the supplied
+archive root. Use same-filesystem renames, never copies or links. This supplies
+the relative paths recorded by both kinds of PAR2. Reject cross-filesystem layouts
 before moving anything. Other archive IDs are left alone.
 
 This is not an all-or-nothing transaction: failure can leave partial changes.

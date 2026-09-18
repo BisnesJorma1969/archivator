@@ -27,11 +27,12 @@ def completion_digest(complete):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def store_metadata(path):
+def store_metadata(path, staging=None):
     """Apply the fixed metadata policy and return the stored filename."""
     if path.suffix == ".zst" or path.name.endswith(UNCOMPRESSED_METADATA_SUFFIXES):
         return path.name
-    compressed = path.parent / ".tmp" / (path.name + ".zst")
+    staging = staging or path.parent / ".tmp"
+    compressed = staging / (path.name + ".zst")
     compressed.parent.mkdir(exist_ok=True)
     run([executable("zstd"), "-q", "-3", "--single-thread", "--check",
          str(path), "-o", str(compressed)], activity=f"Compressing metadata: {path.name!r}")

@@ -64,10 +64,10 @@ def parity_prefix(archive, parity, metadata=False):
     return f"archive-{archive}_parity-{parity}"
 
 
-def stored_path(root, name, metadata_id):
-    """Group files by the existing ID of the parity set protecting them."""
+def stored_path(root, name):
+    """Keep archive metadata at the root and data-set files in their shard."""
     if "_metadata_" in name:
-        parity = metadata_id
+        return Path(root) / name
     else:
         match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
         if not match:

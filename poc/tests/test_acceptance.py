@@ -40,7 +40,7 @@ class AcceptanceTests(ArchiveTest):
                 target = self.root / f"restored-{encrypted}"
                 (self.source / "large").write_bytes(self.data(160000))
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                manifest = next(read_zstd_json(path) for path in archive.rglob("*_metadata_parity-*_manifest.json.zst")
+                manifest = next(read_zstd_json(path) for path in archive.rglob("*_parity-*_manifest.json.zst")
                                 if read_zstd_json(path)["member_count"] == 8)
                 # Damage one data slice and lose a whole recovery volume. The
                 # other three volumes retain more than enough recovery blocks.

@@ -19,8 +19,8 @@ class MetadataTests(ArchiveTest):
                 ("archive-id_metadata_format.txt", b"format=archivator\n" * 10000, False),
                 ("archive-id_metadata_recipient.pem", b"public certificate", False),
                 ("archive-id_metadata_streams.jsonl", b"{}\n", True),
-                ("archive-id_metadata_stream-sid_inventory.jsonl", b"{}\n" * 4000, True),
-                ("archive-id_metadata_parity-pid_manifest.json", b"{}", True),
+                ("archive-id_metadata_inventory_stream-sid.jsonl", b"{}\n" * 4000, True),
+                ("archive-id_parity-pid_manifest.json", b"{}", True),
                 ("archive-id_metadata_checksums.json", b"{}", True),
                 ("other-metadata.bin", self.data(65536), True)):
             with self.subTest(name=name):
@@ -82,15 +82,17 @@ class MetadataTests(ArchiveTest):
         complete = read_json(next(self.archive.rglob(completion_names(archive_id)[0])))
         metadata_names = [*complete["metadata_members"], *complete["metadata_parity"],
                           *completion_names(archive_id)]
-        self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata_") for name in metadata_names))
+        self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata_")
+                            or name.endswith("_manifest.json.zst") for name in metadata_names))
         self.assertTrue(all(next(self.archive.rglob(name)).is_file() for name in metadata_names))
         self.assertTrue(complete["checksum_index"].endswith(".json.zst"))
-        inventories = list(self.archive.rglob("*_metadata_stream-*_inventory.jsonl.zst"))
+        inventories = list(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst"))
         self.assertTrue(inventories)
-        self.assertFalse(list(self.archive.rglob("*_metadata_stream-*_inventory.jsonl")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_inventory_stream-*.jsonl")))
         self.assertFalse(list(self.archive.rglob("*_metadata_checksums.json")))
         self.assertEqual(verify(self.archive), 0)
-        for name in (inventories[0].name, complete["checksum_index"]):
+        manifest = next(self.archive.rglob("*_manifest.json.zst"))
+        for name in (inventories[0].name, manifest.name, complete["checksum_index"]):
             with self.subTest(name=name):
                 path = next(self.archive.rglob(name))
                 original_digest = sha256(path)

@@ -24,8 +24,9 @@ class ScanTests(ArchiveTest):
         return name
 
     def remove_metadata(self, archive):
-        for path in archive.rglob("*_metadata_*"):
-            path.unlink()
+        for path in archive.rglob("archive-*"):
+            if "_metadata_" in path.name or path.name.endswith("_manifest.json.zst"):
+                path.unlink()
 
     def test_scan_reads_names_not_payload_or_metadata_contents(self):
         name = self.write_chunk(b"payload")

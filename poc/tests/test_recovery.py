@@ -104,7 +104,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_damage_beyond_capacity_fails(self):
         self.make_archive()
-        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_metadata_parity-*_manifest.json.zst")]
+        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_parity-*_manifest.json.zst")]
         manifest = next(item for item in manifests if item["member_count"] == 8)
         largest = sorted(manifest["members"], key=lambda member: member["stored_length"], reverse=True)[:2]
         missing_blocks = sum((member["stored_length"] + manifest["slice_size"] - 1) // manifest["slice_size"]

@@ -65,18 +65,19 @@ def select(archives, archive_id, allow_all=False):
     return sorted(archives)
 
 
-def stage_existing(files, names, destination, expected=None, writable=True):
+def stage_existing(files, names, destination, expected=None, writable=True, archive_layout=False):
     """Link read-only inputs; copy damaged/unknown members before scratch repair."""
     expected = expected or {}
     destination.mkdir(parents=True, exist_ok=True)
     for index, name in enumerate(names, 1):
         progress.update(f"Preparing recovery inputs: {index}/{len(names)}; {name!r}")
+        target = stored_path(destination, name) if archive_layout else destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
         path = files.get(name)
         if path is None:
             continue
         if path.is_symlink() or not path.is_file():
             raise IntegrityError(f"Archive member is not a regular file: {path}")
-        target = destination / name
         # PAR2 reads recovery volumes but never edits them. Regeneration first
         # unlinks staged volumes. Healthy data members are also read-only inputs.
         read_only = not writable or name.endswith(".par2")
@@ -94,10 +95,10 @@ def stage_existing(files, names, destination, expected=None, writable=True):
         shutil.copyfile(path, target)
 
 
-def mismatches(directory, expected):
+def mismatches(directory, expected, archive_layout=False):
     damaged = []
     for name, digest in expected.items():
-        path = directory / name
+        path = stored_path(directory, name) if archive_layout else directory / name
         if not path.is_file() or sha256(path) != digest:
             damaged.append(name)
     return damaged
@@ -107,9 +108,9 @@ def remove_repair_backups(directory, members, previous_names):
     """Discard only backups PAR2 just created, after recovered hashes pass."""
     if previous_names is None:
         return
-    for path in directory.iterdir():
+    for path in directory.rglob("*"):
         original, separator, number = path.name.rpartition(".")
-        if (path.name not in previous_names and original in members
+        if (path.relative_to(directory) not in previous_names and original in members
                 and separator and number.isdecimal() and path.is_file() and not path.is_symlink()):
             path.unlink()
 
@@ -131,7 +132,8 @@ def validate_complete(complete, archive_id):
         raise IntegrityError("Invalid metadata member list")
     for name in names:
         archive_filename(name, archive_id)
-        if not name.startswith(f"archive-{archive_id}_metadata_"):
+        if not (name.startswith(f"archive-{archive_id}_metadata_")
+                or re.fullmatch(rf"archive-{archive_id}_parity-{ID}_manifest\.json\.zst", name)):
             raise IntegrityError("Invalid metadata member filename")
     if complete["checksum_index"] != f"archive-{archive_id}_metadata_checksums.json.zst":
         raise IntegrityError("Invalid checksum index filename")
@@ -235,7 +237,7 @@ def read_catalog(metadata, archive_id):
         if not valid_digest(stream["sha256"]) or not re.fullmatch(r"[0-9a-f]{128}", stream["sha512"]):
             raise IntegrityError("Invalid stream checksum")
         if stream["type"] == "tar":
-            name = f"archive-{archive_id}_metadata_stream-{stream_id}_inventory.jsonl"
+            name = f"archive-{archive_id}_metadata_inventory_stream-{stream_id}.jsonl"
             if stream["inventory"] != name:
                 raise IntegrityError("Inventory filename does not match stream")
             inventory = read_jsonl(metadata / name)
@@ -259,7 +261,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
         if not name.endswith("_manifest.json"):
             continue
         manifest = read_json(metadata / name)
-        prefix = parity_prefix(archive_id, manifest["parity"], metadata=True)
+        prefix = parity_prefix(archive_id, manifest["parity"])
         if name != prefix + "_manifest.json" or manifest["version"] != 1 or manifest["archive"] != archive_id:
             raise IntegrityError("Inconsistent parity-set manifest")
         members = manifest["members"]
@@ -325,14 +327,16 @@ def load_metadata(archive_id, files, directory, in_place=False):
                 expected.update(cached_checksums)
         # If the checksum index itself needs recovery, other metadata cannot yet
         # be classified as healthy. Copy those unknown members before repairing.
-        stage_existing(files, names + list(complete["metadata_parity"]), directory, expected)
+        stage_existing(files, names + list(complete["metadata_parity"]), directory, expected,
+                       archive_layout=True)
     # Record damage before any repair so verify cannot hide a broken archive.
-    original_hashes = {name: sha256(stored / name) for name in names if (stored / name).is_file()}
+    metadata_paths = {name: stored_path(stored, name) for name in names}
+    original_hashes = {name: sha256(path) for name, path in metadata_paths.items() if path.is_file()}
     parity_damage = mismatches(stored, complete["metadata_parity"])
     status = check_parity(stored, complete["metadata_prefix"])
     previous_names = None
     if status == 1:
-        previous_names = {path.name for path in stored.iterdir()}
+        previous_names = {path.relative_to(stored) for path in stored.rglob("*")}
         if check_parity(stored, complete["metadata_prefix"], repair=True) != 0:
             raise IntegrityError("Metadata repair failed")
     if mismatches(stored, {index_name: complete["checksum_index_sha256"]}):
@@ -348,14 +352,14 @@ def load_metadata(archive_id, files, directory, in_place=False):
         raise IntegrityError("Completion marker and checksum index disagree")
     metadata_hashes = {name: checksums[name] for name in expected_metadata}
     metadata_hashes[index_name] = complete["checksum_index_sha256"]
-    if mismatches(stored, metadata_hashes):
+    if mismatches(stored, metadata_hashes, archive_layout=True):
         raise IntegrityError("Archive metadata is unrecoverable or its checksums disagree with PAR2")
     remove_repair_backups(stored, metadata_hashes, previous_names)
     damage = marker_damage + parity_damage + [name for name, digest in metadata_hashes.items()
                                             if original_hashes.get(name) != digest]
     for name in names:
         if name != index_name:
-            unpack_metadata(stored / name, directory)
+            unpack_metadata(metadata_paths[name], directory)
     fields = read_format(stored / f"archive-{archive_id}_metadata_format.txt", archive_id)
     streams, entries = read_catalog(directory, archive_id)
     manifests = read_manifests(directory, archive_id, names, streams, fields)
@@ -411,7 +415,7 @@ def recover_set(archive, manifest, directory, replenish=False):
     prefix = parity_prefix(archive.id, manifest["parity"])
     previous_names = None
     if data_damage:
-        previous_names = {path.name for path in directory.iterdir()}
+        previous_names = {path.relative_to(directory) for path in directory.rglob("*")}
         if status != 1 or check_parity(directory, prefix, repair=True) != 0:
             raise IntegrityError(f"Unrecoverable data in parity set {manifest['parity']}")
     hashes = {member["filename"]: member["stored_sha256"] for member in manifest["members"]}
@@ -468,13 +472,15 @@ def verify(root, archive_id=None):
 
 
 def prepare_in_place(root, archive_id, files):
-    """Put scattered members into their set's shard using filesystem renames."""
+    """Restore the root-metadata/data-shard layout using filesystem renames."""
     complete, _ = read_completion(archive_id, files)
     metadata_id = complete["metadata_prefix"].split("_parity-")[1]
     base = Path(root)
     device = base.stat().st_dev
-    destinations = {name: stored_path(base, name, metadata_id) for name in files}
-    # PAR2 needs one directory per set, not one directory for the whole archive.
+    # Include missing metadata: PAR2 may need to recreate a sharded manifest.
+    names = set(files) | set(complete["metadata_members"])
+    destinations = {name: stored_path(base, name) for name in names}
+    # Metadata PAR2 uses archive-relative paths; data PAR2 uses shard-relative paths.
     # Check all moves before changing anything; never turn a cross-filesystem
     # rename into a hidden copy.
     for directory in {path.parent for path in destinations.values()}:
@@ -493,7 +499,7 @@ def prepare_in_place(root, archive_id, files):
     for name, path in files.items():
         target = destinations[name]
         if path != target:
-            progress.update(f"Moving archive member into shard {target.parent.name}: {name!r}")
+            progress.update(f"Moving archive member to {str(target.relative_to(base))!r}")
             target.parent.mkdir(exist_ok=True)
             path.rename(target)
             files[name] = target
@@ -506,7 +512,6 @@ def repair(root, archive_id=None):
     files = archives[selected]
     base = Path(root)
     metadata_id = prepare_in_place(base, selected, files)
-    metadata_directory = base / metadata_id[:2]
     completed_sets = 0
     changed = False
     try:
@@ -525,9 +530,9 @@ def repair(root, archive_id=None):
             if changed:
                 metadata_names = [name for name in archive.complete["metadata_members"]
                                   if name != archive.complete["checksum_index"]]
-                parity_checksums = {name: sha256(stored_path(base, name, metadata_id)) for name in archive.checksums
+                parity_checksums = {name: sha256(stored_path(base, name)) for name in archive.checksums
                                     if name.endswith(".par2")}
-                finalize_metadata(metadata_directory, selected, metadata_names, parity_checksums,
+                finalize_metadata(base, selected, metadata_names, parity_checksums,
                                   archive.complete["metadata_slice_size"], metadata_id)
         # Re-read the resulting checksum root and verify in place too. Calling
         # the read-only verify workflow here would unnecessarily stage inputs.

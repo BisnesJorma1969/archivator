@@ -17,8 +17,11 @@ class BackupTests(ArchiveTest):
         generated_sets = []
 
         def generate(directory, prefix, members, slice_size, blocks, output_directory):
-            self.assertEqual(directory.parent, self.archive)
-            self.assertEqual(directory.name, prefix.split("_parity-")[1][:2])
+            if "_metadata_" in prefix:
+                self.assertEqual(directory, self.archive)
+            else:
+                self.assertEqual(directory.parent, self.archive)
+                self.assertEqual(directory.name, prefix.split("_parity-")[1][:2])
             self.assertEqual(list(output_directory.iterdir()), [])
             before = {name: sha256(directory / name) for name in members}
             files = create_parity(directory, prefix, members, slice_size, blocks,
@@ -43,7 +46,7 @@ class BackupTests(ArchiveTest):
         complete = read_json(marker)
         self.assertEqual(len(complete["metadata_parity"]), 5)
         self.assertEqual(check_parity(marker.parent, complete["metadata_prefix"]), 0)
-        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_stream-*_inventory.jsonl.zst")))
+        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst")))
         self.assertEqual([entry["path"] for entry in inventory], ["."])
         self.assertFalse((self.archive / ".tmp").exists())
 
@@ -59,7 +62,7 @@ class BackupTests(ArchiveTest):
                                     capture_output=True, check=True).stdout for path in chunks]
         self.assertEqual(b"".join(plaintext), contents)
         self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
-        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_metadata_parity-*_manifest.json.zst")]
+        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_parity-*_manifest.json.zst")]
         self.assertTrue(any(len({member["stream"] for member in item["members"]}) > 1
                             for item in manifests))
         self.assertTrue(any(item["member_count"] < 8 for item in manifests))
@@ -91,7 +94,7 @@ class BackupTests(ArchiveTest):
         checksums = read_zstd_json(next(self.archive.rglob("*_metadata_checksums.json.zst")))
         for name, digest in checksums.items():
             self.assertEqual(sha256(next(self.archive.rglob(name))), digest)
-        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_stream-*_inventory.jsonl.zst")))
+        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst")))
         file_entry = next(entry for entry in inventory if entry["type"] == "file")
         self.assertEqual(file_entry["sha256"], hashlib.sha256(b"hello").hexdigest())
         self.assertEqual(file_entry["crc32"], "3610a686")

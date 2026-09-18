@@ -8,7 +8,7 @@ from pathlib import Path
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, empty_destination, ensure_disjoint, public_entry, scan
-from .format import Settings, chunk_name, new_id, parity_prefix, recovery_blocks
+from .format import Settings, chunk_name, new_id, parity_prefix, recovery_blocks, stored_path
 from .metadata import completion_digest, completion_names, store_metadata
 from .progress import progress
 
@@ -23,14 +23,12 @@ class ParityWriter:
         self.staging = archive / ".tmp"
         self.parity_id = new_id()
         self.metadata_id = new_id()
-        self.metadata = archive / self.metadata_id[:2]
         self.members = []
         self.manifests = []
         self.parity_checksums = {}
 
     def publish(self, path):
-        self.metadata.mkdir(exist_ok=True)
-        os.replace(path, self.metadata / path.name)
+        os.replace(path, self.archive / path.name)
 
     def add(self, path, stream, offset, length, hashes, encrypted):
         name = chunk_name(self.archive_id, self.parity_id, len(self.members),
@@ -72,11 +70,11 @@ class ParityWriter:
             "recovery_bytes": blocks * self.settings.slice_size,
             "member_count": len(self.members), "members": self.members,
         }
-        manifest_name = parity_prefix(self.archive_id, self.parity_id, metadata=True) + "_manifest.json"
+        manifest_name = prefix + "_manifest.json"
         path = self.staging / manifest_name
         write_json(path, manifest)
         self.manifests.append(path.name)
-        self.publish(path)
+        os.replace(path, shard / path.name)
         self.members = []
         self.parity_id = new_id()
 
@@ -203,12 +201,12 @@ def write_tar(source, entries, sink):
 
 
 def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, slice_size, metadata_id):
-    # Here archive is the metadata shard; all PAR2 inputs stay beside its index.
     staging = archive / ".tmp"
+    owns_staging = not staging.exists()
     staging.mkdir(mode=0o700, exist_ok=True)
-    metadata_names = [store_metadata(archive / name) for name in metadata_names]
+    metadata_names = [store_metadata(stored_path(archive, name), staging) for name in metadata_names]
     index_name = f"archive-{archive_id}_metadata_checksums.json"
-    checksums = {name: sha256(archive / name) for name in sorted(metadata_names)}
+    checksums = {name: sha256(stored_path(archive, name)) for name in sorted(metadata_names)}
     checksums.update(parity_checksums)
     write_json(staging / index_name, checksums)
     os.replace(staging / index_name, archive / index_name)
@@ -217,8 +215,10 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, sli
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
     directory = staging / "metadata"
     directory.mkdir()
-    blocks = recovery_blocks([(archive / name).stat().st_size for name in metadata_names], slice_size)
-    files = create_parity(archive, prefix, metadata_names, slice_size, blocks, output_directory=directory)
+    # PAR2 records relative paths for sharded manifests and reads originals directly.
+    members = [str(stored_path(archive, name).relative_to(archive)) for name in metadata_names]
+    blocks = recovery_blocks([(archive / name).stat().st_size for name in members], slice_size)
+    files = create_parity(archive, prefix, members, slice_size, blocks, output_directory=directory)
     parity_hashes = {}
     for path in files:
         parity_hashes[path.name] = sha256(path)
@@ -237,7 +237,7 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_checksums, sli
     for complete_name in completion_names(archive_id):
         write_json(staging / complete_name, complete)
         os.replace(staging / complete_name, archive / complete_name)
-    if not any(staging.iterdir()):
+    if owns_staging and not any(staging.iterdir()):
         staging.rmdir()
 
 
@@ -269,7 +269,7 @@ def backup(source, archive, certificate=None, settings=None):
             name = f"archive-{archive_id}_metadata_recipient.pem"
             fingerprint = normalize_certificate(certificate, staging / name)
             parity.publish(staging / name)
-            certificate = parity.metadata / name
+            certificate = archive / name
             metadata.append(name)
 
         for group in bundles(entries, settings):
@@ -281,7 +281,7 @@ def backup(source, archive, certificate=None, settings=None):
                 sink.finish_chunk()
             finally:
                 sink.close()
-            name = f"archive-{archive_id}_metadata_stream-{stream_id}_inventory.jsonl"
+            name = f"archive-{archive_id}_metadata_inventory_stream-{stream_id}.jsonl"
             write_jsonl(staging / name, inventory)
             parity.publish(staging / name)
             metadata.append(name)
@@ -327,7 +327,7 @@ def backup(source, archive, certificate=None, settings=None):
                 output.write(f"{key}={value}\n")
         parity.publish(staging / format_name)
         metadata.extend([catalog_name, format_name, *parity.manifests])
-        finalize_metadata(parity.metadata, archive_id, metadata, parity.parity_checksums,
+        finalize_metadata(archive, archive_id, metadata, parity.parity_checksums,
                           settings.slice_size, parity.metadata_id)
     finally:
         progress.update("Removing backup temporary files")

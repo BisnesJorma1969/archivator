@@ -80,8 +80,9 @@ openssl req -x509 -newkey rsa:3072 -noenc \
 ```
 
 Encrypted data chunks end in `.zst.enc`. Metadata remains unencrypted.
-Files are grouped into two-character shard directories using their parity-set
-IDs. Keep using `archive1` as the command argument; discovery is recursive.
+Data chunks, data PAR2, and each data group's manifest share a two-character
+shard directory from that group's ID. Other metadata and metadata PAR2 stay at
+the archive root. Keep using `archive1` as the command argument; discovery is recursive.
 
 ### Damage and verify (both modes)
 
