@@ -364,7 +364,12 @@ def verify(root, archive_id=None):
                         label = "repairable" if recoverable else "unrecoverable"
                         print(f"{selected} parity {manifest['parity']}: {label}; "
                               f"{len(data_damage)} data and {len(parity_damage)} PAR2 files damaged/missing")
-                label = "unrecoverable" if unrecoverable else "repairable" if damaged else "intact"
+                if unrecoverable:
+                    label = "unrecoverable"
+                elif damaged:
+                    label = "repairable"
+                else:
+                    label = "intact"
                 print(f"{selected}: {label}")
                 if damaged:
                     result = 1

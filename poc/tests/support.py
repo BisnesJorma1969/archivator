@@ -1,4 +1,6 @@
 import random
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,8 @@ class ArchiveTest(unittest.TestCase):
         self.source.mkdir()
         self.archive = self.root / "archive"
         self.restored = self.root / "restored"
+        self.report = io.StringIO()
+        self.enterContext(contextlib.redirect_stdout(self.report))
 
     def data(self, size, seed=1):
         return random.Random(seed).randbytes(size)

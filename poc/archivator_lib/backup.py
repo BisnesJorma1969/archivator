@@ -149,9 +149,10 @@ class HashingReader:
 def tar_info(entry):
     info = tarfile.TarInfo(entry["path"])
     info.mode = entry["mode"]
-    seconds, nanoseconds = divmod(entry["mtime_ns"], 1000000000)
-    info.mtime = seconds
-    info.pax_headers = {"mtime": f"{seconds}.{nanoseconds:09d}"}
+    seconds, nanoseconds = divmod(abs(entry["mtime_ns"]), 1000000000)
+    sign = "-" if entry["mtime_ns"] < 0 else ""
+    info.mtime = entry["mtime_ns"] // 1000000000
+    info.pax_headers = {"mtime": f"{sign}{seconds}.{nanoseconds:09d}"}
     if entry["type"] == "directory":
         info.type = tarfile.DIRTYPE
     elif entry["type"] == "symlink":

@@ -38,8 +38,10 @@ class BackupTests(ArchiveTest):
 
     def test_encrypted_chunks_use_standard_cms_then_gzip(self):
         key, certificate = self.certificate()
+        combined = self.root / "combined.pem"
+        combined.write_bytes(certificate.read_bytes() + key.read_bytes())
         (self.source / "tiny").write_bytes(b"hello")
-        archive_id = backup(self.source, self.archive, certificate, SMALL)
+        archive_id = backup(self.source, self.archive, combined, SMALL)
         chunks = sorted(self.archive.glob("*.cms"), key=lambda path: parse_chunk(path.name)["offset"])
         stream = bytearray()
         for chunk in chunks:

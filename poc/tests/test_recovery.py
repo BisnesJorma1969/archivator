@@ -71,12 +71,14 @@ class RecoveryTests(ArchiveTest):
 
     def test_damage_beyond_capacity_fails(self):
         self.make_archive()
-        manifest = read_json(next(self.archive.glob("*_manifest.json")))
-        for member in manifest["members"]:
+        manifests = [read_json(path) for path in self.archive.glob("*_manifest.json")]
+        manifest = next(item for item in manifests if item["member_count"] == 8)
+        largest = sorted(manifest["members"], key=lambda member: member["stored_length"], reverse=True)[:2]
+        missing_blocks = sum((member["stored_length"] + manifest["slice_size"] - 1) // manifest["slice_size"]
+                             for member in largest)
+        self.assertGreater(missing_blocks, manifest["recovery_blocks"])
+        for member in largest:
             (self.archive / member["filename"]).unlink()
-        # No parity means there is certainly no remaining recovery capacity.
-        for path in self.archive.glob(f"*_parity-{manifest['parity']}*.par2"):
-            path.unlink()
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
             self.assertEqual(verify(self.archive), 1)

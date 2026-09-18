@@ -1,11 +1,12 @@
 import contextlib
 import io
 import os
+import random
 import shutil
 from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
-from poc.archivator_lib.common import ArchiveError, IntegrityError, read_json
+from poc.archivator_lib.common import ArchiveError, IntegrityError
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL
@@ -69,12 +70,12 @@ class RestoreTests(ArchiveTest):
 
     def test_wrong_key_is_a_hard_failure(self):
         _, certificate = self.certificate()
-        wrong_key, wrong_certificate = self.certificate("wrong")
+        wrong_key, _ = self.certificate("wrong")
         backup(self.source, self.archive, certificate, SMALL)
         with self.assertRaises(IntegrityError):
-            restore(self.archive, self.restored, key=wrong_key, certificate=wrong_certificate)
+            restore(self.archive, self.restored, key=wrong_key, certificate=certificate)
 
-    def test_moved_nested_archive_and_reversed_enumeration(self):
+    def test_moved_nested_archive_and_randomized_enumeration(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         moved = self.root / "moved" / "different" / "hierarchy"
@@ -82,11 +83,14 @@ class RestoreTests(ArchiveTest):
         shutil.move(self.archive, moved)
         real_walk = os.walk
 
-        def reversed_walk(*args, **kwargs):
+        def randomized_walk(*args, **kwargs):
+            randomizer = random.Random(42)
             for directory, directories, files in real_walk(*args, **kwargs):
-                yield directory, directories, list(reversed(files))
+                randomizer.shuffle(directories)
+                randomizer.shuffle(files)
+                yield directory, directories, files
 
-        with patch("poc.archivator_lib.recovery.os.walk", side_effect=reversed_walk):
+        with patch("poc.archivator_lib.recovery.os.walk", side_effect=randomized_walk):
             restore(self.root / "moved", self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
 
