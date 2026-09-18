@@ -6,12 +6,36 @@ from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError, read_json, sha256
-from poc.archivator_lib.external import check_parity, decrypt, executable
+from poc.archivator_lib.external import check_parity, create_parity, decrypt, executable
 from poc.archivator_lib.format import parse_chunk
 from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl
 
 
 class BackupTests(ArchiveTest):
+    def test_parity_generation_reads_members_without_copies_or_links(self):
+        (self.source / "large").write_bytes(self.data(160000))
+        generated_sets = []
+
+        def generate(directory, prefix, members, slice_size, blocks, output_directory):
+            self.assertEqual(directory, self.archive)
+            self.assertEqual(list(output_directory.iterdir()), [])
+            before = {name: sha256(directory / name) for name in members}
+            files = create_parity(directory, prefix, members, slice_size, blocks,
+                                  output_directory=output_directory)
+            self.assertEqual(set(output_directory.iterdir()), set(files))
+            self.assertEqual({name: sha256(directory / name) for name in members}, before)
+            generated_sets.append(prefix)
+            return files
+
+        with patch("poc.archivator_lib.backup.create_parity", side_effect=generate), \
+                patch("shutil.copyfile", side_effect=AssertionError("Backup must not copy PAR2 inputs")), \
+                patch("os.link", side_effect=AssertionError("Backup must not hard-link PAR2 inputs")), \
+                patch("os.symlink", side_effect=AssertionError("Backup must not symlink PAR2 inputs")):
+            backup(self.source, self.archive, settings=SMALL)
+        self.assertTrue(any(prefix.endswith("_metadata") for prefix in generated_sets))
+        self.assertGreater(len(generated_sets), 2)
+        self.assertFalse((self.archive / ".tmp").exists())
+
     def test_empty_tree_still_has_recoverable_metadata_and_root(self):
         archive_id = backup(self.source, self.archive, settings=SMALL)
         complete = read_json(self.archive / f"archive-{archive_id}_complete.json")

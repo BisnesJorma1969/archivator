@@ -109,21 +109,25 @@ def normalize_certificate(source, target):
     return result.strip().split("=", 1)[1].replace(":", "").lower()
 
 
-def create_parity(directory, prefix, members, slice_size, blocks):
+def create_parity(directory, prefix, members, slice_size, blocks, output_directory=None):
     if blocks > 32768:
         raise ArchiveError("PAR2 recovery block limit exceeded; increase the internal slice size")
+    output_directory = output_directory or directory
+    index = output_directory.resolve() / (prefix + ".par2")
+    # Explicit source base keeps stored member names relative to the archive,
+    # even when the recovery files are generated in a separate staging directory.
     run([executable("par2"), "create", "-q", "-t1", "-T1", f"-s{slice_size}",
-         f"-c{blocks}", "-u", "-n4", "--", prefix + ".par2", *members], cwd=directory,
+         f"-c{blocks}", "-u", "-n4", f"-B{directory.resolve()}", "--", str(index), *members], cwd=directory,
         activity=f"PAR2: creating {blocks:,} recovery blocks for {len(members):,} files")
-    files = sorted(directory.glob(prefix + "*.par2"))
+    files = sorted(output_directory.glob(prefix + "*.par2"))
     if len(files) != 5:
         raise ArchiveError("PAR2 did not produce one index and four recovery volumes")
-    if check_parity(directory, prefix) != 0:
+    if check_parity(output_directory, prefix, data_directory=directory) != 0:
         raise IntegrityError("New PAR2 set failed verification")
     return files
 
 
-def check_parity(directory, prefix, repair=False):
+def check_parity(directory, prefix, repair=False, data_directory=None):
     files = sorted(directory.glob(prefix + "*.par2"))
     if not files:
         return 2
@@ -133,7 +137,9 @@ def check_parity(directory, prefix, repair=False):
     operation = "repair" if repair else "verify"
     role = "metadata" if prefix.endswith("_metadata") else "data"
     progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
-    arguments = [executable("par2"), operation, "-q", "-t1", "-T1", "--", index.name]
+    data_directory = data_directory or directory
+    arguments = [executable("par2"), operation, "-q", "-t1", "-T1",
+                 f"-B{data_directory.resolve()}", "--", index.name]
     result = subprocess.run(arguments, cwd=directory, capture_output=True, text=True, errors="replace")
     # par2: 0 = intact, 1 = repair possible, 2 = insufficient recovery data,
     # 4 = insufficient critical PAR2 metadata. Other codes are operational errors.

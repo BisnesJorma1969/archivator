@@ -499,6 +499,10 @@ Create with an explicit slice size and recovery-block count, and `-u -n4` for
 approximately uniform volumes. Verify newly generated sets before publishing
 their PAR2 files.
 
+During backup, PAR2 reads the explicitly named stored data or metadata files
+directly. Only generated PAR2 output goes into `.tmp/`; source members are not
+copied or linked. An explicit PAR2 base directory keeps member names portable.
+
 Do not use exponentially increasing Usenet-style recovery-volume sizes.
 
 ---

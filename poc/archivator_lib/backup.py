@@ -50,15 +50,12 @@ class ParityWriter:
         prefix = parity_prefix(self.archive_id, self.parity_id)
         blocks = recovery_blocks([member["stored_length"] for member in self.members],
                                  self.settings.slice_size)
-        # Only this set is visible to PAR2. Staging may be removed after failure;
-        # already-published data remains identifiable but is not marked complete.
+        # PAR2 reads the named archive members directly. Only generated parity
+        # goes into staging; no data copies or links are needed for creation.
         directory = self.staging / "parity"
         directory.mkdir()
-        for index, member in enumerate(self.members, 1):
-            progress.update(f"Staging data for PAR2: chunk {index}/{len(self.members)}")
-            shutil.copyfile(self.archive / member["filename"], directory / member["filename"])
-        files = create_parity(directory, prefix, [member["filename"] for member in self.members],
-                              self.settings.slice_size, blocks)
+        files = create_parity(self.archive, prefix, [member["filename"] for member in self.members],
+                              self.settings.slice_size, blocks, output_directory=directory)
         for path in files:
             self.parity_files.append(path.name)
             self.publish(path)
@@ -214,11 +211,8 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_s
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
     directory = staging / "metadata"
     directory.mkdir()
-    for index, name in enumerate(metadata_names, 1):
-        progress.update(f"Staging metadata for PAR2: file {index}/{len(metadata_names)}")
-        shutil.copyfile(archive / name, directory / name)
-    blocks = recovery_blocks([(directory / name).stat().st_size for name in metadata_names], slice_size)
-    files = create_parity(directory, prefix, metadata_names, slice_size, blocks)
+    blocks = recovery_blocks([(archive / name).stat().st_size for name in metadata_names], slice_size)
+    files = create_parity(archive, prefix, metadata_names, slice_size, blocks, output_directory=directory)
     parity_hashes = {}
     for path in files:
         parity_hashes[path.name] = sha256(path)
