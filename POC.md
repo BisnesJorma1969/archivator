@@ -186,8 +186,9 @@ archive-<aid>_metadata.par2
 archive-<aid>_metadata.vol000+032.par2
 ```
 
-Chunk numbers use four decimal digits and are local to a parity set. Plaintext
-offsets use twenty decimal digits and plaintext lengths twelve.
+Chunk numbers are local to a parity set and zero-padded to at least four decimal
+digits; larger numbers expand naturally, with no filename-imposed member limit.
+Plaintext offsets use twenty decimal digits and plaintext lengths twelve.
 
 A chunk copied out of its original directory must still identify:
 
@@ -280,11 +281,25 @@ not TAR headers/padding. Even an empty source produces a TAR with root metadata.
 
 A TAR bundle receives a normal random stream ID and then enters exactly the same chunk pipeline as a large file.
 
+Here **stream** means the plaintext byte sequence of either one TAR archive or
+one large original file. It does not mean a parity group. A stream can span
+several parity groups, and a parity group can contain chunks from several streams.
+
 Create an unencrypted, zstd-compressed JSON-lines inventory:
 
 ```text
 archive-<aid>_metadata_inventory_stream-<sid>.jsonl.zst
 ```
+
+Create this inventory **only for a TAR stream**: it lists the files, directories,
+and symlinks inside that TAR. The `<sid>` is the same stream ID found in its data
+chunk filenames, not a new inventory ID. A direct-file stream contains exactly
+one original file, whose path, attributes, and content checksums are recorded
+directly in the shared `metadata_streams.jsonl.zst` catalog; it has no separate
+inventory. One TAR stream plus three direct-file streams therefore produces one
+inventory and four catalog entries, regardless of the number of parity groups.
+Each data parity group separately has its own `_manifest.json.zst` describing
+the chunks it protects, not the source files inside a TAR.
 
 Each original entry records as applicable:
 
@@ -472,9 +487,23 @@ This is intentional.
 Target:
 
 ```text
-8 data chunks per parity set
+minimum 8 data chunks before normal set closure
+maximum 64 data chunks per parity set
 PAR2 slice size = 1 MiB
 ```
+
+After each completed chunk, close the set when it has at least 8 members and
+its total stored size is at least 6.25 times its largest stored member. Use the
+actual compressed, optionally encrypted sizes, not plaintext lengths. This lets
+small final chunks share a set with more subsequent chunks instead of forcing
+an early close. The factor is `1.25 / 0.20`: it makes the largest-member recovery
+target fit within the normal 20% target before whole-slice rounding.
+
+Always close at 64 members, even if the size condition is unmet. At the end of
+the backup, close any remaining set regardless of count or size balance; it may
+have fewer than 8 members. The capacity formula remains unchanged, so capped,
+final, or tiny sets can still need more than 20% recovery data. No padding,
+repacking, or change to independent compression/encryption is needed.
 
 A parity set does not cross archive boundaries.
 
@@ -602,7 +631,8 @@ compression=zstd
 encryption=none
 chunk-size=268435456
 parity=par2-v2
-parity-data-members=8
+parity-min-data-members=8
+parity-max-data-members=64
 parity-slice-size=1048576
 ```
 
@@ -719,10 +749,11 @@ for each stream:
         atomically rename to final filename
         record completed member in current parity set
 
-    whenever parity set reaches 8 chunks:
-        generate PAR2 in temporary staging
-        verify PAR2 set
-        publish PAR2 files and parity-set manifest
+        balanced = 4 * total_stored >= 25 * largest_stored
+        if count >= 64 or (count >= 8 and balanced):
+            generate PAR2 in temporary staging
+            verify PAR2 set
+            publish PAR2 files and parity-set manifest
 
     publish the TAR inventory, if this is a TAR stream
 
@@ -991,7 +1022,8 @@ Automate at least:
 4. Large file spanning multiple chunks.
 5. One stream spanning multiple parity sets.
 6. One parity set containing chunks from multiple streams.
-7. Final parity set containing fewer than 8 chunks.
+7. Balanced 8-member sets, growth beyond 8 for small tails, forced closure at 64,
+   and a final parity set containing fewer than 8 chunks.
 8. Unicode and awkward original filenames.
 9. Symlinks.
 10. Unencrypted backup → restore → compare success.

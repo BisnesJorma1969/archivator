@@ -3,10 +3,20 @@ import io
 import zipfile
 
 from poc.archivator_lib.common import Hashes, IntegrityError
-from poc.archivator_lib.format import chunk_name, new_id, parse_chunk, recovery_blocks
+from poc.archivator_lib.format import Settings, chunk_name, new_id, parse_chunk, recovery_blocks
 
 
 class FormatTests(unittest.TestCase):
+    def test_chunk_numbers_can_grow_beyond_four_digits(self):
+        settings = Settings(parity_max_members=10001)
+        self.assertEqual(settings.parity_max_members, 10001)
+        archive, parity, stream = new_id(), new_id(), new_id()
+        for number in (0, 9999, 10000, 1234567):
+            with self.subTest(number=number):
+                name = chunk_name(archive, parity, number, stream, 0, 256, False)
+                self.assertEqual(parse_chunk(name)["chunk"], number)
+        self.assertIn("_chunk-0000_", chunk_name(archive, parity, 0, stream, 0, 256, False))
+
     def test_independent_filename_contains_recovery_coordinates(self):
         archive, parity, stream = new_id(), new_id(), new_id()
         name = chunk_name(archive, parity, 3, stream, 512, 256, True)

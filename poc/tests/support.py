@@ -11,7 +11,7 @@ from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.format import Settings
 
 SMALL = Settings(chunk_size=16384, large_file_size=32768, tar_size=16384,
-                 tar_entries=100, parity_members=8, slice_size=1024)
+                 tar_entries=100, parity_min_members=8, parity_max_members=64, slice_size=1024)
 
 
 def read_zstd_json(path):

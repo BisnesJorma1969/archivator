@@ -189,10 +189,12 @@ def read_format(path, archive_id):
         raise IntegrityError("Unsupported or inconsistent archive format")
     if fields["encryption"] not in ("none", "cms-aes-256-gcm"):
         raise IntegrityError("Unsupported encryption")
-    for key in ("chunk-size", "parity-data-members", "parity-slice-size"):
+    for key in ("chunk-size", "parity-min-data-members", "parity-max-data-members", "parity-slice-size"):
         fields[key] = int(fields[key])
         if fields[key] <= 0:
             raise IntegrityError(f"Invalid format setting: {key}")
+    if fields["parity-min-data-members"] > fields["parity-max-data-members"]:
+        raise IntegrityError("Invalid parity member limits")
     return fields
 
 
@@ -265,7 +267,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
         if name != prefix + "_manifest.json" or manifest["version"] != 1 or manifest["archive"] != archive_id:
             raise IntegrityError("Inconsistent parity-set manifest")
         members = manifest["members"]
-        if not 0 < len(members) <= fields["parity-data-members"] or len(members) != manifest["member_count"]:
+        if not 0 < len(members) <= fields["parity-max-data-members"] or len(members) != manifest["member_count"]:
             raise IntegrityError("Invalid parity member count")
         if manifest["slice_size"] != fields["parity-slice-size"] or manifest["slice_size"] % 4:
             raise IntegrityError("Inconsistent PAR2 slice size")

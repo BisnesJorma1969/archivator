@@ -19,6 +19,11 @@ inventories, and metadata PAR2, stays at the archive root.
 Directories are created only when publishing files. Continue passing
 the archive root, not an individual shard, to commands.
 
+A stream is either a TAR bundle or one large original file. Only TAR streams
+have a separate `metadata_inventory_stream-<id>.jsonl.zst` listing their contents;
+direct-file metadata is in the shared `metadata_streams.jsonl.zst` catalog.
+These inventories are not parity-group manifests. See [names and contents](FORMAT.md#names-and-contents).
+
 Backup and restore destinations must be absent or empty. Source and destination
 must not overlap. The source, archive being read, or restore target must not
 contain the work directory itself; individual directories *under* `work/` are fine.

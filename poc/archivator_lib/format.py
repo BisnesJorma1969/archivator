@@ -11,7 +11,7 @@ ID = r"[0-9a-f]{32}"
 ARCHIVE_NAME = re.compile(rf"archive-({ID})_")
 CHUNK_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})_"
-    rf"chunk-(?P<chunk>[0-9]{{4}})_stream-(?P<stream>{ID})_"
+    rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
     r"offset-(?P<offset>[0-9]{20})_length-(?P<length>[0-9]{12})"
     r"\.zst(?P<encrypted>\.enc)?"
 )
@@ -23,7 +23,8 @@ class Settings:
     large_file_size: int = 256 * 1024 * 1024
     tar_size: int = 1024 * 1024 * 1024
     tar_entries: int = 100000
-    parity_members: int = 8
+    parity_min_members: int = 8
+    parity_max_members: int = 64
     slice_size: int = 1024 * 1024
 
     def __post_init__(self):
@@ -31,8 +32,8 @@ class Settings:
             raise ArchiveError("All internal size settings must be positive")
         if self.slice_size % 4:
             raise ArchiveError("PAR2 slice size must be a multiple of four")
-        if self.parity_members > 10000:
-            raise ArchiveError("Too many members for four-digit chunk numbers")
+        if self.parity_min_members > self.parity_max_members:
+            raise ArchiveError("Minimum parity members must not exceed the maximum")
 
 
 def new_id():

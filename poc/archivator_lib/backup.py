@@ -14,7 +14,7 @@ from .progress import progress
 
 
 class ParityWriter:
-    """Collect completed chunks until a data parity set is full."""
+    """Collect completed chunks until the set is balanced or reaches its cap."""
 
     def __init__(self, archive, archive_id, settings):
         self.archive = archive
@@ -43,7 +43,13 @@ class ParityWriter:
         os.replace(path, shard / name)
         self.members.append(member)
         print(f"Stored chunk: {length:,} plaintext bytes -> {member['stored_length']:,} stored bytes", flush=True)
-        if len(self.members) == self.settings.parity_members:
+        count = len(self.members)
+        lengths = [member["stored_length"] for member in self.members]
+        # 125% of the largest member fits within 20% of the set when its
+        # total is at least 6.25 times the largest. Use integers, not floats.
+        balanced = 4 * sum(lengths) >= 25 * max(lengths)
+        if (count >= self.settings.parity_max_members
+                or (count >= self.settings.parity_min_members and balanced)):
             self.finish_set()
 
     def finish_set(self):
@@ -317,7 +323,9 @@ def backup(source, archive, certificate=None, settings=None):
             "format": "archivator", "version": "1", "archive": archive_id,
             "compression": "zstd", "encryption": "cms-aes-256-gcm" if certificate else "none",
             "chunk-size": settings.chunk_size, "parity": "par2-v2",
-            "parity-data-members": settings.parity_members, "parity-slice-size": settings.slice_size,
+            "parity-min-data-members": settings.parity_min_members,
+            "parity-max-data-members": settings.parity_max_members,
+            "parity-slice-size": settings.slice_size,
         }
         if fingerprint:
             fields["recipient-sha256"] = fingerprint

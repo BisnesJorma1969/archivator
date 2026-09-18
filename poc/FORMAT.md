@@ -11,7 +11,17 @@ lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 
 Archive-level metadata and its PAR2 files share the prefix `archive-<aid>_metadata`
 and live at the archive root. Files containing `_chunk-` hold the actual backed-up
-content. A stream inventory describes files; it is not payload.
+content. A stream inventory describes the contents of a TAR; it is not payload.
+
+A **stream** is either one POSIX/PAX TAR archive or one large original file,
+before chunking, compression, and encryption. Only TAR streams have a separate
+`metadata_inventory_stream-<sid>.jsonl.zst`: it lists their contained source
+entries. Direct-file streams instead have their original path, attributes, and
+content checksums directly in `metadata_streams.jsonl.zst`. The inventory uses
+the same stream ID as its TAR's chunks, not an independent ID.
+For example, one TAR plus three large direct files gives four catalog entries
+but only one inventory. Inventories are per TAR, not per parity group; each data
+parity group has a separate manifest describing its protected chunks.
 
 Data chunks, their PAR2 files, and their one-per-set manifest are stored under
 `<archive-root>/<first-two-data-parity-ID-characters>/`, sharing the prefix
@@ -26,7 +36,7 @@ in those locations, in scratch for restore/verify or by renames for in-place rep
 | --- | --- |
 | `metadata_format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
 | `metadata_streams.jsonl.zst` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
-| `metadata_inventory_stream-<sid>.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
+| `metadata_inventory_stream-<sid>.jsonl.zst` | Only for TAR streams: contained source paths, types, metadata, and file checksums |
 | `metadata_recipient.pem` | Optional normalized public X.509 certificate |
 | `parity-<pid>_manifest.json.zst` | One manifest beside each data set: chunk coordinates, hashes, lengths, and recovery capacity; protected by metadata PAR2 |
 | `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
@@ -42,8 +52,9 @@ no uncompressed copies are retained. Catalog references retain logical filenames
 the checksum index and completion markers list exact stored filenames. Metadata
 is not encrypted.
 
-Chunk numbers are four decimal digits, local to a parity set. Offsets are twenty
-decimal digits and lengths twelve. Offsets/lengths always describe **uncompressed
+Chunk numbers are local to a parity set, zero-padded to at least four decimal
+digits. Larger numbers expand naturally; filename width imposes no member limit.
+Offsets are twenty decimal digits and lengths twelve. Offsets/lengths always describe **uncompressed
 plaintext stream bytes**, never compressed bytes. Directory order is irrelevant.
 
 TAR streams use POSIX/PAX. The inventory includes the source root as path `.` so
@@ -61,6 +72,14 @@ MGF1-SHA-256. These algorithm parameters are encoded in CMS. Encryption does not
 change plaintext stream coordinates. No private key is copied into archive metadata.
 
 ## Recovery capacity and metadata bootstrap
+
+Data parity sets normally close at 8–64 chunks: after at least 8 members, their
+total stored size must also be at least 6.25 times the largest stored member.
+Otherwise keep collecting, closing unconditionally at 64 or at end of backup.
+The final set can have fewer than 8 chunks. These limits are recorded as
+`parity-min-data-members` and `parity-max-data-members` in `metadata_format.txt`.
+This grouping reduces excess parity caused by tiny tail chunks without changing
+chunk contents or adding padding. It does not guarantee exactly 20% parity.
 
 For each data parity set, compute the larger of 20% of total stored data and 125%
 of the largest member. Round up to whole PAR2 slices. Also require at least four
