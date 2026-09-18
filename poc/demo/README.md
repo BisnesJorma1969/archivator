@@ -1,15 +1,11 @@
-# Synthetic recovery demo
+# Demo options and workload reference
 
-The [root README](../../README.md) contains the Ubuntu 26.04 setup and complete
-three-source backup/damage/restore/compare workflow. Both scripts use Python's
+Follow the [Ubuntu 26.04 install instructions](../../README.md#install) first.
+The [root README](../../README.md) contains the runnable backup/damage/restore/compare workflow. Both scripts use Python's
 standard library; generation also uses the mandatory `zstd` executable for sample
 compression ratios. Sources, reports, and scratch belong under ignored `poc/work/`.
 
 ## Workload generation
-
-```bash
-python3 poc/demo/generate.py
-```
 
 Defaults: seed `20260918`, 12,000 office-like files, 3 GiB of SQL-like backups,
 and 60,000 text logs. Output goes to `poc/work/demo/source1`, `source2`, `source3`.
@@ -45,44 +41,68 @@ random buffer; no sparse files are used. Generation streams bounded buffers.
 Seeds and fixed filesystem timestamps make workloads repeatable with the same
 settings and Python version. Compression ratios are approximate, not guarantees.
 
-Smaller run (use the same backup/restore loop with `demo-small` paths):
+### Generator options
 
-```bash
-python3 poc/demo/generate.py --root poc/work/demo-small \
-    --office-files 1000 --log-files 5000 --sql-mib 1024 --seed 42
-```
+Options for `poc/demo/generate.py`:
 
-Larger run:
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--root` | `poc/work/demo` | Absent or empty output directory |
+| `--office-files` | `12000` | Number of source1 files |
+| `--log-files` | `60000` | Number of source3 files |
+| `--sql-mib` | `3072` | Total source2 payload size in MiB |
+| `--seed` | `20260918` | Repeatable workload seed |
 
-```bash
-python3 poc/demo/generate.py --root poc/work/demo-large \
-    --office-files 20000 --log-files 200000 --sql-mib 6144
-```
+Change the counts and SQL size for smaller or larger workloads. A custom root
+also changes the paths to use in the main workflow.
 
-## Controlled bitrot
+## Bitrot options
 
-```bash
-python3 poc/demo/bitrot.py poc/work/demo/archive1 poc/work/demo/archive2 \
-    poc/work/demo/archive3 --percent 1 --seed 42 --dry-run \
-    --report poc/work/preview.json
-```
+Options for `poc/demo/bitrot.py`:
 
-Omit `--dry-run` to apply damage. With no directory arguments the script selects
-`poc/work/demo/archive1`, `archive2`, and `archive3`. Reports must be outside the
-archives and must not already exist; the default report gets a unique timestamp.
+| Argument / option | Default | Meaning |
+| --- | --- | --- |
+| Archive directories | `poc/work/demo/archive1`, `archive2`, `archive3` | Explicit paths select only those archives |
+| `--percent` | `1` | Percentage of blocks selected in each pool |
+| `--seed` | `20260918` | Repeatable damage selection for the same intact archives |
+| `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
+| `--dry-run` | Off | Write the damage plan without modifying archives |
+| `--report` | Timestamped JSON under `poc/work/demo/` | Must be outside archives and not already exist |
+| `--include-bootstrap` | Off | Also damage the unprotected completion marker; automatic recovery may fail |
+
+### Damage model
+
+`mixed` randomly chooses a fault for each selected original region:
+
+- `bitflip`: change one random bit.
+- `zero`: overwrite a run of 512-byte sectors, either contiguous or every second
+  or fourth sector. A final partial sector is allowed.
+- `copy`: overwrite a sector-sized run with real bytes from another position in
+  the same archive file or another file in that archive.
+- `delete`: remove bytes and shift the remainder left. This can shorten a file
+  internally or truncate its tail, not just remove an entire file.
+- `insert`: insert copied archive bytes and shift the remainder right, making
+  the file oversized. The insertion need not be at the beginning or end.
+
+Copy sources always refer to the intact pre-damage files. A zero/copy operation
+that would leave bytes unchanged is recorded as a bit flip instead. The generator
+models 512-byte sectors; it does not detect the physical storage's sector size.
 
 Selection is separate for each data set's data and PAR2 pools, plus each archive's
 protected metadata and metadata-PAR2 pools. A pool's selected count is
 `ceil(block_count * percent / 100)`. Consequently every nonempty pool receives at
-least one flip for a positive percentage, so even small metadata sets are tested.
+least one fault for a positive percentage, so even small metadata sets are tested.
 Small pools can have actual percentages much higher than requested; the report
 shows both block counts and actual percentages. Zero percent does nothing.
 
-Blocks start at each file's offset zero, using the set's recorded PAR2 slice size
-(normally 1 MiB); the final short block counts too. Exactly one random bit is
-flipped per selected block. For PAR2 files these are physical byte windows, not
-PAR2 packet boundaries: one damaged window can invalidate multiple packets.
-Recovery depends on each set's remaining capacity, not the archive-wide average.
+Regions start at each original file's offset zero, using the set's recorded PAR2
+slice size (normally 1 MiB); the final short region counts too. Each selected
+region receives one fault, with sector runs bounded to that original region.
+Insertions and deletions shift later bytes, so selected-region percentages are
+not exact lost-block percentages. PAR2 must locate surviving content after shifts.
+For PAR2 files these are physical byte windows, not packet boundaries: one fault
+can invalidate multiple packets. Recovery depends on each set's remaining capacity,
+not the archive-wide average.
 
 Protected catalogs, manifests, inventories, and the checksum index are eligible
 metadata. `complete.json` is the **unprotected bootstrap** and is preserved by
@@ -90,9 +110,12 @@ default. Add `--include-bootstrap` to test its damage as well; automatic recover
 may then fail even with surviving PAR2 data. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 
-All input archives are checked before any flips. Already damaged archives are
+All input archives are checked before any changes. Already damaged archives are
 refused; repair or recreate them before another run. This prevents the same seed
-from toggling old damage away. Reports record filenames, block numbers, offsets,
-and old/new bytes. A report is saved with status `planned` before mutation and
-marked `applied` only after completion; interruption can leave partial damage.
-Sources are never changed. Keep archives otherwise idle while running the demo.
+from toggling old damage away. Reports record fault types, original offsets and
+lengths, region hashes, copy sources, and bit-flip values. Changed files are staged
+beside their originals before replacement, requiring temporary free space up to
+the total size of affected files plus inserted bytes. A report is saved with status
+`planned` before mutation and marked `applied` only after completion; interruption
+can leave partial damage and `.bitrot-*` staging files. Sources are never changed.
+Keep archives otherwise idle while running the demo.

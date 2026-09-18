@@ -1,5 +1,6 @@
 import hashlib
 import json
+import random
 from pathlib import Path
 
 from poc.archivator_lib.backup import backup
@@ -7,7 +8,7 @@ from poc.archivator_lib.common import IntegrityError
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
-from poc.demo.bitrot import bitrot
+from poc.demo.bitrot import DAMAGE_TYPES, apply_changes, bitrot, plan_change
 from poc.demo.generate import compressed_size, generate
 from poc.tests.support import ArchiveTest, SMALL
 from poc.tests.test_recovery import snapshot
@@ -41,7 +42,7 @@ class DemoTests(ArchiveTest):
         (self.source / "file").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         before = {path.name: path.read_bytes() for path in self.archive.iterdir()}
-        report = bitrot([self.archive], percent=1, report_path=self.root / "damage.json")
+        report = bitrot([self.archive], percent=1, report_path=self.root / "damage.json", damage="bitflip")
         self.assertEqual(report["status"], "applied")
         self.assertEqual({group["category"] for group in report["groups"]},
                          {"data", "data_parity", "metadata", "metadata_parity"})
@@ -84,15 +85,71 @@ class DemoTests(ArchiveTest):
             bitrot([self.archive, self.archive])
         with self.assertRaises(ValueError):
             bitrot([self.archive], report_path=self.archive / "report.json")
+        with self.assertRaises(ValueError):
+            bitrot([self.archive], damage="unknown")
         self.assertEqual(snapshot(self.archive), before)
+
+    def test_splices_use_original_offsets_and_original_copy_sources(self):
+        path = self.root / "data.bin"
+        donor = self.root / "donor.bin"
+        original = self.data(16000)
+        donor_original = self.data(16000, seed=2)
+        path.write_bytes(original)
+        donor.write_bytes(donor_original)
+        rng = random.Random(42)
+        deletion = plan_change(path, 1, 1024, "delete", [donor], rng)
+        insertion = plan_change(path, 3, 1024, "insert", [path], rng)
+        overwrite = plan_change(path, 5, 1024, "copy", [donor], rng)
+        donor_flip = plan_change(donor, 0, 1024, "bitflip", [path], rng)
+        overwrite["source_offset"] = donor_flip["offset"]
+        copied = donor_original[overwrite["source_offset"]:overwrite["source_offset"] + overwrite["length"]]
+        overwrite["source_sha256"] = hashlib.sha256(copied).hexdigest()
+
+        expected = bytearray(original)
+        # Reference splices run backwards so earlier offsets cannot move.
+        for change in (overwrite, insertion, deletion):
+            offset, length = change["offset"], change["length"]
+            if change["operation"] == "delete":
+                del expected[offset:offset + length]
+            elif change["operation"] == "insert":
+                start = change["source_offset"]
+                expected[offset:offset] = original[start:start + length]
+            else:
+                expected[offset:offset + length] = copied
+        # Publish the donor first to exercise copying from pre-damage bytes.
+        apply_changes([{"changes": [donor_flip]}, {"changes": [overwrite, deletion, insertion]}])
+        self.assertEqual(path.read_bytes(), expected)
+        self.assertNotEqual(donor.read_bytes(), donor_original)
+        self.assertEqual(path.stat().st_size, len(original) - deletion["length"] + insertion["length"])
+        self.assertFalse(list(self.root.glob(".bitrot-*")))
 
     def test_include_bootstrap_and_over_capacity_are_available(self):
         (self.source / "file").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         report = bitrot([self.archive], percent=100, include_bootstrap=True,
-                        report_path=self.root / "destruction.json")
+                        report_path=self.root / "destruction.json", damage="bitflip")
         self.assertTrue(any(group["category"] == "bootstrap" and group["changes"] for group in report["groups"]))
         self.assertEqual(json.loads((self.root / "destruction.json").read_text())["status"], "applied")
         self.assertEqual(verify(self.archive), 1)
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored)
+
+    def test_all_damage_patterns_restore_with_metadata_and_parity_damage(self):
+        (self.source / "file").write_bytes(self.data(160000))
+        for damage in (*DAMAGE_TYPES, "mixed"):
+            with self.subTest(damage=damage):
+                archive = self.root / f"archive-{damage}"
+                target = self.root / f"target-{damage}"
+                backup(self.source, archive, settings=SMALL)
+                report = bitrot([archive], percent=1, damage=damage,
+                                report_path=self.root / f"{damage}.json")
+                before_restore = snapshot(archive)
+                self.assertEqual(verify(archive), 1)
+                restore(archive, target)
+                self.assertEqual(compare(self.source, target), 0)
+                self.assertEqual(snapshot(archive), before_restore)
+                repair(archive)
+                self.assertEqual(verify(archive), 0)
+                operations = {change["operation"] for group in report["groups"] for change in group["changes"]}
+                if damage != "mixed":
+                    self.assertIn(damage, operations)
