@@ -19,24 +19,13 @@ contain the work directory itself; individual directories *under* `work/` are fi
 
 ## Encryption options
 
-To enable encryption in the root README's workflow, add these options to its
-backup and restore commands:
+The [root demo workflow](../README.md#back-up) includes OpenSSL key generation
+and the encrypted backup/restore commands.
 
 | Command | Option |
 | --- | --- |
-| `backup` | `--encrypt-cert poc/work/recipient.pem` |
-| `restore` | `--decrypt-key poc/work/recipient-key.pem --decrypt-cert poc/work/recipient.pem` |
-
-The remaining steps are identical. For a disposable test certificate and
-unencrypted test private key:
-
-```sh
-mkdir -p poc/work
-openssl req -x509 -newkey rsa:3072 -noenc \
-  -keyout poc/work/recipient-key.pem \
-  -out poc/work/recipient.pem \
-  -subj '/CN=Archivator test' -days 1
-```
+| `backup` | `--encrypt-cert CERT.pem` |
+| `restore` | `--decrypt-key KEY.pem`; optionally `--decrypt-cert CERT.pem` |
 
 Encryption requires an RSA key of at least 3072 bits. Each `.zst.enc` chunk uses
 CMS AES-256-GCM with RSA-OAEP, SHA-256, and MGF1-SHA-256.

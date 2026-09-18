@@ -54,11 +54,34 @@ or database backups. Start with an absent/empty `poc/work/demo/`.
 python3 poc/demo/generate.py
 ```
 
-Back up `source1`:
+### Back up
+
+Choose **one** backup mode for `source1`. `archive1` must be absent or empty.
+
+**Without encryption:**
 
 ```bash
 ./poc/archivator backup poc/work/demo/source1 poc/work/demo/archive1
 ```
+
+**With encryption:** create a disposable RSA private key and public certificate
+once, then use the certificate for backup. Reuse the same pair for later runs;
+do not overwrite a private key needed by existing backups. The PoC uses an
+unencrypted private-key file; keep it outside the archive directory.
+
+```bash
+openssl req -x509 -newkey rsa:3072 -noenc \
+  -keyout poc/work/recipient-key.pem \
+  -out poc/work/recipient.pem \
+  -subj '/CN=Archivator test' -days 1
+
+./poc/archivator backup poc/work/demo/source1 poc/work/demo/archive1 \
+  --encrypt-cert poc/work/recipient.pem
+```
+
+Encrypted data chunks end in `.zst.enc`. Metadata remains unencrypted.
+
+### Damage and verify (both modes)
 
 Intentionally damage its data, metadata, and PAR2 files:
 
@@ -89,10 +112,26 @@ A nonzero exit status is expected for damage. Continue below when verify reports
 **repairable**. Random damage or additional deletions can exhaust a recovery set,
 in which case it reports **unrecoverable**.
 
-Restore and compare:
+### Restore and compare
+
+Use the restore command matching your backup mode.
+
+**Without encryption:**
 
 ```bash
 ./poc/archivator restore poc/work/demo/archive1 poc/work/demo/target1
+```
+
+**With encryption:**
+
+```bash
+./poc/archivator restore poc/work/demo/archive1 poc/work/demo/target1 \
+  --decrypt-key poc/work/recipient-key.pem
+```
+
+Then compare (both modes):
+
+```bash
 ./poc/archivator compare poc/work/demo/source1 poc/work/demo/target1
 ```
 
@@ -100,7 +139,8 @@ The final result should be **Trees are identical**. Restore leaves the damaged
 archive unchanged. For the other workloads, repeat these commands with `source2`,
 `archive2`, `target2`, or with `source3`, `archive3`, `target3`. Generate only once.
 
-Optionally repair the archive in place and verify it is intact:
+Optionally repair the archive in place and verify it is intact. Neither command
+needs the private key:
 
 ```bash
 ./poc/archivator repair poc/work/demo/archive1
