@@ -64,7 +64,7 @@ class AcceptanceTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"restored-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                chunks = list(archive.glob("*.cms" if encrypted else "*.gz"))
+                chunks = list(archive.glob("*.cms" if encrypted else "*.zst"))
                 max(chunks, key=lambda path: path.stat().st_size).unlink()
                 self.assertEqual(verify(archive), 1)
                 restore(archive, target, key=key if encrypted else None, certificate=certificate if encrypted else None)
@@ -111,12 +111,12 @@ class AcceptanceTests(ArchiveTest):
         run([executable("par2"), "repair", "-q", "-t1", "-T1", prefix + ".par2"], cwd=manual)
         reconstructed = manual / "reconstructed"
         for chunk in chunks:
-            compressed = manual / "chunk.gz"
+            compressed = manual / "chunk.zst"
             plaintext = manual / "chunk.plain"
             run([executable("openssl"), "cms", "-decrypt", "-binary", "-inform", "DER",
                  "-in", str(chunk), "-out", str(compressed), "-inkey", str(key), "-recip", str(certificate)])
             with plaintext.open("wb") as output:
-                subprocess.run(["gzip", "-dc", str(compressed)], stdout=output, check=True)
+                subprocess.run([executable("zstd"), "-dc", str(compressed)], stdout=output, check=True)
             offset = int(re.search(r"_offset-([0-9]+)_", chunk.name)[1])
             run(["dd", f"if={plaintext}", f"of={reconstructed}", "bs=1024", "oflag=seek_bytes",
                  f"seek={offset}", "conv=notrunc", "status=none"])
@@ -133,7 +133,7 @@ class AcceptanceTests(ArchiveTest):
         result = command("backup", self.source, self.archive)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(command("verify", self.archive).returncode, 0)
-        next(self.archive.glob("*.gz")).unlink()
+        next(self.archive.glob("*.zst")).unlink()
         self.assertEqual(command("verify", self.archive).returncode, 1)
         result = command("restore", self.archive, self.restored)
         self.assertEqual(result.returncode, 0, result.stderr)

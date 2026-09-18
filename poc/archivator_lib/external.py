@@ -1,7 +1,8 @@
-"""OpenSSL and PAR2 commands, with argument lists rather than shell strings."""
+"""Zstd, OpenSSL, and PAR2 commands with explicit subprocess lifetimes."""
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .common import ArchiveError, IntegrityError, WORK_DIR
@@ -23,6 +24,60 @@ def run(arguments, cwd=None):
         message = (result.stderr or result.stdout).strip()
         raise ArchiveError(f"{Path(arguments[0]).name} failed ({result.returncode}): {message}")
     return result.stdout
+
+
+class ZstdWriter:
+    """Stream one independent frame to disk without buffering a whole chunk."""
+
+    def __init__(self, target):
+        self.process = None
+        self.output = None
+        self.errors = None
+        try:
+            self.output = open(target, "wb")
+            # A file avoids a full stderr pipe blocking the compressor.
+            self.errors = tempfile.TemporaryFile(dir=Path(target).parent)
+            self.process = subprocess.Popen(
+                [executable("zstd"), "-q", "-3", "--single-thread", "--check", "-c"],
+                stdin=subprocess.PIPE, stdout=self.output, stderr=self.errors)
+        except BaseException:
+            self.close()
+            raise
+
+    def write(self, data):
+        try:
+            self.process.stdin.write(data)
+        except BrokenPipeError as error:
+            raise ArchiveError("Zstd compressor stopped while writing a chunk") from error
+
+    def finish(self):
+        try:
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass  # Read the compressor's exit status and diagnostic below.
+            status = self.process.wait()
+            if status:
+                self.errors.seek(0)
+                message = self.errors.read().decode("utf-8", errors="replace").strip()
+                raise ArchiveError(f"Zstd compression failed ({status}): {message}")
+        finally:
+            self.close()
+
+    def close(self):
+        # Failed source reads must not leave a child process or publish a partial frame.
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.kill()
+            self.process.wait()
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass
+        if self.output is not None:
+            self.output.close()
+        if self.errors is not None:
+            self.errors.close()
 
 
 def encrypt(source, target, certificate):

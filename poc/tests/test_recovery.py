@@ -28,7 +28,7 @@ class RecoveryTests(ArchiveTest):
     def test_verify_intact_and_repairable_without_changing_archive(self):
         self.make_archive()
         self.assertEqual(verify(self.archive), 0)
-        flip(next(self.archive.glob("*.gz")))
+        flip(next(self.archive.glob("*.zst")))
         before = snapshot(self.archive)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
@@ -40,7 +40,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_repair_missing_chunk_and_parity_only_damage(self):
         self.make_archive()
-        next(self.archive.glob("*.gz")).unlink()
+        next(self.archive.glob("*.zst")).unlink()
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
         volume = next(path for path in self.archive.glob("*.vol*.par2") if "_metadata" not in path.name)

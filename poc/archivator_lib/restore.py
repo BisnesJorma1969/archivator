@@ -1,14 +1,14 @@
 """Reconstruct verified streams and restore their original filesystem entries."""
 
-import gzip
 import os
 import shutil
+import subprocess
 import tarfile
-import zlib
+import tempfile
 from pathlib import Path
 
 from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, read_jsonl, scratch
-from .external import decrypt
+from .external import decrypt, executable
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import copy_set, discover, open_archive, recover_set, select
 
@@ -17,20 +17,28 @@ def unpack_chunk(directory, member, output, encrypted, key, certificate):
     stored = directory / member["filename"]
     compressed = stored
     if encrypted:
-        compressed = directory / "decrypted.gz"
+        compressed = directory / "decrypted.zst"
         decrypt(stored, compressed, key, certificate)
     hashes = Hashes()
     length = 0
-    try:
-        with gzip.open(compressed, "rb") as source:
-            while data := source.read(min(BUFFER_SIZE, member["length"] - length + 1)):
+    with tempfile.TemporaryFile(dir=directory) as errors, subprocess.Popen(
+            [executable("zstd"), "-q", "-d", "-c", "--", str(compressed)],
+            stdout=subprocess.PIPE, stderr=errors) as process:
+        try:
+            while data := process.stdout.read(min(BUFFER_SIZE, member["length"] - length + 1)):
                 length += len(data)
                 if length > member["length"]:
                     raise IntegrityError("Decompressed chunk exceeds its declared length")
                 hashes.update(data)
                 output.write(data)
-    except (gzip.BadGzipFile, EOFError, zlib.error) as error:
-        raise IntegrityError(f"Invalid gzip chunk: {member['filename']}") from error
+            if process.wait():
+                errors.seek(0)
+                message = errors.read().decode("utf-8", errors="replace").strip()
+                raise IntegrityError(f"Invalid zstd chunk {member['filename']}: {message}")
+        finally:
+            # Stop decoding immediately on length or output failures.
+            if process.poll() is None:
+                process.kill()
     if length != member["length"]:
         raise IntegrityError("Decompressed chunk length mismatch")
     if (hashes.values()["sha256"] != member["plaintext_sha256"]

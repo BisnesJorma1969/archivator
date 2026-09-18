@@ -3,12 +3,14 @@ import io
 import os
 import random
 import shutil
+import subprocess
 from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
-from poc.archivator_lib.common import ArchiveError, IntegrityError
+from poc.archivator_lib.common import ArchiveError, Hashes, IntegrityError
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.restore import restore
+from poc.archivator_lib.external import executable
+from poc.archivator_lib.restore import restore, unpack_chunk
 from poc.tests.support import ArchiveTest, SMALL
 from poc.tests.test_recovery import flip, snapshot
 
@@ -21,6 +23,26 @@ class RestoreTests(ArchiveTest):
 
     def test_empty_tree(self):
         self.roundtrip()
+
+    def test_zstd_decoder_rejects_truncation_and_excess_plaintext(self):
+        data = self.data(160000)
+        compressed = subprocess.run([executable("zstd"), "-q", "-3", "--check", "-c"],
+                                    input=data, capture_output=True, check=True).stdout
+        hashes = Hashes()
+        hashes.update(data)
+        member = {"filename": "chunk.zst", "length": len(data),
+                  "plaintext_sha256": hashes.values()["sha256"],
+                  "plaintext_sha512": hashes.values()["sha512"]}
+        path = self.root / member["filename"]
+        path.write_bytes(compressed[:-1])
+        with self.assertRaisesRegex(IntegrityError, "Invalid zstd chunk"):
+            unpack_chunk(self.root, member, io.BytesIO(), False, None, None)
+        path.write_bytes(compressed)
+        member["length"] = 1024
+        output = io.BytesIO()
+        with self.assertRaisesRegex(IntegrityError, "exceeds its declared length"):
+            unpack_chunk(self.root, member, output, False, None, None)
+        self.assertLessEqual(len(output.getvalue()), member["length"])
 
     def test_awkward_names_symlinks_empty_files_and_metadata(self):
         (self.source / "folder").mkdir()
@@ -62,7 +84,7 @@ class RestoreTests(ArchiveTest):
     def test_missing_chunk_repaired_only_in_scratch(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        missing = next(self.archive.glob("*.gz"))
+        missing = next(self.archive.glob("*.zst"))
         missing.unlink()
         restore(self.archive, self.restored)
         self.assertFalse(missing.exists())
@@ -96,7 +118,7 @@ class RestoreTests(ArchiveTest):
 
     def test_unrecoverable_damage_never_succeeds(self):
         backup(self.source, self.archive, settings=SMALL)
-        for path in list(self.archive.glob("*.gz")) + list(self.archive.glob("*.par2")):
+        for path in list(self.archive.glob("*.zst")) + list(self.archive.glob("*.par2")):
             path.unlink()
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored)

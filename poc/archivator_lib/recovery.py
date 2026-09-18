@@ -121,7 +121,7 @@ def read_format(path, archive_id):
             raise IntegrityError(f"Duplicate format field: {key}")
         fields[key] = value
     required = {"format": "archivator", "version": "1", "archive": archive_id,
-                "compression": "gzip", "parity": "par2-v2"}
+                "compression": "zstd", "parity": "par2-v2"}
     if any(fields.get(key) != value for key, value in required.items()):
         raise IntegrityError("Unsupported or inconsistent archive format")
     if fields["encryption"] not in ("none", "cms-aes-256-gcm"):

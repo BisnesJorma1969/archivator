@@ -1,13 +1,12 @@
 """Build streams, transform independent chunks, and publish a complete archive."""
 
-import gzip
 import os
 import shutil
 import tarfile
 from pathlib import Path
 
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
-from .external import create_parity, encrypt, executable, normalize_certificate
+from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, empty_destination, ensure_disjoint, public_entry, scan
 from .format import Settings, chunk_name, new_id, parity_prefix, recovery_blocks
 
@@ -85,7 +84,6 @@ class StreamWriter:
         self.hashes = Hashes()
         self.chunk_hashes = Hashes()
         self.chunk_length = 0
-        self.raw = None
         self.compressed = None
 
     def write(self, data):
@@ -93,8 +91,7 @@ class StreamWriter:
         remaining = memoryview(data)
         while remaining:
             if self.compressed is None:
-                self.raw = open(self.parity.staging / "chunk.gz", "wb")
-                self.compressed = gzip.GzipFile(filename="", mode="wb", fileobj=self.raw, mtime=0)
+                self.compressed = ZstdWriter(self.parity.staging / "chunk.zst")
             count = min(len(remaining), self.parity.settings.chunk_size - self.chunk_length)
             piece = remaining[:count]
             self.compressed.write(piece)
@@ -110,13 +107,11 @@ class StreamWriter:
     def finish_chunk(self):
         if not self.chunk_length:
             return
-        self.compressed.close()
-        self.raw.close()
+        self.compressed.finish()
         self.compressed = None
-        self.raw = None
-        path = self.parity.staging / "chunk.gz"
+        path = self.parity.staging / "chunk.zst"
         if self.certificate:
-            encrypted = self.parity.staging / "chunk.gz.cms"
+            encrypted = self.parity.staging / "chunk.zst.cms"
             encrypt(path, encrypted, self.certificate)
             path.unlink()
             path = encrypted
@@ -129,8 +124,6 @@ class StreamWriter:
         # Cleanup does not publish a partial chunk when a source read failed.
         if self.compressed:
             self.compressed.close()
-        if self.raw:
-            self.raw.close()
 
 
 class HashingReader:
@@ -240,6 +233,7 @@ def backup(source, archive, certificate=None, settings=None):
     if WORK_DIR.resolve().is_relative_to(source.resolve()):
         raise ArchiveError("Source must not contain the PoC work directory")
     executable("par2")
+    executable("zstd")
     if certificate:
         certificate = Path(certificate).absolute()
         executable("openssl")
@@ -301,7 +295,7 @@ def backup(source, archive, certificate=None, settings=None):
         format_name = f"archive-{archive_id}_format.txt"
         fields = {
             "format": "archivator", "version": "1", "archive": archive_id,
-            "compression": "gzip", "encryption": "cms-aes-256-gcm" if certificate else "none",
+            "compression": "zstd", "encryption": "cms-aes-256-gcm" if certificate else "none",
             "chunk-size": settings.chunk_size, "parity": "par2-v2",
             "parity-data-members": settings.parity_members, "parity-slice-size": settings.slice_size,
         }

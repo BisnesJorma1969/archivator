@@ -1,4 +1,6 @@
 import unittest
+import io
+import zipfile
 
 from poc.archivator_lib.common import Hashes, IntegrityError
 from poc.archivator_lib.format import chunk_name, new_id, parse_chunk, recovery_blocks
@@ -19,9 +21,11 @@ class FormatTests(unittest.TestCase):
         hashes = Hashes(lookup=True)
         hashes.update(b"1234")
         hashes.update(b"56789")
-        self.assertEqual(hashes.values()["crc16_ccitt_false"], "29b1")
         self.assertEqual(hashes.values()["crc32"], "cbf43926")
         self.assertEqual(hashes.values()["md5"], "25f9e794323b453885f5181f1b624d0b")
+        with zipfile.ZipFile(io.BytesIO(), "w") as archive:
+            archive.writestr("sample.txt", b"123456789")
+            self.assertEqual(hashes.values()["crc32"], f"{archive.getinfo('sample.txt').CRC:08x}")
 
     def test_redundancy_accounts_for_short_sets_and_block_rounding(self):
         self.assertEqual(recovery_blocks([1], 1024), 4)

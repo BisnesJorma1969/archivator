@@ -30,21 +30,17 @@ class Hashes:
         if lookup:
             self.digests["md5"] = hashlib.md5(usedforsecurity=False)
             self.digests["sha1"] = hashlib.sha1(usedforsecurity=False)
-        self.crc16 = 0xffff
         self.crc32 = 0
 
     def update(self, data):
         for digest in self.digests.values():
             digest.update(data)
         if self.lookup:
-            # crc_hqx uses the CCITT polynomial; 0xffff supplies FALSE's initial value.
-            self.crc16 = binascii.crc_hqx(data, self.crc16)
             self.crc32 = binascii.crc32(data, self.crc32)
 
     def values(self):
         result = {name: digest.hexdigest() for name, digest in self.digests.items()}
         if self.lookup:
-            result["crc16_ccitt_false"] = f"{self.crc16:04x}"
             result["crc32"] = f"{self.crc32:08x}"
         return result
 
