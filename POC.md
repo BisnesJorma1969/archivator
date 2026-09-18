@@ -1,5 +1,8 @@
 # Minimal Archivator PoC
 
+This document describes the implemented PoC. See [poc/README.md](poc/README.md)
+for setup and usage, and [poc/FORMAT.md](poc/FORMAT.md) for manual recovery.
+
 ## 1. Goal
 
 Build a minimal local-filesystem proof of concept.
@@ -20,6 +23,13 @@ Use PAR2 for corruption detection/recovery.
 
 No cloud support. No networking. No workers. No benchmarking.
 
+Implementation, tests, and usage documentation live under `poc/`. The root
+`README.md` is intentionally empty. Generated development data, test certificates,
+and verification/repair/restore scratch use gitignored `poc/work/`.
+
+Keep code human-readable: straightforward functions and control flow, descriptive
+names, comments for non-obvious reasoning, and no unnecessary abstractions.
+
 ---
 
 ## 2. Runtime dependencies
@@ -34,19 +44,36 @@ par2cmdline
 
 Python stdlib otherwise.
 
+OpenSSL must support CMS AES-GCM. The par2cmdline build must support `-t` and `-T`;
+both main processing and file hashing are limited to one thread.
+
+Executables are found on `PATH`, with `poc/work/tools/usr/bin/` as a local fallback.
+The independent manual-recovery test also needs `gzip`, GNU `dd`, and `sha256sum`.
+Integration testing is performed on Linux; Windows/macOS execution is not claimed
+as tested.
+
 Do not implement custom cryptography or custom parity.
 
 ---
 
 ## 3. CLI
 
+Run `./poc/archivator` or `python3 -m poc` from the repository root. The examples
+use `archivator`, which is available when this repository's `poc/` is on `PATH`.
+No Python package installation is required.
+
 ```bash
 archivator backup SOURCE_DIR ARCHIVE_DIR
 archivator backup SOURCE_DIR ARCHIVE_DIR --encrypt-cert recipient.pem
 
 archivator verify ARCHIVE_DIR
+archivator verify ARCHIVE_DIR --archive-id ID
+
+archivator repair ARCHIVE_DIR
+archivator repair ARCHIVE_DIR --archive-id ID
 
 archivator restore ARCHIVE_DIR RESTORE_DIR
+archivator restore ARCHIVE_DIR RESTORE_DIR --archive-id ID
 archivator restore ARCHIVE_DIR RESTORE_DIR \
     --decrypt-key recipient-key.pem \
     --decrypt-cert recipient.pem
@@ -54,7 +81,27 @@ archivator restore ARCHIVE_DIR RESTORE_DIR \
 archivator compare SOURCE_DIR RESTORE_DIR
 ```
 
-Exit non-zero on any corruption, missing data, decryption failure, hash mismatch, PAR2 failure, or tree mismatch.
+`verify`, `repair`, and `restore` accept optional `--archive-id ID`. Without a
+selector, verify checks all discovered archive IDs and reports incomplete
+archives. Repair and restore require a selector when multiple IDs are present.
+
+Exit codes:
+
+```text
+0 = success / intact archive / identical trees
+1 = integrity, recovery, or comparison failure
+2 = usage or operational failure
+```
+
+Verify exits `1` for any detected damage, including recoverable damage or lost
+parity protection. Repair and restore may succeed after automatically recovering
+damage; unresolved corruption, missing data, decryption failure, or hash mismatch
+must never silently succeed. See section 18 for the differences between commands.
+
+Backup and restore destinations must be absent or empty and cannot be symlinks.
+Backup source/archive and restore archive/target directories must not overlap.
+The backup source and the archive/target supplied to restore must not contain
+`poc/work/` itself; individual directories under `poc/work/` are fine.
 
 ---
 
@@ -131,13 +178,13 @@ No spaces. No Unicode. Lowercase only.
 Example encrypted chunk:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000003221225472_length-001073741824.gz.cms
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.gz.cms
 ```
 
 Unencrypted:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000003221225472_length-001073741824.gz
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.gz
 ```
 
 PAR2:
@@ -153,7 +200,17 @@ Parity-set convenience manifest:
 archive-<aid>_parity-<pid>_manifest.json
 ```
 
-A file copied out of its original directory must still identify:
+The metadata recovery set has a distinct role suffix:
+
+```text
+archive-<aid>_parity-<pid>_metadata.par2
+archive-<aid>_parity-<pid>_metadata.vol000+032.par2
+```
+
+Chunk numbers use four decimal digits and are local to a parity set. Plaintext
+offsets use twenty decimal digits and plaintext lengths twelve.
+
+A chunk copied out of its original directory must still identify:
 
 ```text
 archive
@@ -163,6 +220,11 @@ stream
 plaintext offset
 plaintext length
 ```
+
+Archive-file filesystem timestamps have no recovery significance. Directory
+hierarchies may be moved or nested while preserving archive filenames. Readers
+index filenames once and reject duplicate archive filenames in the searched
+hierarchy rather than choosing one arbitrarily.
 
 ---
 
@@ -189,6 +251,14 @@ other special files
 
 Record original relative paths as JSON strings so arbitrary Unicode, tabs, newlines, spaces etc. can be represented safely.
 
+Use relative POSIX-style paths in metadata, including `.` for the source root.
+Scan with `lstat`; record symlinks without traversing them. The source root itself
+must be a directory, not a symlink. Hard-linked files become independent regular
+files; hard-link relationships and ownership are not preserved.
+
+Abort on source changes observable through ordinary stat checks. This is not a
+filesystem snapshot implementation.
+
 ---
 
 # 8. Small-file bundling
@@ -213,6 +283,10 @@ maximum 100000 entries per TAR
 ```
 
 Do not split an individual source file between TARs.
+
+Directories and symlinks, including the source root, are bundled with small files
+and count toward the entry limit. The source-data size target counts file content,
+not TAR headers/padding. Even an empty source produces a TAR with root metadata.
 
 A TAR bundle receives a normal random stream ID and then enters exactly the same chunk pipeline as a large file.
 
@@ -246,6 +320,9 @@ SHA-256 is the normal authoritative content checksum.
 
 Hash file contents while building the TAR. Do not reread merely to calculate another hash.
 
+Checksums are lowercase hexadecimal strings; CRC16-CCITT-FALSE has four digits
+and CRC32 eight. Non-file entries have metadata but no file-content hashes.
+
 ---
 
 # 9. Large files
@@ -255,6 +332,9 @@ Files >= 256 MiB become streams directly.
 Do not TAR them merely for packaging.
 
 Their original path and metadata are recorded in the archive catalog.
+
+Record `mode`, `mtime_ns`, `size`, SHA-256, and SHA-512. The additional lookup
+checksums listed for TAR inventory files are not generated for direct streams.
 
 ---
 
@@ -268,7 +348,8 @@ PoC default:
 chunk size = 256 MiB
 ```
 
-Tests may use a smaller internal setting.
+Tests use smaller internal `Settings` for chunk, large-file threshold, TAR,
+parity-member, and slice sizes. The CLI exposes no tuning flags.
 
 Chunks are independent.
 
@@ -300,6 +381,8 @@ Do not gzip an entire 40 TB stream as one compression stream.
 
 Each `.gz` must be independently decompressible with ordinary `gzip`.
 
+Gzip headers use an empty filename and a zero timestamp.
+
 ---
 
 # 12. Optional encryption
@@ -325,6 +408,9 @@ plaintext
 
 Use OpenSSL CMS with an X.509 recipient certificate.
 
+Use binary CMS AuthEnvelopedData with AES-256-GCM and DER encoding, via
+`openssl cms -encrypt -binary -aes-256-gcm -outform DER`.
+
 Each chunk is encrypted independently.
 
 Do not use:
@@ -336,9 +422,18 @@ one encryption stream spanning multiple chunks
 custom crypto formats
 ```
 
-Store the public recipient certificate and its fingerprint in archive metadata.
+Store a normalized public certificate as `archive-<aid>_recipient.pem`, and its
+SHA-256 fingerprint as `recipient-sha256` in `format.txt`. Certificate
+normalization never copies a private-key PEM block into the archive metadata.
 
-Never store the private key in the archive.
+The decrypting private key is supplied externally and is never stored by the
+encryption pipeline. The CLI accepts keys without a passphrase and does not prompt
+for passwords. `--decrypt-key` is required for encrypted restore;
+`--decrypt-cert` is optional.
+
+Only compressed chunk contents are encrypted. Catalogs, inventories, original
+paths, metadata, and checksums remain plaintext. Verify and repair do not need a
+private key and do not validate plaintext or CMS authentication; restore does.
 
 ---
 
@@ -395,7 +490,21 @@ target_recovery_bytes =
     )
 ```
 
-Convert that to PAR2 recovery-block count using the configured PAR2 slice size.
+Convert to whole recovery blocks, rounding upward, with two additional minimums:
+
+```text
+recovery_blocks = max(
+    ceil(target_recovery_bytes / slice_size),
+    ceil(largest_stored_member_bytes / slice_size) + 1,
+    4
+)
+```
+
+The extra block preserves the additional-corruption margin after slice rounding;
+four blocks allow four nonempty recovery volumes even for tiny/compressible sets.
+Use the same rule for the separate metadata recovery set. Slice sizes must be
+positive multiples of four. Creation fails if the recovery-block count exceeds
+par2cmdline's supported 32768-block limit; there is no automatic size adjustment.
 
 This deliberately gives the final short parity set a higher percentage of redundancy.
 
@@ -410,42 +519,53 @@ Create:
 
 Use normal PAR2 format and filenames.
 
+Create with an explicit slice size and recovery-block count, and `-u -n4` for
+approximately uniform volumes. Verify newly generated sets before publishing
+their PAR2 files.
+
 Do not use exponentially increasing Usenet-style recovery-volume sizes.
 
 ---
 
 # 15. Parity-set manifest
 
-For each parity set create:
+For each data parity set create:
 
 ```text
 archive-<aid>_parity-<pid>_manifest.json
 ```
 
-It contains:
+It contains these JSON fields:
 
 ```text
-format version
-archive id
-parity set id
-PAR2 slice size
-recovery capacity
-expected data-member count
+version
+archive
+parity
+slice_size
+recovery_blocks
+recovery_bytes
+member_count
 
-for every member:
-    exact archive filename
-    chunk number
-    stream id
-    plaintext offset
-    plaintext length
-    stored length
-    plaintext sha256
-    stored sha256
+members: array containing, for each chunk:
+    filename
+    chunk
+    stream
+    offset
+    length
+    stored_length
+    plaintext_sha256
+    plaintext_sha512
+    stored_sha256
 ```
 
 This manifest is convenience metadata.
 
 PAR2 remains authoritative for identifying its protected file content.
+
+Automation requires the manifest and validates its filename coordinates,
+membership, hashes, and complete non-overlapping stream ranges. Data manifests
+are themselves protected by the metadata recovery set. Metadata-set parameters
+are recorded in the completion marker, not another self-protected manifest.
 
 ---
 
@@ -472,6 +592,9 @@ parity-data-members=8
 parity-slice-size=1048576
 ```
 
+Encrypted archives use `encryption=cms-aes-256-gcm` and also record
+`recipient-sha256=<lowercase hexadecimal certificate fingerprint>`.
+
 `streams.jsonl` maps stream IDs to their meaning.
 
 Direct file:
@@ -481,7 +604,9 @@ Direct file:
   "stream": "...",
   "type": "file",
   "path": "database/example.bak",
-  "size": 123456789,
+  "size": 536870912,
+  "mode": 420,
+  "mtime_ns": 1700000000123456789,
   "sha256": "...",
   "sha512": "..."
 }
@@ -501,9 +626,36 @@ TAR:
 }
 ```
 
-Metadata itself must also have SHA-256 checksums.
+Metadata protection has a non-circular dependency order:
 
-For the PoC, protect final archive metadata using a separate PAR2 metadata recovery set.
+1. `archive-<aid>_checksums.json` maps exact filenames to SHA-256 values for the
+   format, catalogs, inventories, optional certificate, data-set manifests, and
+   all data-set PAR2 files.
+2. A separate PAR2 metadata recovery set protects the ordinary metadata and
+   checksum index. Data-set PAR2 files are checksummed by the index but are not
+   members of this metadata recovery set.
+3. `archive-<aid>_complete.json` is the completion marker, atomically published
+   last. It contains:
+
+   ```text
+   version
+   archive
+   checksum_index
+   checksum_index_sha256
+   metadata_prefix
+   metadata_members
+   metadata_slice_size
+   metadata_recovery_blocks
+   metadata_parity: map of metadata PAR2 filenames to SHA-256 values
+   ```
+
+The completion marker is the unprotected bootstrap root: it is neither signed
+nor self-checksummed. Missing or malformed markers cause automated verify,
+repair, and restore to fail as incomplete/unusable archives. Manual recovery can
+still use surviving PAR2 files and catalogs. The checksum index's own SHA-256 is
+in the marker, avoiding a self-checksum cycle.
+
+Recover and validate metadata in scratch before interpreting data manifests.
 
 ---
 
@@ -515,48 +667,104 @@ Conceptually:
 scan source
 
 classify:
-    small files -> TAR streams
+    small files, directories, symlinks -> TAR streams
     large files -> direct streams
 
 for each stream:
     produce plaintext chunks
 
     for each chunk:
+        determine current parity set and local chunk number
         calculate plaintext hashes
         gzip
         optionally CMS-encrypt
         calculate stored SHA-256
         write completed chunk to temp filename
         atomically rename to final filename
-        assign to current parity set
+        record completed member in current parity set
 
     whenever parity set reaches 8 chunks:
-        generate PAR2
-        generate parity-set manifest
+        generate PAR2 in temporary staging
         verify PAR2 set
+        publish PAR2 files and parity-set manifest
+
+    publish the TAR inventory, if this is a TAR stream
 
 finalize short parity set using increased redundancy rule
 
-write archive catalogs/inventories
+check source entries for observable changes
+write archive catalog and format
 
-protect metadata with PAR2
+write checksum index
+protect metadata and checksum index with PAR2
 
-write archive COMPLETE marker last
+write archive-<aid>_complete.json last
 ```
 
 Never create zero-byte placeholders for future final archive files.
 
-Incomplete work belongs only under:
+Incomplete backup files belong only under:
 
 ```text
 ARCHIVE_DIR/.tmp/
 ```
 
+The implementation processes TAR streams before direct-file streams, using the
+same chunk/parity pipeline. It reads file data incrementally; scans and metadata
+are retained in memory. It is not a bounded-memory metadata database.
+
+Normal exception cleanup removes backup staging. Already-published chunks and
+metadata may remain after failure, but without a completion marker the archive
+is incomplete. Abrupt termination may leave `.tmp/`; cross-run resume is not
+implemented. Use a fresh empty destination for a new backup.
+
 ---
 
-# 18. Restore algorithm
+# 18. Verify, repair, and restore
+
+## 18.1 Verify
+
+Never modify archive files. Recursively index archive filenames once, excluding
+`.tmp/`, then operate on the selected archive IDs and small candidate sets in
+`poc/work/` scratch. Do not open unrelated archives' content for a selected ID.
+
+Recover metadata in scratch when necessary, retaining the original damage report.
+For each data set, compare stored lengths/SHA-256 and PAR2-file SHA-256 values,
+and run PAR2 verification to determine whether damaged data is recoverable.
+Data chunks are not repaired by `verify`.
+
+Report archive status as intact, repairable, or unrecoverable, with per-set damage
+details. Lost or damaged parity protection is damage even when all data is intact;
+it is repairable by regenerating parity from validated data. No private key is
+required, and verification does not decompress chunks or check plaintext hashes.
+
+Return `0` only if intact, `1` for integrity damage or incomplete archives, and
+`2` for usage/operational failures. Scratch repairs never turn a damaged original
+archive into a successful verification result.
+
+## 18.2 Repair
+
+`repair` is the only recovery command that writes back to the archive. It requires
+write access but no private key.
+
+Recover metadata and data sets in scratch. Validate recovered stored content;
+regenerate missing/damaged PAR2 files to restore the original protection. Intact
+stored data can regenerate a completely lost parity set. Unrecoverable data or
+metadata causes a hard failure.
+
+Publish validated replacements one set at a time, using adjacent `.tmp/` staging
+and atomic per-file replacement. This is not an all-or-nothing archive transaction:
+if a later operation fails, earlier verified repairs remain, and completed-set
+progress is reported. After the sets are usable, refresh checksums and metadata
+PAR2, publish the updated completion marker last, and verify the archive again.
+
+## 18.3 Restore
 
 Never assume the archive filesystem is writable.
+
+Recover and validate metadata first. Require an absent or empty target and reject
+unsafe source paths, duplicate entries, missing/non-directory ancestors, and
+overlapping or missing chunk ranges before reconstructing content.
 
 For each parity set:
 
@@ -568,7 +776,11 @@ if required:
     run par2 repair
 ```
 
-Do not scan unrelated terabytes of archive files.
+If all stored members are intact but the available PAR2 files cannot verify the
+set, regenerate parity in scratch and verify it. There is no write-back to the
+archive, and no need to replenish otherwise unnecessary parity during restore.
+
+Do not scan unrelated terabytes of archive file contents.
 
 Filename grouping provides the candidate set.
 
@@ -581,14 +793,14 @@ for each stored chunk:
     verify stored SHA-256
     CMS decrypt if required
     gunzip
-    verify plaintext SHA-256
-    write bytes to stream at filename/manifest offset
+    write plaintext to scratch stream at filename/manifest offset
+    verify plaintext length, SHA-256, and SHA-512
 ```
 
 After a stream is reconstructed:
 
 ```text
-verify whole-stream SHA-256
+verify whole-stream length, SHA-256, and SHA-512
 ```
 
 If stream type is `file`:
@@ -600,13 +812,24 @@ write it to its original relative path
 If stream type is `tar`:
 
 ```text
-extract PAX TAR
-verify extracted entries against files.jsonl
+extract expected PAX TAR entries without following symlinks
+verify entry types, sizes, symlink targets, and all file hashes against files.jsonl
 ```
 
-Restore directories, symlinks and basic POSIX metadata.
+Create directories first, then regular files, and symlinks only after all streams
+have been validated. Reject unexpected TAR entries, traversal paths, duplicate
+entries, and TAR hardlinks masquerading as regular files.
+
+Apply source modes and timestamps through ordinary platform APIs. Restore
+directory metadata deepest-first, with the source root last. Warn about known
+target timestamp precision/range loss or unsupported symlink metadata; do not
+emulate unavailable precision. Unrepresentable paths, unavailable symlink
+creation, and other operational failures remain errors.
 
 Never silently continue after failed verification.
+
+Scratch is cleaned up on normal exit/error. A failed restore can leave verified
+files or partial output in its target; retry into a fresh empty directory.
 
 ---
 
@@ -631,6 +854,10 @@ The custom PoC is automation.
 
 It must not be the only implementation capable of recovery.
 
+The automated suite independently reconstructs an encrypted direct-file stream
+with PAR2, OpenSSL, gzip, GNU `dd`, and `sha256sum`, without invoking the PoC's
+restore code. Step-by-step commands are in [poc/FORMAT.md](poc/FORMAT.md).
+
 ---
 
 # 20. Compare command
@@ -649,8 +876,13 @@ On POSIX also compare:
 
 ```text
 mode
-mtime
+mtime_ns (exact equality)
 ```
+
+On non-POSIX platforms, do not compare POSIX modes; report timestamp differences
+as warnings. A precision warning during restore does not relax subsequent exact
+POSIX timestamp comparison. Content, path, type, size, and symlink-target
+differences always fail comparison.
 
 Report all differences found.
 
@@ -691,6 +923,18 @@ Automate at least:
 
 Tests should use small internal chunk/slice sizes so they run without generating huge test data.
 
+The stdlib `unittest` suite also covers strict verification statuses, explicit
+repair, parity-only damage, lost metadata/checksum indexes, read-only archives,
+CLI exit codes, unsafe extraction, source changes, and metadata precision warnings.
+The multi-TAR test uses 2,001 small files. External-tool integration tests use real
+OpenSSL and PAR2 rather than silently skipping missing dependencies.
+
+Run from the repository root:
+
+```sh
+python3 -m unittest discover -s poc/tests -t . -v
+```
+
 ---
 
 # 22. Explicitly out of scope
@@ -712,6 +956,7 @@ automatic media distribution
 signing
 key escrow
 ACL/xattr/ADS preservation
+ownership and hard-link relationship preservation
 custom PAR2
 custom cryptography
 performance tuning
@@ -726,15 +971,20 @@ Keep filesystem I/O reasonably isolated so a later Azure/S3 adapter can replace 
 
 # 23. PoC acceptance criterion
 
-This must work:
+With the CLI on `PATH` and fresh archive/restore destinations, this must work:
 
 ```bash
+set -e
+
 archivator backup ./original ./archive \
     --encrypt-cert ./recipient.pem
 
 # deliberately delete/corrupt recoverable archive chunks/parity files
 
-archivator verify ./archive
+# Damage is recoverable, but strict verification must return 1.
+verify_status=0
+archivator verify ./archive || verify_status=$?
+test "$verify_status" -eq 1
 
 archivator restore ./archive ./recovered \
     --decrypt-key ./recipient-key.pem \
@@ -743,28 +993,18 @@ archivator restore ./archive ./recovered \
 archivator compare ./original ./recovered
 ```
 
-Final command must exit `0`.
+The verify report must say the damage is repairable. Restore and the final
+compare must exit `0`; neither command repairs the original archive in place.
+
+Explicit repair must then restore clean verification:
+
+```bash
+archivator repair ./archive
+archivator verify ./archive
+```
+
+Both commands must exit `0`, including when parity protection needed replenishing.
 
 The same test must also pass with encryption disabled.
 
 That is the PoC. Anything not required to prove this path should wait.
-
----
-
-## Implementation clarifications
-
-* Implementation and its documentation live under `poc/`; root `README.md` stays empty.
-* Generated development data and restore scratch use gitignored `poc/work/`.
-  Incomplete backup files still belong under `ARCHIVE_DIR/.tmp/`.
-* `verify` never changes the archive. It reports whether damage is recoverable,
-  but exits non-zero for any damage, including lost parity protection.
-* `repair ARCHIVE_DIR [--archive-id ID]` repairs data and metadata and restores
-  missing/damaged parity protection. Restore repairs scratch copies automatically.
-* Verify checks all complete archives by default. Restore and repair require
-  `--archive-id ID` when multiple archive IDs are present. Incomplete archives
-  are reported, not silently ignored.
-* Archive-file filesystem timestamps have no recovery significance. Preserve
-  source metadata through ordinary target-system APIs; warn about known precision
-  loss or unsupported metadata rather than implementing timestamp emulation.
-* Prioritize readable code: straightforward functions and control flow, descriptive
-  names, comments for non-obvious reasoning, and no unnecessary abstractions.
