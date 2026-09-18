@@ -197,14 +197,17 @@ def write_tar(source, entries, sink):
     return inventory
 
 
-def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_size):
+def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_size,
+                      parity_checksums=None, metadata_id=None):
     staging = archive / ".tmp"
     index_name = f"archive-{archive_id}_checksums.json"
     checksums = {name: sha256(archive / name) for name in sorted(metadata_names + parity_files)}
+    if parity_checksums:
+        checksums.update(parity_checksums)
     write_json(staging / index_name, checksums)
     os.replace(staging / index_name, archive / index_name)
     metadata_names = sorted(metadata_names + [index_name])
-    metadata_id = new_id()
+    metadata_id = metadata_id or new_id()
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
     directory = staging / "metadata"
     directory.mkdir()
