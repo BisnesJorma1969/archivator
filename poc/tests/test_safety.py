@@ -59,7 +59,7 @@ class SafetyTests(ArchiveTest):
 
     def test_malformed_completion_marker_is_an_integrity_failure(self):
         backup(self.source, self.archive, settings=SMALL)
-        next(self.archive.glob("*_complete.json")).write_text('{"version": 1}')
+        next(self.archive.glob("*_metadata_complete.json")).write_text('{"version": 1}')
         self.assertEqual(verify(self.archive), 1)
 
     def test_precision_loss_is_reported_without_emulation(self):
@@ -97,4 +97,4 @@ class SafetyTests(ArchiveTest):
         with patch("poc.archivator_lib.backup.check_unchanged", side_effect=change_after_check):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.glob("*_complete.json")))
+        self.assertFalse(list(self.archive.glob("*_metadata_complete.json")))

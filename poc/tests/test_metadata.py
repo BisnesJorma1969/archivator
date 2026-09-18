@@ -14,14 +14,14 @@ from poc.tests.test_recovery import snapshot
 class MetadataTests(ArchiveTest):
     def test_fixed_policy_ignores_size_and_compression_ratio(self):
         for name, data, compress in (
-                ("archive-id_complete.json", b"{}", False),
-                ("archive-id_complete-copy.json", b"{}", False),
-                ("archive-id_format.txt", b"format=archivator\n" * 10000, False),
-                ("archive-id_recipient.pem", b"public certificate", False),
-                ("archive-id_streams.jsonl", b"{}\n", True),
-                ("archive-id_stream-sid_files.jsonl", b"{}\n" * 4000, True),
-                ("archive-id_parity-pid_manifest.json", b"{}", True),
-                ("archive-id_checksums.json", b"{}", True),
+                ("archive-id_metadata_complete.json", b"{}", False),
+                ("archive-id_metadata_complete-copy.json", b"{}", False),
+                ("archive-id_metadata_format.txt", b"format=archivator\n" * 10000, False),
+                ("archive-id_metadata_recipient.pem", b"public certificate", False),
+                ("archive-id_metadata_streams.jsonl", b"{}\n", True),
+                ("archive-id_metadata_stream-sid_inventory.jsonl", b"{}\n" * 4000, True),
+                ("archive-id_metadata_parity-pid_manifest.json", b"{}", True),
+                ("archive-id_metadata_checksums.json", b"{}", True),
                 ("other-metadata.bin", self.data(65536), True)):
             with self.subTest(name=name):
                 path = self.root / name
@@ -80,11 +80,15 @@ class MetadataTests(ArchiveTest):
         (self.source / "document").write_text("content" * 100)
         archive_id = backup(self.source, self.archive, settings=SMALL)
         complete = read_json(self.archive / completion_names(archive_id)[0])
+        metadata_names = [*complete["metadata_members"], *complete["metadata_parity"],
+                          *completion_names(archive_id)]
+        self.assertTrue(all(name.startswith(f"archive-{archive_id}_metadata_") for name in metadata_names))
+        self.assertTrue(all((self.archive / name).is_file() for name in metadata_names))
         self.assertTrue(complete["checksum_index"].endswith(".json.zst"))
-        inventories = list(self.archive.glob("*_files.jsonl.zst"))
+        inventories = list(self.archive.glob("*_metadata_stream-*_inventory.jsonl.zst"))
         self.assertTrue(inventories)
-        self.assertFalse(list(self.archive.glob("*_files.jsonl")))
-        self.assertFalse(list(self.archive.glob("*_checksums.json")))
+        self.assertFalse(list(self.archive.glob("*_metadata_stream-*_inventory.jsonl")))
+        self.assertFalse(list(self.archive.glob("*_metadata_checksums.json")))
         self.assertEqual(verify(self.archive), 0)
         for name in (inventories[0].name, complete["checksum_index"]):
             with self.subTest(name=name):

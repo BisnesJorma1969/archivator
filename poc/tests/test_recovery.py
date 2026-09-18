@@ -30,8 +30,8 @@ class RecoveryTests(ArchiveTest):
         self.make_archive()
         original_names = {path.name for path in self.archive.iterdir()}
         flip(next(self.archive.glob("*_chunk-*.zst")))
-        next(self.archive.glob("*_streams.jsonl.zst")).unlink()
-        next(self.archive.glob("*_metadata.vol*.par2")).unlink()
+        next(self.archive.glob("*_metadata_streams.jsonl.zst")).unlink()
+        next(self.archive.glob("*_metadata_parity-*.vol*.par2")).unlink()
         with patch("shutil.copyfile", side_effect=AssertionError("No repair copies")), \
                 patch("shutil.copyfileobj", side_effect=AssertionError("No repair copies")), \
                 patch("os.link", side_effect=AssertionError("No repair hard links")), \
@@ -75,7 +75,7 @@ class RecoveryTests(ArchiveTest):
         next(self.archive.glob("*_chunk-*.zst")).unlink()
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
-        volume = next(path for path in self.archive.glob("*.vol*.par2") if "_metadata" not in path.name)
+        volume = next(path for path in self.archive.glob("*.vol*.par2") if "_metadata_" not in path.name)
         volume.unlink()
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)
@@ -84,7 +84,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_damaged_catalog_and_checksum_index_are_recovered_in_scratch(self):
         self.make_archive()
-        for pattern in ("*_streams.jsonl.zst", "*_checksums.json.zst"):
+        for pattern in ("*_metadata_streams.jsonl.zst", "*_metadata_checksums.json.zst"):
             path = next(self.archive.glob(pattern))
             path.unlink()
             before = snapshot(self.archive)
@@ -103,7 +103,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_damage_beyond_capacity_fails(self):
         self.make_archive()
-        manifests = [read_zstd_json(path) for path in self.archive.glob("*_manifest.json.zst")]
+        manifests = [read_zstd_json(path) for path in self.archive.glob("*_metadata_parity-*_manifest.json.zst")]
         manifest = next(item for item in manifests if item["member_count"] == 8)
         largest = sorted(manifest["members"], key=lambda member: member["stored_length"], reverse=True)[:2]
         missing_blocks = sum((member["stored_length"] + manifest["slice_size"] - 1) // manifest["slice_size"]
@@ -141,7 +141,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()
-        volume = next(self.archive.glob("*_metadata.vol*.par2"))
+        volume = next(self.archive.glob("*_metadata_parity-*.vol*.par2"))
         flip(volume)
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)

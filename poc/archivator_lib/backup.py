@@ -66,7 +66,8 @@ class ParityWriter:
             "recovery_bytes": blocks * self.settings.slice_size,
             "member_count": len(self.members), "members": self.members,
         }
-        path = self.staging / (prefix + "_manifest.json")
+        manifest_name = parity_prefix(self.archive_id, self.parity_id, metadata=True) + "_manifest.json"
+        path = self.staging / manifest_name
         write_json(path, manifest)
         self.manifests.append(path.name)
         self.publish(path)
@@ -199,7 +200,7 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_s
                       parity_checksums=None, metadata_id=None):
     staging = archive / ".tmp"
     metadata_names = [store_metadata(archive / name) for name in metadata_names]
-    index_name = f"archive-{archive_id}_checksums.json"
+    index_name = f"archive-{archive_id}_metadata_checksums.json"
     checksums = {name: sha256(archive / name) for name in sorted(metadata_names + parity_files)}
     if parity_checksums:
         checksums.update(parity_checksums)
@@ -258,7 +259,7 @@ def backup(source, archive, certificate=None, settings=None):
     try:
         fingerprint = None
         if certificate:
-            name = f"archive-{archive_id}_recipient.pem"
+            name = f"archive-{archive_id}_metadata_recipient.pem"
             fingerprint = normalize_certificate(certificate, staging / name)
             parity.publish(staging / name)
             certificate = archive / name
@@ -273,7 +274,7 @@ def backup(source, archive, certificate=None, settings=None):
                 sink.finish_chunk()
             finally:
                 sink.close()
-            name = f"archive-{archive_id}_stream-{stream_id}_files.jsonl"
+            name = f"archive-{archive_id}_metadata_stream-{stream_id}_inventory.jsonl"
             write_jsonl(staging / name, inventory)
             parity.publish(staging / name)
             metadata.append(name)
@@ -302,10 +303,10 @@ def backup(source, archive, certificate=None, settings=None):
         for index, entry in enumerate(entries, 1):
             progress.update(f"Checking source remained unchanged: {index:,}/{len(entries):,} entries")
             check_unchanged(source / entry["path"], entry)
-        catalog_name = f"archive-{archive_id}_streams.jsonl"
+        catalog_name = f"archive-{archive_id}_metadata_streams.jsonl"
         write_jsonl(staging / catalog_name, streams)
         parity.publish(staging / catalog_name)
-        format_name = f"archive-{archive_id}_format.txt"
+        format_name = f"archive-{archive_id}_metadata_format.txt"
         fields = {
             "format": "archivator", "version": "1", "archive": archive_id,
             "compression": "zstd", "encryption": "cms-aes-256-gcm" if certificate else "none",

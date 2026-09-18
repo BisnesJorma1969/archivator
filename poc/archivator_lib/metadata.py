@@ -9,13 +9,14 @@ from .external import executable, run
 # These bootstrap/inspection files remain directly readable. All other metadata
 # is zstd-compressed, regardless of size or compression ratio.
 UNCOMPRESSED_METADATA_SUFFIXES = (
-    "_complete.json", "_complete-copy.json", "_format.txt", "_recipient.pem",
+    "_metadata_complete.json", "_metadata_complete-copy.json",
+    "_metadata_format.txt", "_metadata_recipient.pem",
 )
 
 
 def completion_names(archive_id):
-    return [f"archive-{archive_id}_complete.json",
-            f"archive-{archive_id}_complete-copy.json"]
+    return [f"archive-{archive_id}_metadata_complete.json",
+            f"archive-{archive_id}_metadata_complete-copy.json"]
 
 
 def completion_digest(complete):

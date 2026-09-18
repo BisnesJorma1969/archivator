@@ -58,8 +58,9 @@ def parse_chunk(name):
 
 
 def parity_prefix(archive, parity, metadata=False):
-    prefix = f"archive-{archive}_parity-{parity}"
-    return prefix + "_metadata" if metadata else prefix
+    if metadata:
+        return f"archive-{archive}_metadata_parity-{parity}"
+    return f"archive-{archive}_parity-{parity}"
 
 
 def recovery_blocks(lengths, slice_size):

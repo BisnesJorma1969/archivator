@@ -163,7 +163,7 @@ def check_parity(directory, prefix, repair=False, data_directory=None):
     if not index.exists():
         index = files[0]
     operation = "repair" if repair else "verify"
-    role = "metadata" if prefix.endswith("_metadata") else "data"
+    role = "metadata" if "_metadata_" in prefix else "data"
     progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
     data_directory = data_directory or directory
     arguments = [executable("par2"), operation, "-q", "-t1", "-T1",

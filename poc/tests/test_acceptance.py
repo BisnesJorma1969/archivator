@@ -24,7 +24,7 @@ class AcceptanceTests(ArchiveTest):
         for index in range(2001):
             (self.source / f"tiny-{index:04d}").write_bytes(f"file {index}\n".encode())
         backup(self.source, self.archive, settings=settings)
-        streams = read_zstd_jsonl(next(self.archive.glob("*_streams.jsonl.zst")))
+        streams = read_zstd_jsonl(next(self.archive.glob("*_metadata_streams.jsonl.zst")))
         self.assertGreater(len(streams), 1)
         self.assertTrue(all(stream["type"] == "tar" and stream["entry_count"] <= 400 for stream in streams))
         restore(self.archive, self.restored)
@@ -40,7 +40,7 @@ class AcceptanceTests(ArchiveTest):
                 target = self.root / f"restored-{encrypted}"
                 (self.source / "large").write_bytes(self.data(160000))
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                manifest = next(read_zstd_json(path) for path in archive.glob("*_manifest.json.zst")
+                manifest = next(read_zstd_json(path) for path in archive.glob("*_metadata_parity-*_manifest.json.zst")
                                 if read_zstd_json(path)["member_count"] == 8)
                 # Damage one data slice and lose a whole recovery volume. The
                 # other three volumes retain more than enough recovery blocks.
@@ -98,7 +98,7 @@ class AcceptanceTests(ArchiveTest):
         original = self.data(80000)
         (self.source / "large").write_bytes(original)
         backup(self.source, self.archive, certificate, SMALL)
-        catalog = next(self.archive.glob("*_streams.jsonl.zst"))
+        catalog = next(self.archive.glob("*_metadata_streams.jsonl.zst"))
         streams = [json.loads(line) for line in run([executable("zstd"), "-dc", str(catalog)]).splitlines()]
         stream = next(entry for entry in streams if entry["type"] == "file")
         manual = self.root / "manual"

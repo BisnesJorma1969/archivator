@@ -107,7 +107,7 @@ reports whether the particular damage is recoverable.
 
 Protected catalogs, manifests, inventories, and the checksum index are eligible
 metadata, including their compressed `.zst` representations. Both bootstrap copies,
-`complete.json` and `complete-copy.json`, are preserved by default; their sizes
+`metadata_complete.json` and `metadata_complete-copy.json`, are preserved by default; their sizes
 still count toward the total backup size. If the requested budget exceeds eligible
 bytes, it is capped and the actual percentage is reported. Add `--include-bootstrap`
 to include both copies; automatic recovery fails if neither remains valid, even

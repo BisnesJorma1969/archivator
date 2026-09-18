@@ -169,14 +169,19 @@ archive-<aid>_parity-<pid>.vol000+032.par2
 Parity-set convenience manifest:
 
 ```text
-archive-<aid>_parity-<pid>_manifest.json.zst
+archive-<aid>_metadata_parity-<pid>_manifest.json.zst
 ```
 
-The metadata recovery set has a distinct role suffix:
+All metadata, including data-set manifests and completion markers, and its PAR2
+files share the prefix `archive-<aid>_metadata_`. This groups them together and
+distinguishes them from payload chunks and data PAR2 files. Stream inventories
+use `_inventory.jsonl.zst`: these contain file descriptions, not file contents.
+
+The metadata recovery set has its own parity-set ID:
 
 ```text
-archive-<aid>_parity-<pid>_metadata.par2
-archive-<aid>_parity-<pid>_metadata.vol000+032.par2
+archive-<aid>_metadata_parity-<pid>.par2
+archive-<aid>_metadata_parity-<pid>.vol000+032.par2
 ```
 
 Chunk numbers use four decimal digits and are local to a parity set. Plaintext
@@ -265,7 +270,7 @@ A TAR bundle receives a normal random stream ID and then enters exactly the same
 Create an unencrypted, zstd-compressed JSON-lines inventory:
 
 ```text
-archive-<aid>_stream-<sid>_files.jsonl.zst
+archive-<aid>_metadata_stream-<sid>_inventory.jsonl.zst
 ```
 
 Each original entry records as applicable:
@@ -412,8 +417,8 @@ one encryption stream spanning multiple chunks
 custom crypto formats
 ```
 
-Store a normalized public certificate as `archive-<aid>_recipient.pem`, and its
-SHA-256 fingerprint as `recipient-sha256` in `format.txt`. Certificate
+Store a normalized public certificate as `archive-<aid>_metadata_recipient.pem`, and its
+SHA-256 fingerprint as `recipient-sha256` in `metadata_format.txt`. Certificate
 normalization never copies a private-key PEM block into the archive metadata.
 
 The decrypting private key is supplied externally and is never stored by the
@@ -528,7 +533,7 @@ Do not use exponentially increasing Usenet-style recovery-volume sizes.
 For each data parity set create:
 
 ```text
-archive-<aid>_parity-<pid>_manifest.json.zst
+archive-<aid>_metadata_parity-<pid>_manifest.json.zst
 ```
 
 It contains these JSON fields:
@@ -570,11 +575,11 @@ are recorded in the completion marker, not another self-protected manifest.
 Create:
 
 ```text
-archive-<aid>_format.txt
-archive-<aid>_streams.jsonl.zst
+archive-<aid>_metadata_format.txt
+archive-<aid>_metadata_streams.jsonl.zst
 ```
 
-`format.txt` contains simple `key=value` fields such as:
+`metadata_format.txt` contains simple `key=value` fields such as:
 
 ```text
 format=archivator
@@ -591,7 +596,7 @@ parity-slice-size=1048576
 Encrypted archives use `encryption=cms-aes-256-gcm` and also record
 `recipient-sha256=<lowercase hexadecimal certificate fingerprint>`.
 
-`streams.jsonl` maps stream IDs to their meaning.
+`metadata_streams.jsonl` maps stream IDs to their meaning.
 
 Direct file:
 
@@ -614,7 +619,7 @@ TAR:
 {
   "stream": "...",
   "type": "tar",
-  "inventory": "archive-..._stream-..._files.jsonl",
+  "inventory": "archive-..._metadata_stream-..._inventory.jsonl",
   "entry_count": 12345,
   "size": 987654321,
   "sha256": "...",
@@ -626,7 +631,7 @@ Metadata storage is fixed by file role, not size or compression ratio:
 
 | Metadata | Storage |
 | --- | --- |
-| Completion-marker copies, `format.txt`, public `recipient.pem` | Uncompressed for bootstrap and inspection |
+| Completion-marker copies, `metadata_format.txt`, public `metadata_recipient.pem` | Uncompressed for bootstrap and inspection |
 | Stream catalogs, file inventories, data-set manifests, checksum index | Always zstd-compressed, with `.zst` appended |
 
 Use the same zstd level 3, single-threaded, checksummed frames as data chunks.
@@ -636,13 +641,13 @@ names; the checksum index and completion markers record exact stored names.
 
 Metadata protection has a non-circular dependency order:
 
-1. `archive-<aid>_checksums.json.zst` maps exact filenames to SHA-256 values for the
+1. `archive-<aid>_metadata_checksums.json.zst` maps exact filenames to SHA-256 values for the
    format, catalogs, inventories, optional certificate, data-set manifests, and
    all data-set PAR2 files.
 2. A separate PAR2 metadata recovery set protects the ordinary metadata and
    checksum index. Data-set PAR2 files are checksummed by the index but are not
    members of this metadata recovery set.
-3. `archive-<aid>_complete.json` and `archive-<aid>_complete-copy.json` are identical
+3. `archive-<aid>_metadata_complete.json` and `archive-<aid>_metadata_complete-copy.json` are identical
    completion-marker copies, each atomically published after all protected files.
    Each contains:
 
@@ -847,7 +852,7 @@ If stream type is `tar`:
 
 ```text
 extract expected PAX TAR entries without following symlinks
-verify entry types, sizes, symlink targets, and all file hashes against files.jsonl
+verify entry types, sizes, symlink targets, and all file hashes against the stream inventory
 ```
 
 Create directories first, then regular files, and symlinks only after all streams

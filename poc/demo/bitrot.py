@@ -100,10 +100,10 @@ def sample_bytes(paths, budget, damage, rng):
 def file_category(path):
     """Filename hints for the report only; contents and format are not checked."""
     name = path.name
-    if name.endswith(("_complete.json", "_complete-copy.json")):
+    if name.endswith(("_metadata_complete.json", "_metadata_complete-copy.json")):
         return "bootstrap"
     if name.endswith(".par2"):
-        return "metadata_parity" if "_metadata" in name else "data_parity"
+        return "metadata_parity" if "_metadata_" in name else "data_parity"
     if "_chunk-" in name:
         return "data"
     return "metadata" if name.startswith("archive-") else "files"

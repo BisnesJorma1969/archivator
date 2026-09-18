@@ -9,20 +9,24 @@ All archive IDs, stream IDs, and parity-set IDs are independent random 128-bit
 values written as 32 lowercase hexadecimal digits. Archive-generated names use
 lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 
+All metadata and its PAR2 files share the prefix `archive-<aid>_metadata_`, so
+they group together in directory listings. Files containing `_chunk-` hold the
+actual backed-up content. A stream inventory describes files; it is not payload.
+
 | Filename suffix after `archive-<aid>_` | Contents |
 | --- | --- |
-| `format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
-| `streams.jsonl.zst` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
-| `stream-<sid>_files.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
-| `recipient.pem` | Optional normalized public X.509 certificate |
-| `parity-<pid>_manifest.json.zst` | Chunk coordinates, hashes, lengths, and recovery capacity |
+| `metadata_format.txt` | Version, transforms, chunk/parity settings, optional certificate fingerprint |
+| `metadata_streams.jsonl.zst` | TAR/direct-file stream meaning, length, SHA-256/SHA-512 |
+| `metadata_stream-<sid>_inventory.jsonl.zst` | Original paths, types, metadata, and small-file checksums |
+| `metadata_recipient.pem` | Optional normalized public X.509 certificate |
+| `metadata_parity-<pid>_manifest.json.zst` | Describes data parity set `<pid>`: chunk coordinates, hashes, lengths, and recovery capacity |
 | `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
-| `checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
-| `parity-<pid>_metadata.par2` and `_metadata.vol<start>+<count>.par2` | Separate metadata recovery set |
-| `complete.json`, `complete-copy.json` | Identical, self-checksummed bootstrap copies |
+| `metadata_checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
+| `metadata_parity-<mpid>.par2` and `metadata_parity-<mpid>.vol<start>+<count>.par2` | Separate metadata recovery set, with its own ID `<mpid>` |
+| `metadata_complete.json`, `metadata_complete-copy.json` | Identical, self-checksummed bootstrap copies |
 
-The two completion-marker copies, `format.txt`, and `recipient.pem` always stay
+The two completion-marker copies, `metadata_format.txt`, and `metadata_recipient.pem` always stay
 uncompressed for bootstrap and inspection. All other metadata is always compressed
 with the same zstd settings as data chunks, regardless of size or compression ratio;
 no uncompressed copies are retained. Catalog references retain logical filenames;
@@ -57,7 +61,7 @@ for small or strongly compressed sets. Metadata uses the same capacity rule.
 
 Checksums have a deliberately non-circular dependency order:
 
-1. `checksums.json.zst` covers catalogs, inventories, format, certificate, manifests,
+1. `metadata_checksums.json.zst` covers catalogs, inventories, format, certificate, manifests,
    and the five PAR2 files for each data set.
 2. A separate metadata PAR2 set protects those metadata files and the checksum
    index. Data-set PAR2 files are checksummed but are not metadata PAR2 members.
@@ -98,11 +102,11 @@ those from the archive.
 
 Copy the metadata members named in either completion-marker copy and their metadata PAR2 files
 to a scratch directory. If both markers are lost, metadata PAR2 filenames still have
-the `_metadata` role suffix and contain the protected member names.
+the `archive-<aid>_metadata_parity-` prefix and contain the protected member names.
 
 ```sh
-par2 verify archive-<aid>_parity-<pid>_metadata.par2
-par2 repair archive-<aid>_parity-<pid>_metadata.par2
+par2 verify archive-<aid>_metadata_parity-<pid>.par2
+par2 repair archive-<aid>_metadata_parity-<pid>.par2
 ```
 
 These angle-bracket filenames are notation, not literal shell commands. Use actual
@@ -165,7 +169,7 @@ dd if=chunk.plain of=reconstructed-stream bs=1M \
 ```
 
 Start with an absent `reconstructed-stream` and write every chunk belonging to
-that stream. Then check its size and whole-stream SHA-256 from `streams.jsonl`:
+that stream. Then check its size and whole-stream SHA-256 from `metadata_streams.jsonl`:
 
 ```sh
 wc -c reconstructed-stream

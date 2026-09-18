@@ -124,14 +124,16 @@ def validate_complete(complete, archive_id):
     if complete["version"] != 1 or complete["archive"] != archive_id:
         raise IntegrityError("Unsupported or inconsistent completion marker")
     prefix = complete["metadata_prefix"]
-    if not re.fullmatch(rf"archive-{archive_id}_parity-{ID}_metadata", prefix):
+    if not re.fullmatch(rf"archive-{archive_id}_metadata_parity-{ID}", prefix):
         raise IntegrityError("Invalid metadata recovery prefix")
     names = complete["metadata_members"]
     if not isinstance(names, list) or len(set(names)) != len(names):
         raise IntegrityError("Invalid metadata member list")
     for name in names:
         archive_filename(name, archive_id)
-    if complete["checksum_index"] != f"archive-{archive_id}_checksums.json.zst":
+        if not name.startswith(f"archive-{archive_id}_metadata_"):
+            raise IntegrityError("Invalid metadata member filename")
+    if complete["checksum_index"] != f"archive-{archive_id}_metadata_checksums.json.zst":
         raise IntegrityError("Invalid checksum index filename")
     if complete["checksum_index"] not in names or not valid_digest(complete["checksum_index_sha256"]):
         raise IntegrityError("Missing checksum index reference")
@@ -220,7 +222,7 @@ def validate_entries(entries):
 
 
 def read_catalog(metadata, archive_id):
-    streams = read_jsonl(metadata / f"archive-{archive_id}_streams.jsonl")
+    streams = read_jsonl(metadata / f"archive-{archive_id}_metadata_streams.jsonl")
     entries = []
     stream_ids = set()
     for stream in streams:
@@ -233,7 +235,7 @@ def read_catalog(metadata, archive_id):
         if not valid_digest(stream["sha256"]) or not re.fullmatch(r"[0-9a-f]{128}", stream["sha512"]):
             raise IntegrityError("Invalid stream checksum")
         if stream["type"] == "tar":
-            name = f"archive-{archive_id}_stream-{stream_id}_files.jsonl"
+            name = f"archive-{archive_id}_metadata_stream-{stream_id}_inventory.jsonl"
             if stream["inventory"] != name:
                 raise IntegrityError("Inventory filename does not match stream")
             inventory = read_jsonl(metadata / name)
@@ -257,7 +259,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
         if not name.endswith("_manifest.json"):
             continue
         manifest = read_json(metadata / name)
-        prefix = parity_prefix(archive_id, manifest["parity"])
+        prefix = parity_prefix(archive_id, manifest["parity"], metadata=True)
         if name != prefix + "_manifest.json" or manifest["version"] != 1 or manifest["archive"] != archive_id:
             raise IntegrityError("Inconsistent parity-set manifest")
         members = manifest["members"]
@@ -354,7 +356,7 @@ def load_metadata(archive_id, files, directory, in_place=False):
     for name in names:
         if name != index_name:
             unpack_metadata(stored / name, directory)
-    fields = read_format(stored / f"archive-{archive_id}_format.txt", archive_id)
+    fields = read_format(stored / f"archive-{archive_id}_metadata_format.txt", archive_id)
     streams, entries = read_catalog(directory, archive_id)
     manifests = read_manifests(directory, archive_id, names, streams, fields)
     candidates = {}
@@ -513,7 +515,7 @@ def repair(root, archive_id=None):
                                   if name != archive.complete["checksum_index"]]
                 parity_checksums = {name: sha256(base / name) for name in archive.checksums
                                     if name.endswith(".par2")}
-                metadata_id = archive.complete["metadata_prefix"].split("_parity-")[1].split("_")[0]
+                metadata_id = archive.complete["metadata_prefix"].split("_parity-")[1]
                 finalize_metadata(base, selected, metadata_names, [],
                                   archive.complete["metadata_slice_size"], parity_checksums, metadata_id)
                 if not any(staging.iterdir()):

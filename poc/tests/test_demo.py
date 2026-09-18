@@ -60,7 +60,8 @@ class DemoTests(ArchiveTest):
                             for name, data in before.items())
         self.assertEqual(changed_bytes, budget)
         self.assertEqual(report["archives"][0]["affected_bytes"], budget)
-        self.assertFalse(any(name.endswith(("_complete.json", "_complete-copy.json")) for name in changed_names))
+        self.assertFalse(any(name.endswith(("_metadata_complete.json", "_metadata_complete-copy.json"))
+                             for name in changed_names))
         self.assertEqual(verify(self.archive), 1)
         damaged = snapshot(self.archive)
         restore(self.archive, self.restored)
@@ -74,7 +75,7 @@ class DemoTests(ArchiveTest):
         for directory in (self.archive, self.archive / "nested"):
             directory.mkdir(exist_ok=True)
             (directory / "same-name.bin").write_bytes(self.data(1000))
-        marker = self.archive / "archive-anything_complete.json"
+        marker = self.archive / "archive-anything_metadata_complete.json"
         marker.write_text("not JSON or any valid archive format")
         for run_number in (1, 2):
             report = bitrot([self.archive], percent=100, damage="bitflip", seed=run_number,

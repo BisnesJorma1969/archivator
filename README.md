@@ -100,7 +100,7 @@ You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.en
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
 damaged data blocks**. Deleting PAR2 files reduces that capacity. Automatic
-recovery needs at least one intact marker: `*_complete.json` or `*_complete-copy.json`.
+recovery needs at least one intact marker: `*_metadata_complete.json` or `*_metadata_complete-copy.json`.
 
 Check the damaged archive:
 

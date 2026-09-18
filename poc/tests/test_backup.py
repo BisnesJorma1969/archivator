@@ -32,16 +32,16 @@ class BackupTests(ArchiveTest):
                 patch("os.link", side_effect=AssertionError("Backup must not hard-link PAR2 inputs")), \
                 patch("os.symlink", side_effect=AssertionError("Backup must not symlink PAR2 inputs")):
             backup(self.source, self.archive, settings=SMALL)
-        self.assertTrue(any(prefix.endswith("_metadata") for prefix in generated_sets))
+        self.assertTrue(any("_metadata_parity-" in prefix for prefix in generated_sets))
         self.assertGreater(len(generated_sets), 2)
         self.assertFalse((self.archive / ".tmp").exists())
 
     def test_empty_tree_still_has_recoverable_metadata_and_root(self):
         archive_id = backup(self.source, self.archive, settings=SMALL)
-        complete = read_json(self.archive / f"archive-{archive_id}_complete.json")
+        complete = read_json(self.archive / f"archive-{archive_id}_metadata_complete.json")
         self.assertEqual(len(complete["metadata_parity"]), 5)
         self.assertEqual(check_parity(self.archive, complete["metadata_prefix"]), 0)
-        inventory = read_zstd_jsonl(next(self.archive.glob("*_files.jsonl.zst")))
+        inventory = read_zstd_jsonl(next(self.archive.glob("*_metadata_stream-*_inventory.jsonl.zst")))
         self.assertEqual([entry["path"] for entry in inventory], ["."])
         self.assertFalse((self.archive / ".tmp").exists())
 
@@ -49,7 +49,7 @@ class BackupTests(ArchiveTest):
         contents = self.data(160000)
         (self.source / "large").write_bytes(contents)
         backup(self.source, self.archive, settings=SMALL)
-        streams = read_zstd_jsonl(next(self.archive.glob("*_streams.jsonl.zst")))
+        streams = read_zstd_jsonl(next(self.archive.glob("*_metadata_streams.jsonl.zst")))
         direct = next(stream for stream in streams if stream["type"] == "file")
         chunks = list(self.archive.glob(f"*_stream-{direct['stream']}_*.zst"))
         chunks.sort(key=lambda path: parse_chunk(path.name)["offset"])
@@ -57,7 +57,7 @@ class BackupTests(ArchiveTest):
                                     capture_output=True, check=True).stdout for path in chunks]
         self.assertEqual(b"".join(plaintext), contents)
         self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
-        manifests = [read_zstd_json(path) for path in self.archive.glob("*_manifest.json.zst")]
+        manifests = [read_zstd_json(path) for path in self.archive.glob("*_metadata_parity-*_manifest.json.zst")]
         self.assertTrue(any(len({member["stream"] for member in item["members"]}) > 1
                             for item in manifests))
         self.assertTrue(any(item["member_count"] < 8 for item in manifests))
@@ -81,15 +81,15 @@ class BackupTests(ArchiveTest):
             stream.extend(result.stdout)
         with tarfile.open(fileobj=io.BytesIO(stream)) as bundle:
             self.assertEqual(bundle.extractfile("tiny").read(), b"hello")
-        self.assertNotIn(b"PRIVATE KEY", (self.archive / f"archive-{archive_id}_recipient.pem").read_bytes())
+        self.assertNotIn(b"PRIVATE KEY", (self.archive / f"archive-{archive_id}_metadata_recipient.pem").read_bytes())
 
     def test_checksums_cover_metadata_and_data_parity(self):
         (self.source / "tiny").write_bytes(b"hello")
         backup(self.source, self.archive, settings=SMALL)
-        checksums = read_zstd_json(next(self.archive.glob("*_checksums.json.zst")))
+        checksums = read_zstd_json(next(self.archive.glob("*_metadata_checksums.json.zst")))
         for name, digest in checksums.items():
             self.assertEqual(sha256(self.archive / name), digest)
-        inventory = read_zstd_jsonl(next(self.archive.glob("*_files.jsonl.zst")))
+        inventory = read_zstd_jsonl(next(self.archive.glob("*_metadata_stream-*_inventory.jsonl.zst")))
         file_entry = next(entry for entry in inventory if entry["type"] == "file")
         self.assertEqual(file_entry["sha256"], hashlib.sha256(b"hello").hexdigest())
         self.assertEqual(file_entry["crc32"], "3610a686")
@@ -98,7 +98,7 @@ class BackupTests(ArchiveTest):
         with patch("poc.archivator_lib.backup.create_parity", side_effect=ArchiveError("simulated failure")):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.glob("*_complete.json")))
+        self.assertFalse(list(self.archive.glob("*_metadata_complete.json")))
         self.assertFalse((self.archive / ".tmp").exists())
 
     def test_compressor_failure_aborts_backup(self):
@@ -113,5 +113,5 @@ class BackupTests(ArchiveTest):
         with patch("poc.archivator_lib.external.executable", side_effect=find_executable):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.glob("*_complete.json")))
+        self.assertFalse(list(self.archive.glob("*_metadata_complete.json")))
         self.assertFalse((self.archive / ".tmp").exists())
