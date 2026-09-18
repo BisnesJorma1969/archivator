@@ -39,11 +39,11 @@ def store_metadata(path):
     return compressed.name
 
 
-def unpack_metadata(path):
+def unpack_metadata(path, destination=None):
     """Expand already verified stored metadata only in recovery scratch space."""
     if path.suffix != ".zst":
         return path
-    target = path.with_suffix("")
+    target = (destination or path.parent) / path.with_suffix("").name
     run([executable("zstd"), "-qd", str(path), "-o", str(target)],
         activity=f"Decompressing verified metadata: {path.name!r}")
     return target

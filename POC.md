@@ -654,7 +654,9 @@ protect against loss of that entire storage location. Manual recovery can still
 use surviving PAR2 files and catalogs.
 
 Checksums and metadata PAR2 cover the stored, possibly compressed bytes. Recover
-and validate those bytes in scratch before decompression and interpretation. The
+and validate those bytes before decompression and interpretation. Verify/restore
+recover in scratch; explicit repair recovers stored metadata in place. Decoded
+metadata remains temporary scratch data in all cases. The
 checksum index's own stored-byte SHA-256 is in both markers.
 
 ---
@@ -733,6 +735,8 @@ Recover metadata in scratch when necessary, retaining the original damage report
 For each data set, compare stored lengths/SHA-256 and PAR2-file SHA-256 values,
 and run PAR2 verification to determine whether damaged data is recoverable.
 Data chunks are not repaired by `verify`.
+Read-only inputs are hard-linked into scratch where supported, otherwise copied.
+Metadata requiring scratch repair follows the isolation rules used by restore.
 
 Report archive status as intact, repairable, or unrecoverable, with per-set damage
 details. Lost or damaged parity protection is damage even when all data is intact;
@@ -748,16 +752,22 @@ archive into a successful verification result.
 `repair` is the only recovery command that writes back to the archive. It requires
 write access but no private key.
 
-Recover metadata and data sets in scratch. Validate recovered stored content;
+Recover stored metadata and data sets in place, without input copies or links.
+Validate recovered stored content;
 regenerate missing/damaged PAR2 files to restore the original protection. Intact
 stored data can regenerate a completely lost parity set. Unrecoverable data or
 metadata causes a hard failure.
 
-Publish validated replacements one set at a time, using adjacent `.tmp/` staging
-and atomic per-file replacement. This is not an all-or-nothing archive transaction:
-if a later operation fails, earlier verified repairs remain, and completed-set
-progress is reported. After the sets are usable, refresh checksums and metadata
-PAR2, publish both updated completion-marker copies last, and verify the archive again.
+PAR2 requires one target directory for its basename-only members. If selected
+archive files are scattered, gather them beside a valid completion marker with
+same-filesystem renames, never copies or links. Reject cross-filesystem layouts
+before moving anything. Other archive IDs are left alone.
+
+This is not an all-or-nothing transaction: failure can leave partial changes.
+Report completed sets; delete only newly created PAR2 backup files after recovered
+hashes pass. After the sets are usable, refresh checksums and metadata PAR2,
+publish both updated completion-marker copies last, and verify directly in place.
+Only newly generated outputs use `.tmp/`; decoded metadata uses temporary scratch.
 
 ## 18.3 Restore
 
@@ -771,7 +781,8 @@ For each parity set:
 
 ```text
 identify files by archive id + parity set id
-copy that small candidate set to restore scratch
+hard-link read-only inputs into restore scratch
+copy damaged stored data before any repair
 run par2 verify
 if required:
     run par2 repair
@@ -780,6 +791,12 @@ if required:
 If all stored members are intact but the available PAR2 files cannot verify the
 set, regenerate parity in scratch and verify it. There is no write-back to the
 archive, and no need to replenish otherwise unnecessary parity during restore.
+
+Healthy data is identified by its stored SHA-256 before linking. PAR2 volumes are
+read-only inputs; regeneration unlinks their scratch names before writing new
+volumes. If a damaged checksum index prevents classifying metadata, copy the
+unknown metadata members too. Where hard links are unavailable, use ordinary
+copies. Do not use symlinks or copy-on-write clones for this staging.
 
 Do not scan unrelated terabytes of archive file contents.
 
@@ -793,7 +810,7 @@ After successful PAR2 verification:
 for each stored chunk:
     verify stored SHA-256
     CMS decrypt if required
-    gunzip
+    zstd decompress
     write plaintext to scratch stream at filename/manifest offset
     verify plaintext length, SHA-256, and SHA-512
 ```
@@ -986,7 +1003,7 @@ PoC**. Cloud support is outside this PoC's scope.
 | Plaintext chunks and whole streams | SHA-256, SHA-512 |
 | Stored chunks after compression and optional encryption | SHA-256 only |
 | Ordinary metadata and PAR2 files | SHA-256 through the checksum hierarchy |
-| Completion marker | No independent checksum or PAR2 protection |
+| Completion-marker copies | SHA-256 of canonical payload; duplicated, outside PAR2 |
 | Cloud upload blocks and multipart/composite checksums | Not recorded |
 
 ### Requirements beyond the PoC

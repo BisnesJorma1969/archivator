@@ -1,6 +1,7 @@
 import contextlib
 import io
 import shutil
+from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError, IntegrityError, sha256
@@ -24,6 +25,37 @@ class RecoveryTests(ArchiveTest):
     def make_archive(self):
         (self.source / "large").write_bytes(self.data(160000))
         return backup(self.source, self.archive, settings=SMALL)
+
+    def test_in_place_repair_never_copies_or_links_archive_members(self):
+        self.make_archive()
+        original_names = {path.name for path in self.archive.iterdir()}
+        flip(next(self.archive.glob("*_chunk-*.zst")))
+        next(self.archive.glob("*_streams.jsonl.zst")).unlink()
+        next(self.archive.glob("*_metadata.vol*.par2")).unlink()
+        with patch("shutil.copyfile", side_effect=AssertionError("No repair copies")), \
+                patch("shutil.copyfileobj", side_effect=AssertionError("No repair copies")), \
+                patch("os.link", side_effect=AssertionError("No repair hard links")), \
+                patch("os.symlink", side_effect=AssertionError("No repair symlinks")):
+            repair(self.archive)
+        self.assertEqual({path.name for path in self.archive.iterdir()}, original_names)
+        self.assertEqual(verify(self.archive), 0)
+
+    def test_scattered_members_are_repaired_using_renames_not_copies(self):
+        self.make_archive()
+        bucket = self.archive / "scattered"
+        bucket.mkdir()
+        for path in list(self.archive.iterdir()):
+            if path.is_file() and "_complete" not in path.name:
+                path.rename(bucket / path.name)
+        unrelated = bucket / "notes.txt"
+        unrelated.write_text("leave this alone")
+        flip(next(bucket.glob("*_chunk-*.zst")))
+        with patch("shutil.copyfile", side_effect=AssertionError("No repair copies")), \
+                patch("os.link", side_effect=AssertionError("No repair hard links")):
+            repair(self.archive)
+        self.assertEqual(list(bucket.iterdir()), [unrelated])
+        self.assertEqual(unrelated.read_text(), "leave this alone")
+        self.assertEqual(verify(self.archive), 0)
 
     def test_verify_intact_and_repairable_without_changing_archive(self):
         self.make_archive()

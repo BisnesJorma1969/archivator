@@ -11,7 +11,7 @@ from .backup import finalize_metadata
 from .common import ArchiveError, IntegrityError, read_json, read_jsonl, scratch, sha256
 from .external import check_parity, create_parity
 from .filesystem import relative_path
-from .format import ARCHIVE_NAME, ID, archive_filename, new_id, parity_prefix, parse_chunk
+from .format import ARCHIVE_NAME, ID, archive_filename, parity_prefix, parse_chunk
 from .metadata import completion_digest, completion_names, unpack_metadata
 from .progress import progress
 
@@ -37,8 +37,7 @@ def discover(root):
     if root.is_symlink() or not root.is_dir():
         raise ArchiveError(f"Archive location must be a directory: {root}")
     archives = {}
-    # Enumerate names once. Never open unrelated archive contents, and never
-    # let PAR2 search this potentially mixed hierarchy directly.
+    # Enumerate names once; operations select files belonging to one archive/set.
     for directory, subdirectories, names in os.walk(root, followlinks=False):
         progress.update(f"Discovering archives: {len(archives)} IDs found; scanning {directory!r}")
         subdirectories[:] = sorted(name for name in subdirectories if name != ".tmp")
@@ -66,16 +65,33 @@ def select(archives, archive_id, allow_all=False):
     return sorted(archives)
 
 
-def copy_existing(files, names, destination):
+def stage_existing(files, names, destination, expected=None, writable=True):
+    """Link read-only inputs; copy damaged/unknown members before scratch repair."""
+    expected = expected or {}
     destination.mkdir(parents=True, exist_ok=True)
     for index, name in enumerate(names, 1):
-        progress.update(f"Copying archive files to scratch: {index}/{len(names)}; {name!r}")
+        progress.update(f"Preparing recovery inputs: {index}/{len(names)}; {name!r}")
         path = files.get(name)
         if path is None:
             continue
         if path.is_symlink() or not path.is_file():
             raise IntegrityError(f"Archive member is not a regular file: {path}")
-        shutil.copyfile(path, destination / name)
+        target = destination / name
+        # PAR2 reads recovery volumes but never edits them. Regeneration first
+        # unlinks staged volumes. Healthy data members are also read-only inputs.
+        read_only = not writable or name.endswith(".par2")
+        if not read_only and name in expected:
+            read_only = sha256(path) == expected[name]
+        if read_only:
+            try:
+                os.link(path, target)
+                continue
+            except OSError:
+                # Cross-filesystem, read-only, and non-hardlink-capable archives
+                # still work. Never use a symlink or repair an alias to bad data.
+                pass
+        progress.update(f"Copying recovery input: {index}/{len(names)}; {name!r}")
+        shutil.copyfile(path, target)
 
 
 def mismatches(directory, expected):
@@ -85,6 +101,17 @@ def mismatches(directory, expected):
         if not path.is_file() or sha256(path) != digest:
             damaged.append(name)
     return damaged
+
+
+def remove_repair_backups(directory, members, previous_names):
+    """Discard only backups PAR2 just created, after recovered hashes pass."""
+    if previous_names is None:
+        return
+    for path in directory.iterdir():
+        original, separator, number = path.name.rpartition(".")
+        if (path.name not in previous_names and original in members
+                and separator and number.isdecimal() and path.is_file() and not path.is_symlink()):
+            path.unlink()
 
 
 def valid_digest(value):
@@ -277,21 +304,39 @@ def read_manifests(metadata, archive_id, names, streams, fields):
     return manifests
 
 
-def load_metadata(archive_id, files, directory):
+def load_metadata(archive_id, files, directory, in_place=False):
     print(f"Loading and checking metadata for archive {archive_id}", flush=True)
     complete, marker_damage = read_completion(archive_id, files)
     names = complete["metadata_members"]
-    copy_existing(files, names + list(complete["metadata_parity"]), directory)
-    # Record damage before scratch repair so verify cannot hide a broken archive.
-    original_hashes = {name: sha256(directory / name) for name in names if (directory / name).is_file()}
-    parity_damage = mismatches(directory, complete["metadata_parity"])
-    status = check_parity(directory, complete["metadata_prefix"])
-    if status == 1 and check_parity(directory, complete["metadata_prefix"], repair=True) != 0:
-        raise IntegrityError("Metadata repair failed")
     index_name = complete["checksum_index"]
-    if mismatches(directory, {index_name: complete["checksum_index_sha256"]}):
+    cached_checksums = None
+    if in_place:
+        stored = next(files[name].parent for name in completion_names(archive_id)
+                      if name not in marker_damage)
+    else:
+        stored = directory
+        expected = {index_name: complete["checksum_index_sha256"]}
+        index_path = files.get(index_name)
+        if index_path and not index_path.is_symlink() and index_path.is_file():
+            if sha256(index_path) == complete["checksum_index_sha256"]:
+                cached_checksums = read_json(unpack_metadata(index_path, directory))
+                expected.update(cached_checksums)
+        # If the checksum index itself needs recovery, other metadata cannot yet
+        # be classified as healthy. Copy those unknown members before repairing.
+        stage_existing(files, names + list(complete["metadata_parity"]), directory, expected)
+    # Record damage before any repair so verify cannot hide a broken archive.
+    original_hashes = {name: sha256(stored / name) for name in names if (stored / name).is_file()}
+    parity_damage = mismatches(stored, complete["metadata_parity"])
+    status = check_parity(stored, complete["metadata_prefix"])
+    previous_names = None
+    if status == 1:
+        previous_names = {path.name for path in stored.iterdir()}
+        if check_parity(stored, complete["metadata_prefix"], repair=True) != 0:
+            raise IntegrityError("Metadata repair failed")
+    if mismatches(stored, {index_name: complete["checksum_index_sha256"]}):
         raise IntegrityError("Checksum index is missing/damaged and cannot be recovered")
-    checksums = read_json(unpack_metadata(directory / index_name))
+    checksums = cached_checksums if cached_checksums is not None else read_json(
+        unpack_metadata(stored / index_name, directory))
     for name, digest in checksums.items():
         archive_filename(name, archive_id)
         if not valid_digest(digest):
@@ -301,14 +346,15 @@ def load_metadata(archive_id, files, directory):
         raise IntegrityError("Completion marker and checksum index disagree")
     metadata_hashes = {name: checksums[name] for name in expected_metadata}
     metadata_hashes[index_name] = complete["checksum_index_sha256"]
-    if mismatches(directory, metadata_hashes):
+    if mismatches(stored, metadata_hashes):
         raise IntegrityError("Archive metadata is unrecoverable or its checksums disagree with PAR2")
+    remove_repair_backups(stored, metadata_hashes, previous_names)
     damage = marker_damage + parity_damage + [name for name, digest in metadata_hashes.items()
                                             if original_hashes.get(name) != digest]
     for name in names:
         if name != index_name:
-            unpack_metadata(directory / name)
-    fields = read_format(directory / f"archive-{archive_id}_format.txt", archive_id)
+            unpack_metadata(stored / name, directory)
+    fields = read_format(stored / f"archive-{archive_id}_format.txt", archive_id)
     streams, entries = read_catalog(directory, archive_id)
     manifests = read_manifests(directory, archive_id, names, streams, fields)
     candidates = {}
@@ -321,10 +367,10 @@ def load_metadata(archive_id, files, directory):
 
 
 @contextmanager
-def open_archive(archive_id, files):
+def open_archive(archive_id, files, in_place=False):
     with scratch("metadata-") as temporary:
         try:
-            archive = load_metadata(archive_id, files, Path(temporary))
+            archive = load_metadata(archive_id, files, Path(temporary), in_place)
         except (KeyError, TypeError, ValueError, AttributeError) as error:
             raise IntegrityError(f"Malformed archive metadata: {error}") from error
         except FileNotFoundError as error:
@@ -332,9 +378,12 @@ def open_archive(archive_id, files):
         yield archive
 
 
-def copy_set(archive, manifest, directory):
+def stage_set(archive, manifest, directory, writable=True):
     names = archive.candidates.get(manifest["parity"], [])
-    copy_existing(archive.files, names, directory)
+    expected = {member["filename"]: member["stored_sha256"] for member in manifest["members"]}
+    # Only data and recovery files are inputs; the manifest was already parsed.
+    names = [name for name in names if name in expected or name.endswith(".par2")]
+    stage_existing(archive.files, names, directory, expected, writable)
 
 
 def inspect_set(archive, manifest, directory):
@@ -358,12 +407,15 @@ def inspect_set(archive, manifest, directory):
 def recover_set(archive, manifest, directory, replenish=False):
     data_damage, parity_damage, status = inspect_set(archive, manifest, directory)
     prefix = parity_prefix(archive.id, manifest["parity"])
+    previous_names = None
     if data_damage:
+        previous_names = {path.name for path in directory.iterdir()}
         if status != 1 or check_parity(directory, prefix, repair=True) != 0:
             raise IntegrityError(f"Unrecoverable data in parity set {manifest['parity']}")
     hashes = {member["filename"]: member["stored_sha256"] for member in manifest["members"]}
     if mismatches(directory, hashes):
         raise IntegrityError("Repaired data failed stored SHA-256 verification")
+    remove_repair_backups(directory, hashes, previous_names)
     # Intact data can replenish even a completely lost parity set. A restore
     # need not replenish partially damaged volumes once PAR2 verifies the data.
     if (replenish and parity_damage) or status in (2, 4):
@@ -389,7 +441,7 @@ def verify(root, archive_id=None):
                     print(f"Checking recovery set {index}/{len(archive.manifests)}", flush=True)
                     with scratch("verify-") as temporary:
                         directory = Path(temporary)
-                        copy_set(archive, manifest, directory)
+                        stage_set(archive, manifest, directory, writable=False)
                         data_damage, parity_damage, status = inspect_set(archive, manifest, directory)
                     if data_damage or parity_damage:
                         damaged = True
@@ -413,78 +465,70 @@ def verify(root, archive_id=None):
     return result
 
 
-def publish_repair(source, destination):
-    progress.update(f"Publishing repaired file: {destination.name!r}")
-    temporary = destination.parent / ".tmp"
-    if temporary.is_symlink():
-        raise ArchiveError(f"Repair staging must not be a symlink: {temporary}")
-    temporary.mkdir(exist_ok=True)
-    staged = temporary / (destination.name + "." + new_id() + ".repair")
-    try:
-        with source.open("rb") as original, staged.open("xb") as output:
-            shutil.copyfileobj(original, output)
-        os.replace(staged, destination)
-    finally:
-        if staged.exists():
-            staged.unlink()
-        try:
-            temporary.rmdir()
-        except OSError:
-            pass
+def prepare_in_place(archive_id, files):
+    """Put scattered members beside a valid marker using same-filesystem renames."""
+    _, damaged_markers = read_completion(archive_id, files)
+    base = next(files[name].parent for name in completion_names(archive_id)
+                if name not in damaged_markers)
+    device = base.stat().st_dev
+    staging = base / ".tmp"
+    if staging.is_symlink() or (staging.exists() and not staging.is_dir()):
+        raise ArchiveError(f"Repair staging must be a directory, not a link: {staging}")
+    # PAR2 stores basenames and needs one target directory. Check all moves before
+    # changing anything; never turn a cross-filesystem rename into a hidden copy.
+    for path in files.values():
+        if path.is_symlink() or not path.is_file():
+            raise IntegrityError(f"Archive member is not a regular file: {path}")
+        if path.stat().st_dev != device:
+            raise ArchiveError("In-place repair requires the selected archive on one filesystem")
+    for name, path in files.items():
+        if path.parent != base:
+            progress.update(f"Moving scattered archive member into repair directory: {name!r}")
+            path.rename(base / name)
+            files[name] = base / name
+    return base
 
 
 def repair(root, archive_id=None):
     archives = discover(root)
     selected = select(archives, archive_id)[0]
-    with open_archive(selected, archives[selected]) as archive:
-        markers = completion_names(selected)
-        base = next(archive.files[name].parent for name in markers
-                    if name not in archive.metadata_damage)
-        changed = bool(archive.metadata_damage)
-        completed_sets = 0
-        try:
+    files = archives[selected]
+    base = prepare_in_place(selected, files)
+    completed_sets = 0
+    changed = False
+    try:
+        with open_archive(selected, files, in_place=True) as archive:
+            changed = bool(archive.metadata_damage)
             for index, manifest in enumerate(archive.manifests, 1):
-                print(f"Checking/repairing recovery set {index}/{len(archive.manifests)}", flush=True)
-                with scratch("repair-") as temporary:
-                    directory = Path(temporary)
-                    copy_set(archive, manifest, directory)
-                    data_damage, parity_damage = recover_set(archive, manifest, directory, replenish=True)
-                    names = list(data_damage)
-                    if parity_damage:
-                        prefix = parity_prefix(selected, manifest["parity"])
-                        names.extend(path.name for path in directory.glob(prefix + "*.par2"))
-                    for name in names:
-                        destination = archive.files.get(name, base / name)
-                        publish_repair(directory / name, destination)
-                        archive.files[name] = destination
-                    if names:
-                        changed = True
-                        completed_sets += 1
-                        print(f"{selected}: repaired parity set {manifest['parity']}")
+                print(f"Checking/repairing recovery set {index}/{len(archive.manifests)} in place", flush=True)
+                data_damage, parity_damage = recover_set(archive, manifest, base, replenish=True)
+                if data_damage or parity_damage:
+                    changed = True
+                    completed_sets += 1
+                    print(f"{selected}: repaired parity set {manifest['parity']}", flush=True)
             if changed:
-                with scratch("finalize-") as temporary:
-                    directory = Path(temporary)
-                    (directory / ".tmp").mkdir()
-                    metadata_names = [name for name in archive.complete["metadata_members"]
-                                      if name != archive.complete["checksum_index"]]
-                    for name in metadata_names:
-                        progress.update(f"Staging repaired metadata: {name!r}")
-                        shutil.copyfile(archive.metadata / name, directory / name)
-                    parity_checksums = {name: sha256(archive.files[name]) for name in archive.checksums
-                                        if name.endswith(".par2")}
-                    metadata_id = archive.complete["metadata_prefix"].split("_parity-")[1].split("_")[0]
-                    finalize_metadata(directory, selected, metadata_names, [],
-                                      archive.complete["metadata_slice_size"], parity_checksums, metadata_id)
-                    # Publish the new checksum root last, just as backup does.
-                    for path in sorted(directory.iterdir()):
-                        if path.is_file() and path.name not in markers:
-                            publish_repair(path, archive.files.get(path.name, base / path.name))
-                    for name in markers:
-                        publish_repair(directory / name, archive.files.get(name, base / name))
-        except (ArchiveError, OSError):
-            if completed_sets:
-                print(f"Repair stopped after {completed_sets} repaired sets; those improvements remain.")
-            raise
-    if verify(root, selected) != 0:
-        raise IntegrityError("Archive is still damaged after repair")
+                staging = base / ".tmp"
+                staging.mkdir(exist_ok=True)
+                metadata_names = [name for name in archive.complete["metadata_members"]
+                                  if name != archive.complete["checksum_index"]]
+                parity_checksums = {name: sha256(base / name) for name in archive.checksums
+                                    if name.endswith(".par2")}
+                metadata_id = archive.complete["metadata_prefix"].split("_parity-")[1].split("_")[0]
+                finalize_metadata(base, selected, metadata_names, [],
+                                  archive.complete["metadata_slice_size"], parity_checksums, metadata_id)
+                if not any(staging.iterdir()):
+                    staging.rmdir()
+        # Re-read the resulting checksum root and verify in place too. Calling
+        # the read-only verify workflow here would unnecessarily stage inputs.
+        with open_archive(selected, discover(root)[selected], in_place=True) as archive:
+            if archive.metadata_damage:
+                raise IntegrityError("Archive metadata is still damaged after repair")
+            for manifest in archive.manifests:
+                data_damage, parity_damage, status = inspect_set(archive, manifest, base)
+                if data_damage or parity_damage or status != 0:
+                    raise IntegrityError("Archive is still damaged after repair")
+    except (ArchiveError, OSError):
+        print(f"In-place repair stopped after {completed_sets} completed sets; changes already made remain.",
+              flush=True)
+        raise
     print(f"{selected}: repair complete" if changed else f"{selected}: no repair needed")

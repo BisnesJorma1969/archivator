@@ -67,16 +67,26 @@ authentication, zstd, chunk hashes, whole-stream hashes, and TAR entry hashes.
 
 Verify can recover metadata in scratch to finish its diagnosis. Restore never
 requires archive write access. Neither writes repairs back. Only `repair` does.
-Repair commits verified improvements one parity set at a time; if a later set
-fails, earlier repairs remain and the command reports this. It publishes refreshed
+Repair operates directly on stored data and metadata, with no staging copies or
+links. If a later set fails, earlier changes remain and the command reports this.
+It publishes refreshed
 checksum metadata and both completion-marker copies after all sets are usable.
 
+For read-only verification/restore, recovery scratch uses hard links for read-only
+inputs. Before scratch repair, damaged data is copied, never repaired through a
+hard link. If the checksum index is damaged, metadata whose health cannot yet be
+established is copied too. Unsupported or cross-filesystem hard links fall back
+to ordinary copies; no copy-on-write cloning is used.
+
 Directories can contain multiple archives or nested archive directories. Names
-are indexed once, then only the relevant parity set is copied/read. Verify checks
+are indexed once, then only the relevant parity set is read. Verify checks
 all discovered IDs and reports incomplete archives. Repair and restore require
 `--archive-id ID` when more than one ID exists; verify also accepts that selector.
 Duplicate identical filenames anywhere in the selected hierarchy are ambiguous
 and rejected. Moving directories or changing archive-file mtimes is harmless.
+For in-place repair, scattered files of the selected archive are gathered beside
+its valid completion marker using renames. This requires one filesystem; repair
+does not fall back to copying across filesystems. Other archives are not moved.
 
 Exit codes for all commands:
 

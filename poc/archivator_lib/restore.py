@@ -10,7 +10,7 @@ from pathlib import Path
 from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, read_jsonl, scratch
 from .external import decrypt, executable
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
-from .recovery import copy_set, discover, open_archive, recover_set, select
+from .recovery import stage_set, discover, open_archive, recover_set, select
 from .progress import progress
 
 
@@ -143,7 +143,7 @@ def restore(root, target, archive_id=None, key=None, certificate=None):
                 print(f"Restoring recovery set {index}/{len(manifests)}", flush=True)
                 with scratch("restore-set-") as set_temporary:
                     directory = Path(set_temporary)
-                    copy_set(archive, manifest, directory)
+                    stage_set(archive, manifest, directory)
                     data_damage, _ = recover_set(archive, manifest, directory)
                     if data_damage:
                         print(f"Recovered {len(data_damage)} damaged/missing data chunks in scratch.", flush=True)

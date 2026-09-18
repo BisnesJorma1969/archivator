@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import os
 import random
@@ -88,6 +89,27 @@ class RestoreTests(ArchiveTest):
         missing.unlink()
         restore(self.archive, self.restored)
         self.assertFalse(missing.exists())
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_restore_copies_only_damaged_input_and_keeps_archive_unchanged(self):
+        (self.source / "large").write_bytes(self.data(160000))
+        backup(self.source, self.archive, settings=SMALL)
+        damaged = next(self.archive.glob("*_chunk-*.zst"))
+        flip(damaged)
+        before = snapshot(self.archive)
+        with patch("shutil.copyfile", wraps=shutil.copyfile) as copying:
+            restore(self.archive, self.restored)
+        self.assertEqual([call.args[0] for call in copying.call_args_list], [damaged])
+        self.assertEqual(snapshot(self.archive), before)
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_restore_falls_back_to_copy_when_hardlinks_are_unavailable(self):
+        (self.source / "document").write_text("content")
+        backup(self.source, self.archive, settings=SMALL)
+        before = snapshot(self.archive)
+        with patch("os.link", side_effect=OSError(errno.EXDEV, "Different filesystem")):
+            restore(self.archive, self.restored)
+        self.assertEqual(snapshot(self.archive), before)
         self.assertEqual(compare(self.source, self.restored), 0)
 
     def test_wrong_key_is_a_hard_failure(self):
