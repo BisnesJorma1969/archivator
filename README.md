@@ -59,11 +59,11 @@ files, byte ranges, and fault styles: bit flips, zeroing, copied data, insertion
 or deletion. `--dry-run` previews the plan; the report shows affected bytes and
 the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
 
-You can also manually delete any chosen data chunks (`.zst` or `.zst.cms`) and
+You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
-damaged data blocks**. Deleting PAR2 files reduces that capacity. Leave the
-unprotected `*_complete.json` marker in place for automatic recovery.
+damaged data blocks**. Deleting PAR2 files reduces that capacity. Automatic
+recovery needs at least one intact marker: `*_complete.json` or `*_complete-copy.json`.
 
 Check the damaged archive:
 

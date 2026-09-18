@@ -408,7 +408,7 @@ for passwords. `--decrypt-key` is required for encrypted restore;
 `--decrypt-cert` is optional.
 
 Only compressed chunk contents are encrypted. Catalogs, inventories, original
-paths, metadata, and checksums remain plaintext. Verify and repair do not need a
+paths, metadata, and checksums remain unencrypted, even when compressed. Verify and repair do not need a
 private key and do not validate plaintext or CMS authentication; restore does.
 
 ---
@@ -602,6 +602,13 @@ TAR:
 }
 ```
 
+Ordinary metadata and the checksum index are compressed independently with zstd
+at level 3 when at least 64 KiB and the compressed output is smaller. Only that
+representation is retained, with `.zst` appended to the logical filename. Catalog
+references use logical names; the checksum index and completion marker record
+exact stored names. Small metadata stays uncompressed. Completion-marker copies
+always remain plain JSON to keep the bootstrap readable with basic tools.
+
 Metadata protection has a non-circular dependency order:
 
 1. `archive-<aid>_checksums.json` maps exact filenames to SHA-256 values for the
@@ -610,8 +617,9 @@ Metadata protection has a non-circular dependency order:
 2. A separate PAR2 metadata recovery set protects the ordinary metadata and
    checksum index. Data-set PAR2 files are checksummed by the index but are not
    members of this metadata recovery set.
-3. `archive-<aid>_complete.json` is the completion marker, atomically published
-   last. It contains:
+3. `archive-<aid>_complete.json` and `archive-<aid>_complete-copy.json` are identical
+   completion-marker copies, each atomically published after all protected files.
+   Each contains:
 
    ```text
    version
@@ -623,15 +631,22 @@ Metadata protection has a non-circular dependency order:
    metadata_slice_size
    metadata_recovery_blocks
    metadata_parity: map of metadata PAR2 filenames to SHA-256 values
+   marker_sha256
    ```
 
-The completion marker is the unprotected bootstrap root: it is neither signed
-nor self-checksummed. Missing or malformed markers cause automated verify,
-repair, and restore to fail as incomplete/unusable archives. Manual recovery can
-still use surviving PAR2 files and catalogs. The checksum index's own SHA-256 is
-in the marker, avoiding a self-checksum cycle.
+The markers are bootstrap roots outside PAR2. `marker_sha256` hashes canonical
+ASCII JSON of all fields except itself (sorted keys, compact separators), detecting
+payload corruption without a checksum cycle. This is not a signature. Either
+valid copy suffices; verify still reports a damaged/missing copy and repair
+replenishes it. With no valid copy, automatic recovery fails. Conflicting valid
+copies are rejected rather than guessed; interruption between marker updates
+during repair can require manual intervention. Copies in one directory do not
+protect against loss of that entire storage location. Manual recovery can still
+use surviving PAR2 files and catalogs.
 
-Recover and validate metadata in scratch before interpreting data manifests.
+Checksums and metadata PAR2 cover the stored, possibly compressed bytes. Recover
+and validate those bytes in scratch before decompression and interpretation. The
+checksum index's own stored-byte SHA-256 is in both markers.
 
 ---
 
@@ -671,10 +686,11 @@ finalize short parity set using increased redundancy rule
 check source entries for observable changes
 write archive catalog and format
 
-write checksum index
+compress large metadata when worthwhile
+write checksum index and compress it when worthwhile
 protect metadata and checksum index with PAR2
 
-write archive-<aid>_complete.json last
+write both completion-marker copies last
 ```
 
 Never create zero-byte placeholders for future final archive files.
@@ -732,7 +748,7 @@ Publish validated replacements one set at a time, using adjacent `.tmp/` staging
 and atomic per-file replacement. This is not an all-or-nothing archive transaction:
 if a later operation fails, earlier verified repairs remain, and completed-set
 progress is reported. After the sets are usable, refresh checksums and metadata
-PAR2, publish the updated completion marker last, and verify the archive again.
+PAR2, publish both updated completion-marker copies last, and verify the archive again.
 
 ## 18.3 Restore
 

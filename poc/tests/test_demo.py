@@ -60,7 +60,7 @@ class DemoTests(ArchiveTest):
                             for name, data in before.items())
         self.assertEqual(changed_bytes, budget)
         self.assertEqual(report["archives"][0]["affected_bytes"], budget)
-        self.assertFalse(any(name.endswith("_complete.json") for name in changed_names))
+        self.assertFalse(any(name.endswith(("_complete.json", "_complete-copy.json")) for name in changed_names))
         self.assertEqual(verify(self.archive), 1)
         damaged = snapshot(self.archive)
         restore(self.archive, self.restored)

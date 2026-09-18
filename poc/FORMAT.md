@@ -20,7 +20,13 @@ lowercase ASCII; standard PAR2 volume names additionally contain `+`.
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `checksums.json` | SHA-256 map for ordinary metadata and data-set PAR2 files |
 | `parity-<pid>_metadata.par2` and `_metadata.vol<start>+<count>.par2` | Separate metadata recovery set |
-| `complete.json` | Final checksum root and completion marker |
+| `complete.json`, `complete-copy.json` | Identical, self-checksummed bootstrap copies |
+
+Ordinary metadata and `checksums.json` use an appended `.zst` suffix when their
+uncompressed size is at least 64 KiB and zstd level 3 makes them smaller. Only the
+selected representation is stored. Catalog references retain logical filenames;
+the checksum index and completion markers list exact stored filenames. The two
+bootstrap copies always stay plain JSON. Metadata is not encrypted.
 
 Chunk numbers are four decimal digits, local to a parity set. Offsets are twenty
 decimal digits and lengths twelve. Offsets/lengths always describe **uncompressed
@@ -52,15 +58,21 @@ Checksums have a deliberately non-circular dependency order:
    and the five PAR2 files for each data set.
 2. A separate metadata PAR2 set protects those metadata files and the checksum
    index. Data-set PAR2 files are checksummed but are not metadata PAR2 members.
-3. `complete.json` records the metadata member list, metadata parity prefix and
+3. Both completion-marker copies record the metadata member list, metadata parity prefix and
    parameters, checksum-index SHA-256, and hashes of all five metadata PAR2 files.
-   It is atomically published last.
+   Each is atomically published after the protected files. `marker_sha256` is the
+   SHA-256 of canonical ASCII JSON excluding that field, with sorted keys and
+   compact separators.
 
 This lets the reader recover a missing/damaged catalog or checksum index before
 interpreting data manifests. It also detects damaged parity files when all data
-is intact. The completion marker is the unprotected bootstrap root, not a
-self-checksummed or signed file. A missing/malformed marker is treated as an
-incomplete archive; manual recovery can still use the PAR2 files and catalogs.
+is intact. Checksums and PAR2 cover stored bytes, before metadata decompression.
+The markers are outside PAR2 and are not signed. Either valid copy enables
+automatic recovery; verify reports a missing/damaged copy and repair replaces it.
+If neither survives, manual recovery can still use PAR2 files and catalogs.
+Conflicting valid copies are rejected; interruption between marker updates during
+repair can require manual intervention. Two copies in the same directory do not
+protect against losing the entire storage location.
 
 PAR2 identifies protected content; manifests automate selection and carry the
 additional SHA-256/SHA-512 checks. After repair, stored bytes must still match
@@ -81,8 +93,8 @@ those from the archive.
 
 ### 1. Recover catalogs if necessary
 
-Copy the metadata members named in `complete.json` and their metadata PAR2 files
-to a scratch directory. If the marker is lost, metadata PAR2 filenames still have
+Copy the metadata members named in either completion-marker copy and their metadata PAR2 files
+to a scratch directory. If both markers are lost, metadata PAR2 filenames still have
 the `_metadata` role suffix and contain the protected member names.
 
 ```sh
@@ -92,7 +104,11 @@ par2 repair archive-<aid>_parity-<pid>_metadata.par2
 
 These angle-bracket filenames are notation, not literal shell commands. Use actual
 filenames. If an index is missing, pass any surviving volume from that set instead.
-Read the recovered catalog to find stream IDs and their destination paths.
+Check the recovered stored-file hashes against the checksum index (whose stored
+hash is in either marker). For compressed metadata, decompress only after repair
+and stored-byte verification, using `zstd -dk ACTUAL_METADATA_FILENAME.zst` in
+scratch. Start with the checksum index if it is compressed. Read the recovered
+catalog to find stream IDs and their destination paths.
 
 ### 2. Recover a data parity set
 

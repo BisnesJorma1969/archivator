@@ -101,8 +101,11 @@ class RecoveryTests(ArchiveTest):
 
     def test_incomplete_archive_is_reported(self):
         self.make_archive()
-        next(self.archive.glob("*_complete.json")).unlink()
+        for path in self.archive.glob("*_complete*.json"):
+            path.unlink()
         self.assertEqual(verify(self.archive), 1)
+        with self.assertRaises(IntegrityError):
+            repair(self.archive)
 
     def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()

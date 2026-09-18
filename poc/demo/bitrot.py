@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from poc.archivator_lib.common import ArchiveError, IntegrityError, sha256
 from poc.archivator_lib.format import parity_prefix
+from poc.archivator_lib.metadata import completion_names
 from poc.archivator_lib.recovery import discover, open_archive
 from poc.archivator_lib.progress import progress
 
@@ -129,9 +130,9 @@ def plan_archive(root, percent, rng, include_bootstrap, damage):
                 categories.append(("data_parity", manifest["parity"], parity_names))
             categories.append(("metadata", "metadata", archive.complete["metadata_members"]))
             categories.append(("metadata_parity", "metadata", list(archive.complete["metadata_parity"])))
-            complete_name = f"archive-{archive_id}_complete.json"
+            markers = completion_names(archive_id)
             if include_bootstrap:
-                categories.append(("bootstrap", "bootstrap", [complete_name]))
+                categories.append(("bootstrap", "bootstrap", markers))
             by_name = {}
             archive_groups = []
             for category, parity, names in categories:
@@ -141,7 +142,7 @@ def plan_archive(root, percent, rng, include_bootstrap, damage):
                 for name in names:
                     by_name[name] = group
             paths = [archive.files[name] for name in sorted(by_name)]
-            total_bytes = sum(archive.files[name].stat().st_size for name in [*expected, complete_name])
+            total_bytes = sum(archive.files[name].stat().st_size for name in [*expected, *markers])
             eligible_bytes = sum(path.stat().st_size for path in paths)
             requested_bytes = round(total_bytes * percent / 100)
             budget = min(requested_bytes, eligible_bytes)
@@ -294,7 +295,8 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=20260918)
     parser.add_argument("--damage", choices=("mixed", *DAMAGE_TYPES), default="mixed",
                         help="Mixed faults or one specific pattern (default: mixed)")
-    parser.add_argument("--include-bootstrap", action="store_true", help="Also damage unprotected complete.json; recovery may fail")
+    parser.add_argument("--include-bootstrap", action="store_true",
+                        help="Also damage both completion-marker copies; recovery fails if neither survives")
     parser.add_argument("--dry-run", action="store_true", help="Write a damage plan without changing archives")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)

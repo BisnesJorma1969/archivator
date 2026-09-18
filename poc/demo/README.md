@@ -68,7 +68,7 @@ Options for `poc/demo/bitrot.py`:
 | `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
 | `--dry-run` | Off | Write the damage plan without modifying archives |
 | `--report` | Timestamped JSON under `poc/work/demo/` | Must be outside archives and not already exist |
-| `--include-bootstrap` | Off | Also damage the unprotected completion marker; automatic recovery may fail |
+| `--include-bootstrap` | Off | Also damage both completion-marker copies; automatic recovery needs one intact copy |
 
 ### Damage model
 
@@ -106,10 +106,12 @@ exhaust one recovery set even when the archive-wide percentage is small; verify
 reports whether the particular damage is recoverable.
 
 Protected catalogs, manifests, inventories, and the checksum index are eligible
-metadata. `complete.json` is the **unprotected bootstrap** and is preserved by
-default. If the requested budget exceeds eligible bytes, it is capped and the
-actual percentage is reported. Add `--include-bootstrap` to test its damage as well; automatic recovery
-may then fail even with surviving PAR2 data. High percentages can also exhaust
+metadata, including their compressed `.zst` representations. Both bootstrap copies,
+`complete.json` and `complete-copy.json`, are preserved by default; their sizes
+still count toward the total backup size. If the requested budget exceeds eligible
+bytes, it is capped and the actual percentage is reported. Add `--include-bootstrap`
+to include both copies; automatic recovery fails if neither remains valid, even
+with surviving PAR2 data. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 
 All input archives are checked before any changes. Already damaged archives are

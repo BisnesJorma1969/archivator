@@ -12,6 +12,7 @@ from .common import ArchiveError, IntegrityError, read_json, read_jsonl, scratch
 from .external import check_parity, create_parity
 from .filesystem import relative_path
 from .format import ARCHIVE_NAME, ID, archive_filename, new_id, parity_prefix, parse_chunk
+from .metadata import completion_digest, completion_names, unpack_metadata
 from .progress import progress
 
 
@@ -91,6 +92,8 @@ def valid_digest(value):
 
 
 def validate_complete(complete, archive_id):
+    if complete["marker_sha256"] != completion_digest(complete):
+        raise IntegrityError("Completion marker checksum mismatch")
     if complete["version"] != 1 or complete["archive"] != archive_id:
         raise IntegrityError("Unsupported or inconsistent completion marker")
     prefix = complete["metadata_prefix"]
@@ -101,7 +104,8 @@ def validate_complete(complete, archive_id):
         raise IntegrityError("Invalid metadata member list")
     for name in names:
         archive_filename(name, archive_id)
-    if complete["checksum_index"] != f"archive-{archive_id}_checksums.json":
+    index_name = f"archive-{archive_id}_checksums.json"
+    if complete["checksum_index"] not in (index_name, index_name + ".zst"):
         raise IntegrityError("Invalid checksum index filename")
     if complete["checksum_index"] not in names or not valid_digest(complete["checksum_index_sha256"]):
         raise IntegrityError("Missing checksum index reference")
@@ -115,6 +119,31 @@ def validate_complete(complete, archive_id):
             raise IntegrityError("Invalid metadata PAR2 checksum")
     if complete["metadata_slice_size"] <= 0 or complete["metadata_slice_size"] % 4:
         raise IntegrityError("Invalid metadata PAR2 slice size")
+    logical_names = [name.removesuffix(".zst") for name in names]
+    if len(set(logical_names)) != len(logical_names):
+        raise IntegrityError("Duplicate compressed/uncompressed metadata member")
+
+
+def read_completion(archive_id, files):
+    valid = []
+    damaged = []
+    for name in completion_names(archive_id):
+        path = files.get(name)
+        if path is None or path.is_symlink() or not path.is_file():
+            damaged.append(name)
+            continue
+        try:
+            complete = read_json(path)
+            validate_complete(complete, archive_id)
+        except (IntegrityError, KeyError, TypeError, ValueError, AttributeError):
+            damaged.append(name)
+            continue
+        valid.append(complete)
+    if not valid:
+        raise IntegrityError(f"Archive {archive_id} is incomplete/unusable: no valid completion marker copy")
+    if any(complete != valid[0] for complete in valid[1:]):
+        raise IntegrityError("Valid completion marker copies disagree; cannot choose a checksum root")
+    return valid[0], damaged
 
 
 def read_format(path, archive_id):
@@ -198,6 +227,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
     stream_chunks = {stream["stream"]: [] for stream in streams}
     encrypted = fields["encryption"] != "none"
     for name in sorted(names):
+        name = name.removesuffix(".zst")
         if not name.endswith("_manifest.json"):
             continue
         manifest = read_json(metadata / name)
@@ -250,12 +280,7 @@ def read_manifests(metadata, archive_id, names, streams, fields):
 
 def load_metadata(archive_id, files, directory):
     print(f"Loading and checking metadata for archive {archive_id}", flush=True)
-    complete_name = f"archive-{archive_id}_complete.json"
-    if complete_name not in files:
-        raise IntegrityError(f"Archive {archive_id} is incomplete: no completion marker")
-    copy_existing(files, [complete_name], directory)
-    complete = read_json(directory / complete_name)
-    validate_complete(complete, archive_id)
+    complete, marker_damage = read_completion(archive_id, files)
     names = complete["metadata_members"]
     copy_existing(files, names + list(complete["metadata_parity"]), directory)
     # Record damage before scratch repair so verify cannot hide a broken archive.
@@ -267,7 +292,7 @@ def load_metadata(archive_id, files, directory):
     index_name = complete["checksum_index"]
     if mismatches(directory, {index_name: complete["checksum_index_sha256"]}):
         raise IntegrityError("Checksum index is missing/damaged and cannot be recovered")
-    checksums = read_json(directory / index_name)
+    checksums = read_json(unpack_metadata(directory / index_name))
     for name, digest in checksums.items():
         archive_filename(name, archive_id)
         if not valid_digest(digest):
@@ -279,7 +304,11 @@ def load_metadata(archive_id, files, directory):
     metadata_hashes[index_name] = complete["checksum_index_sha256"]
     if mismatches(directory, metadata_hashes):
         raise IntegrityError("Archive metadata is unrecoverable or its checksums disagree with PAR2")
-    damage = parity_damage + [name for name, digest in metadata_hashes.items() if original_hashes.get(name) != digest]
+    damage = marker_damage + parity_damage + [name for name, digest in metadata_hashes.items()
+                                            if original_hashes.get(name) != digest]
+    for name in names:
+        if name != index_name:
+            unpack_metadata(directory / name)
     fields = read_format(directory / f"archive-{archive_id}_format.txt", archive_id)
     streams, entries = read_catalog(directory, archive_id)
     manifests = read_manifests(directory, archive_id, names, streams, fields)
@@ -373,7 +402,7 @@ def verify(root, archive_id=None):
                 if unrecoverable:
                     label = "unrecoverable; insufficient recovery data"
                 elif damaged:
-                    label = "repairable; damage detected, PAR2 recovery is possible"
+                    label = "repairable; damage detected, recovery is possible"
                 else:
                     label = "intact; all stored data, metadata, and recovery files verified"
                 print(f"{selected}: {label}")
@@ -409,8 +438,9 @@ def repair(root, archive_id=None):
     archives = discover(root)
     selected = select(archives, archive_id)[0]
     with open_archive(selected, archives[selected]) as archive:
-        complete_name = f"archive-{selected}_complete.json"
-        base = archive.files[complete_name].parent
+        markers = completion_names(selected)
+        base = next(archive.files[name].parent for name in markers
+                    if name not in archive.metadata_damage)
         changed = bool(archive.metadata_damage)
         completed_sets = 0
         try:
@@ -448,9 +478,10 @@ def repair(root, archive_id=None):
                                       archive.complete["metadata_slice_size"], parity_checksums, metadata_id)
                     # Publish the new checksum root last, just as backup does.
                     for path in sorted(directory.iterdir()):
-                        if path.is_file() and path.name != complete_name:
+                        if path.is_file() and path.name not in markers:
                             publish_repair(path, archive.files.get(path.name, base / path.name))
-                    publish_repair(directory / complete_name, base / complete_name)
+                    for name in markers:
+                        publish_repair(directory / name, archive.files.get(name, base / name))
         except (ArchiveError, OSError):
             if completed_sets:
                 print(f"Repair stopped after {completed_sets} repaired sets; those improvements remain.")

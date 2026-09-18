@@ -9,6 +9,7 @@ from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_j
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, empty_destination, ensure_disjoint, public_entry, scan
 from .format import Settings, chunk_name, new_id, parity_prefix, recovery_blocks
+from .metadata import completion_digest, completion_names, store_metadata
 from .progress import progress
 
 
@@ -200,12 +201,14 @@ def write_tar(source, entries, sink):
 def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_size,
                       parity_checksums=None, metadata_id=None):
     staging = archive / ".tmp"
+    metadata_names = [store_metadata(archive / name) for name in metadata_names]
     index_name = f"archive-{archive_id}_checksums.json"
     checksums = {name: sha256(archive / name) for name in sorted(metadata_names + parity_files)}
     if parity_checksums:
         checksums.update(parity_checksums)
     write_json(staging / index_name, checksums)
     os.replace(staging / index_name, archive / index_name)
+    index_name = store_metadata(archive / index_name)
     metadata_names = sorted(metadata_names + [index_name])
     metadata_id = metadata_id or new_id()
     prefix = parity_prefix(archive_id, metadata_id, metadata=True)
@@ -228,9 +231,12 @@ def finalize_metadata(archive, archive_id, metadata_names, parity_files, slice_s
         "metadata_slice_size": slice_size, "metadata_recovery_blocks": blocks,
         "metadata_parity": parity_hashes,
     }
-    complete_name = f"archive-{archive_id}_complete.json"
-    write_json(staging / complete_name, complete)
-    os.replace(staging / complete_name, archive / complete_name)
+    complete["marker_sha256"] = completion_digest(complete)
+    # Both small bootstrap copies stay readable without a decompressor. Publish
+    # them only after all protected metadata and recovery files are in place.
+    for complete_name in completion_names(archive_id):
+        write_json(staging / complete_name, complete)
+        os.replace(staging / complete_name, archive / complete_name)
 
 
 def backup(source, archive, certificate=None, settings=None):

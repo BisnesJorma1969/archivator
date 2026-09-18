@@ -69,7 +69,7 @@ Verify can recover metadata in scratch to finish its diagnosis. Restore never
 requires archive write access. Neither writes repairs back. Only `repair` does.
 Repair commits verified improvements one parity set at a time; if a later set
 fails, earlier repairs remain and the command reports this. It publishes refreshed
-checksum metadata and the completion marker after all sets are usable.
+checksum metadata and both completion-marker copies after all sets are usable.
 
 Directories can contain multiple archives or nested archive directories. Names
 are indexed once, then only the relevant parity set is copied/read. Verify checks
@@ -84,9 +84,10 @@ Exit codes for all commands:
 - `1`: integrity, recovery, or comparison failure
 - `2`: usage or operational failure
 
-A failed backup has no completion marker and cannot be resumed. A failed restore
-may leave verified files and partial output in its destination; use a fresh empty
-destination for a retry. Neither command silently treats partial work as success.
+Backup cannot be resumed. Without either valid completion-marker copy, an archive
+is incomplete. A failed restore may leave verified files and partial output in its
+destination; use a fresh empty destination for a retry. Neither command silently
+treats partial work as success.
 
 ## Filesystem conventions
 
@@ -111,6 +112,7 @@ as tested.
 - `progress.py`: periodic status display; does not parallelize archive processing
 - `filesystem.py`, `common.py`, `format.py`: scanning, checksums, names, and defaults
 - `external.py`: streaming zstd compression, OpenSSL, and PAR2 subprocesses
+- `metadata.py`: selective metadata compression and completion-marker checksums
 - `backup.py`: TAR/direct streams, independent chunks, parity, and finalization
 - `recovery.py`: archive discovery, metadata validation, verify, and explicit repair
 - `restore.py`, `compare.py`: reconstruction, safe extraction, and tree comparison
