@@ -33,21 +33,26 @@ def main(argv=None):
     try:
         if args.command == "backup":
             from .backup import backup
+            print(f"Backing up {args.source} to {args.archive}", flush=True)
             archive = backup(args.source, args.archive, args.encrypt_cert)
-            print(f"Complete archive: {archive}")
+            print(f"Backup complete: {args.archive} (archive {archive})")
             return 0
         if args.command == "verify":
             from .recovery import verify
+            print(f"Verifying {args.archive}; archive files will not be modified.", flush=True)
             return verify(args.archive, args.archive_id)
         if args.command == "repair":
             from .recovery import repair
+            print(f"Repairing {args.archive} in place.", flush=True)
             repair(args.archive, args.archive_id)
             return 0
         if args.command == "restore":
             from .restore import restore
+            print(f"Restoring {args.archive} to {args.target}; recovery uses scratch copies.", flush=True)
             restore(args.archive, args.target, args.archive_id, args.decrypt_key, args.decrypt_cert)
             return 0
         from .compare import compare
+        print(f"Comparing {args.source} with {args.target}", flush=True)
         return compare(args.source, args.target)
     except IntegrityError as error:
         print(f"Integrity failure: {error}", file=sys.stderr)

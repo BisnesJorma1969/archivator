@@ -38,6 +38,7 @@ class ParityWriter:
         }
         os.replace(path, self.archive / name)
         self.members.append(member)
+        print(f"Stored chunk: {length:,} plaintext bytes -> {member['stored_length']:,} stored bytes", flush=True)
         if len(self.members) == self.settings.parity_members:
             self.finish_set()
 
@@ -238,6 +239,8 @@ def backup(source, archive, certificate=None, settings=None):
         certificate = Path(certificate).absolute()
         executable("openssl")
     entries = scan(source)
+    files = [entry for entry in entries if entry["type"] == "file"]
+    print(f"Source: {len(files):,} files, {sum(entry['size'] for entry in files):,} bytes", flush=True)
     empty_destination(archive)
     staging = archive / ".tmp"
     staging.mkdir()

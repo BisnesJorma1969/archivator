@@ -133,11 +133,14 @@ def restore(root, target, archive_id=None, key=None, certificate=None):
             (stream_order[member["stream"]], member["offset"]) for member in manifest["members"]))
         with scratch("streams-") as temporary:
             stream_directory = Path(temporary)
-            for manifest in manifests:
+            for index, manifest in enumerate(manifests, 1):
+                print(f"Restoring recovery set {index}/{len(manifests)}", flush=True)
                 with scratch("restore-set-") as set_temporary:
                     directory = Path(set_temporary)
                     copy_set(archive, manifest, directory)
-                    recover_set(archive, manifest, directory)
+                    data_damage, _ = recover_set(archive, manifest, directory)
+                    if data_damage:
+                        print(f"Recovered {len(data_damage)} damaged/missing data chunks in scratch.", flush=True)
                     for member in manifest["members"]:
                         path = stream_directory / member["stream"]
                         mode = "r+b" if path.exists() else "w+b"
@@ -151,4 +154,4 @@ def restore(root, target, archive_id=None, key=None, certificate=None):
             if entry["type"] == "symlink":
                 os.symlink(entry["symlink_target"], target / entry["path"])
         restore_metadata(target, archive.entries)
-    print(f"{selected}: restored to {target}")
+    print(f"Restore complete: {target}; content checksums verified. Archive files were not modified.")

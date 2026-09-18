@@ -1,7 +1,8 @@
 # Minimal Archivator PoC
 
-This document describes the implemented PoC. See [poc/README.md](poc/README.md)
-for setup and usage, and [poc/FORMAT.md](poc/FORMAT.md) for manual recovery.
+This document describes the implemented PoC. See [README.md](README.md) for
+Ubuntu 26.04 setup and the demo, [poc/README.md](poc/README.md) for CLI usage,
+and [poc/FORMAT.md](poc/FORMAT.md) for manual recovery.
 
 ## 1. Goal
 
@@ -33,24 +34,13 @@ names, comments for non-obvious reasoning, and no unnecessary abstractions.
 
 ---
 
-## 2. Runtime dependencies
+## 2. Dependencies and tool execution
 
-Use:
-
-```text
-python 3.11+
-zstd
-openssl 3.x
-par2cmdline
-```
-
-Python stdlib otherwise.
-
-OpenSSL must support CMS AES-GCM. The par2cmdline build must support `-t` and `-T`;
-both main processing and file hashing are limited to one thread.
+The [root README install section](README.md#install) is the single dependency
+list for the CLI, demo, automated tests, and manual recovery on Ubuntu 26.04.
 
 Executables are found on `PATH`, with `poc/work/tools/usr/bin/` as a local fallback.
-The independent manual-recovery test also needs GNU `dd` and `sha256sum`.
+PAR2 main processing and file hashing are limited to one thread each.
 Integration testing is performed on Linux; Windows/macOS execution is not claimed
 as tested.
 
@@ -60,28 +50,8 @@ Do not implement custom cryptography or custom parity.
 
 ## 3. CLI
 
-Run `./poc/archivator` or `python3 -m poc` from the repository root. The examples
-use `archivator`, which is available when this repository's `poc/` is on `PATH`.
-No Python package installation is required.
-
-```bash
-archivator backup SOURCE_DIR ARCHIVE_DIR
-archivator backup SOURCE_DIR ARCHIVE_DIR --encrypt-cert recipient.pem
-
-archivator verify ARCHIVE_DIR
-archivator verify ARCHIVE_DIR --archive-id ID
-
-archivator repair ARCHIVE_DIR
-archivator repair ARCHIVE_DIR --archive-id ID
-
-archivator restore ARCHIVE_DIR RESTORE_DIR
-archivator restore ARCHIVE_DIR RESTORE_DIR --archive-id ID
-archivator restore ARCHIVE_DIR RESTORE_DIR \
-    --decrypt-key recipient-key.pem \
-    --decrypt-cert recipient.pem
-
-archivator compare SOURCE_DIR RESTORE_DIR
-```
+Command signatures and options are in the [CLI reference](poc/README.md).
+The [root README](README.md) contains the runnable workflow.
 
 `verify`, `repair`, and `restore` accept optional `--archive-id ID`. Without a
 selector, verify checks all discovered archive IDs and reports incomplete
@@ -843,22 +813,9 @@ files or partial output in its target; retry into a fresh empty directory.
 
 The format must remain understandable without this Python program.
 
-A technician should be able to do approximately:
-
-```bash
-par2 verify archive-..._parity-....par2
-par2 repair archive-..._parity-....par2 archive-..._parity-...*
-
-openssl cms ...
-zstd -dc ...
-sha256sum ...
-```
-
-and reconstruct streams using offsets encoded in filenames.
-
-The custom PoC is automation.
-
-It must not be the only implementation capable of recovery.
+A technician must be able to reconstruct streams using standard tools and offsets
+encoded in filenames. The custom PoC is automation; it must not be the only
+implementation capable of recovery.
 
 The automated suite independently reconstructs an encrypted direct-file stream
 with PAR2, OpenSSL, zstd, GNU `dd`, and `sha256sum`, without invoking the PoC's
@@ -933,13 +890,11 @@ The stdlib `unittest` suite also covers strict verification statuses, explicit
 repair, parity-only damage, lost metadata/checksum indexes, read-only archives,
 CLI exit codes, unsafe extraction, source changes, and metadata precision warnings.
 The multi-TAR test uses 2,001 small files. External-tool integration tests use real
-OpenSSL and PAR2 rather than silently skipping missing dependencies.
+zstd, OpenSSL, and PAR2 rather than silently skipping missing dependencies.
+Demo tests also cover sector overwrites, zeroed runs/strides, internal byte
+insertion/deletion, original-offset damage reports, and mixed metadata/PAR2 damage.
 
-Run from the repository root:
-
-```sh
-python3 -m unittest discover -s poc/tests -t . -v
-```
+The test command is in the [root README](README.md#automated-tests).
 
 ---
 
@@ -977,41 +932,16 @@ Keep filesystem I/O reasonably isolated so a later Azure/S3 adapter can replace 
 
 # 23. PoC acceptance criterion
 
-With the CLI on `PATH` and fresh archive/restore destinations, this must work:
+The [root README](README.md) contains the runnable acceptance workflow.
+It must satisfy these conditions with encryption both enabled and disabled:
 
-```bash
-set -e
-
-archivator backup ./original ./archive \
-    --encrypt-cert ./recipient.pem
-
-# deliberately delete/corrupt recoverable archive chunks/parity files
-
-# Damage is recoverable, but strict verification must return 1.
-verify_status=0
-archivator verify ./archive || verify_status=$?
-test "$verify_status" -eq 1
-
-archivator restore ./archive ./recovered \
-    --decrypt-key ./recipient-key.pem \
-    --decrypt-cert ./recipient.pem
-
-archivator compare ./original ./recovered
-```
-
-The verify report must say the damage is repairable. Restore and the final
-compare must exit `0`; neither command repairs the original archive in place.
-
-Explicit repair must then restore clean verification:
-
-```bash
-archivator repair ./archive
-archivator verify ./archive
-```
-
-Both commands must exit `0`, including when parity protection needed replenishing.
-
-The same test must also pass with encryption disabled.
+- Backup publishes a complete archive.
+- Recoverable data, metadata, and parity damage is detected; verify reports
+  repairable damage and exits `1`.
+- Restore recovers in scratch without changing the damaged archive, and exits `0`.
+- Compare reports an identical source and restored tree, and exits `0`.
+- Explicit repair replenishes protection and exits `0`; subsequent verification
+  reports an intact archive and exits `0`.
 
 That is the PoC. Anything not required to prove this path should wait.
 

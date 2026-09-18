@@ -365,11 +365,11 @@ def verify(root, archive_id=None):
                         print(f"{selected} parity {manifest['parity']}: {label}; "
                               f"{len(data_damage)} data and {len(parity_damage)} PAR2 files damaged/missing")
                 if unrecoverable:
-                    label = "unrecoverable"
+                    label = "unrecoverable; insufficient recovery data"
                 elif damaged:
-                    label = "repairable"
+                    label = "repairable; damage detected, PAR2 recovery is possible"
                 else:
-                    label = "intact"
+                    label = "intact; all stored data, metadata, and recovery files verified"
                 print(f"{selected}: {label}")
                 if damaged:
                     result = 1

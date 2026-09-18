@@ -75,9 +75,9 @@ not features of this format.
 
 ## Manual recovery with ordinary tools
 
-Work on copies. The examples below use Bash and GNU coreutils; replace the IDs,
-paths, and filenames with those from the archive. Tools may need to be added to
-`PATH` if installed locally under `work/tools/usr/bin/`.
+Install the tools using the [Ubuntu 26.04 setup](../README.md#install). Work on
+copies. The examples below use Bash; replace the IDs, paths, and filenames with
+those from the archive.
 
 ### 1. Recover catalogs if necessary
 

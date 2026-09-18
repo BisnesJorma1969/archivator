@@ -1,81 +1,41 @@
-# Archivator PoC
+# CLI reference
 
 A local-filesystem implementation of [the specification](../POC.md), using Python's
 standard library, ordinary zstd, OpenSSL CMS AES-256-GCM, and PAR2.
 
-## Requirements and entry points
+For installation and the runnable test workflow, use the [root README](../README.md).
+This page describes command behavior and options. Commands use `./poc/archivator`
+from the repository root; `--help` lists their arguments.
 
-- Python 3.11 or newer
-- Zstd command-line executable
-- OpenSSL 3.x with CMS AES-GCM support
-- par2cmdline with `-t` and `-T` thread controls
-- For the independent manual-recovery test: GNU `dd` and `sha256sum`
-
-On Debian/Ubuntu, install the external tools with:
-
-```sh
-sudo apt-get install python3 openssl par2 coreutils zstd
-```
-
-Run from the repository root; no Python package installation is needed:
-
-```sh
-./poc/archivator --help
-python3 -m poc --help
-```
-
-To use the short `archivator` command, add this repository's `poc/` directory to
-your `PATH`. The implementation finds external tools on `PATH`. It also accepts
-tools extracted under `poc/work/tools/usr/bin/`, which is how PAR2 was installed
-in the development container without changing system packages:
-
-```sh
-mkdir -p poc/work
-cd poc/work
-apt-get download par2
-dpkg-deb -x par2_*.deb tools
-```
+## Destinations and scratch
 
 `work/` is gitignored. Test fixtures and restore scratch are created there and
 cleaned up after use. Keep sufficient space there for a parity set, metadata, and
 unfinished streams; backup temporary files instead live in `ARCHIVE_DIR/.tmp/`.
 
-## Quick start
-
-Run these commands from the repository root, with fresh archive/restore paths:
-
-```sh
-mkdir -p poc/work/example/original
-printf 'hello\n' > poc/work/example/original/hello.txt
-
-./poc/archivator backup poc/work/example/original poc/work/example/archive
-./poc/archivator verify poc/work/example/archive
-./poc/archivator restore poc/work/example/archive poc/work/example/restored
-./poc/archivator compare poc/work/example/original poc/work/example/restored
-```
-
 Backup and restore destinations must be absent or empty. Source and destination
 must not overlap. The source, archive being read, or restore target must not
 contain the work directory itself; individual directories *under* `work/` are fine.
 
-### Encryption
+## Encryption options
 
-For a disposable test certificate and unencrypted test private key:
+To enable encryption in the root README's workflow, add these options to its
+backup and restore commands:
+
+| Command | Option |
+| --- | --- |
+| `backup` | `--encrypt-cert poc/work/recipient.pem` |
+| `restore` | `--decrypt-key poc/work/recipient-key.pem --decrypt-cert poc/work/recipient.pem` |
+
+The remaining steps are identical. For a disposable test certificate and
+unencrypted test private key:
 
 ```sh
+mkdir -p poc/work
 openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout poc/work/example/recipient-key.pem \
-  -out poc/work/example/recipient.pem \
+  -keyout poc/work/recipient-key.pem \
+  -out poc/work/recipient.pem \
   -subj '/CN=Archivator test' -days 1
-
-./poc/archivator backup poc/work/example/original poc/work/example/encrypted \
-  --encrypt-cert poc/work/example/recipient.pem
-
-./poc/archivator restore poc/work/example/encrypted poc/work/example/decrypted \
-  --decrypt-key poc/work/example/recipient-key.pem \
-  --decrypt-cert poc/work/example/recipient.pem
-
-./poc/archivator compare poc/work/example/original poc/work/example/decrypted
 ```
 
 The archive stores only the normalized public certificate and its SHA-256
@@ -83,30 +43,21 @@ fingerprint. Catalogs, inventories, paths, sizes, and checksums remain plaintext
 Only compressed chunk contents are encrypted. The PoC's CLI accepts private keys
 without a passphrase; it does not prompt for passwords or manage keys.
 
-## Verify, repair, and restore
+## Commands and exit codes
 
 | Command | Meaning |
 | --- | --- |
+| `backup SOURCE_DIR ARCHIVE_DIR` | Create an archive from the source tree. |
 | `verify ARCHIVE_DIR` | Check every archive, report intact/repairable/unrecoverable, and never modify archive files. |
 | `repair ARCHIVE_DIR` | Recover stored chunks and metadata, and replenish lost/damaged PAR2 protection. |
 | `restore ARCHIVE_DIR RESTORE_DIR` | Repair scratch copies automatically, validate stored and plaintext content, then restore the tree. |
+| `compare SOURCE_DIR RESTORE_DIR` | Compare paths, types, file contents, and supported filesystem metadata. |
 
 Verify returns **1 for any damage**, even when everything is recoverable. Its
 output distinguishes data loss from damage that can be repaired. Verification
 checks stored bytes and PAR2 capacity; it does not decrypt encrypted chunks or
 promise that a particular private key will work. Restore verifies CMS
 authentication, zstd, chunk hashes, whole-stream hashes, and TAR entry hashes.
-
-Example after deliberately deleting or corrupting a recoverable chunk:
-
-```sh
-./poc/archivator verify poc/work/example/archive    # expected exit 1
-./poc/archivator restore poc/work/example/archive poc/work/example/recovered
-./poc/archivator compare poc/work/example/original poc/work/example/recovered
-
-./poc/archivator repair poc/work/example/archive
-./poc/archivator verify poc/work/example/archive    # expected exit 0
-```
 
 Verify can recover metadata in scratch to finish its diagnosis. Restore never
 requires archive write access. Neither writes repairs back. Only `repair` does.
@@ -152,7 +103,7 @@ as tested.
 
 - `cli.py`: argument parsing and exit codes
 - `filesystem.py`, `common.py`, `format.py`: scanning, checksums, names, and defaults
-- `external.py`: OpenSSL and PAR2 command argument lists
+- `external.py`: streaming zstd compression, OpenSSL, and PAR2 subprocesses
 - `backup.py`: TAR/direct streams, independent chunks, parity, and finalization
 - `recovery.py`: archive discovery, metadata validation, verify, and explicit repair
 - `restore.py`, `compare.py`: reconstruction, safe extraction, and tree comparison
@@ -162,13 +113,11 @@ instance directly; there are no tuning flags, parallel workers, or plugin layers
 Source changes observable through ordinary stat checks abort backup; this is not a
 filesystem snapshot implementation.
 
-## Tests
+## Test coverage
 
-```sh
-python3 -m unittest discover -s poc/tests -t . -v
-```
+The test command is in the [root README](../README.md#automated-tests).
 
-The suite uses real OpenSSL/PAR2 and does not silently skip missing dependencies.
+The suite uses real zstd, OpenSSL, and PAR2 and does not silently skip missing dependencies.
 It covers all twenty required scenarios, a 2,001-file multi-TAR round trip,
 encrypted and unencrypted loss/corruption, strict verification, explicit repair,
 metadata recovery, read-only archives, CLI exit codes, and unsafe extraction.
@@ -177,12 +126,7 @@ zstd, GNU dd, and sha256sum, without calling the PoC restore implementation.
 
 See [FORMAT.md](FORMAT.md) for format details and manual recovery commands.
 
-## Synthetic demo and checksum scope
-
-The [Ubuntu quick start](../README.md) and [demo guide](demo/README.md) generate
-office-like files, SQL-like backups, and many small logs, then exercise damage to
-data, protected metadata, and their PAR2 files. The completion marker remains an
-unprotected bootstrap; the demo can optionally corrupt it to test failure.
+## Checksum scope
 
 The PoC does not provide uniform MD5/SHA-1/CRC coverage for direct-file sources,
 cloud-compatible stored-object checksums, or fixed upload-block checksums. These
