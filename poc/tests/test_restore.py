@@ -1,0 +1,119 @@
+import contextlib
+import io
+import os
+import shutil
+from unittest.mock import patch
+
+from poc.archivator_lib.backup import backup
+from poc.archivator_lib.common import ArchiveError, IntegrityError, read_json
+from poc.archivator_lib.compare import compare
+from poc.archivator_lib.restore import restore
+from poc.tests.support import ArchiveTest, SMALL
+from poc.tests.test_recovery import flip, snapshot
+
+
+class RestoreTests(ArchiveTest):
+    def roundtrip(self, certificate=None, key=None):
+        backup(self.source, self.archive, certificate, SMALL)
+        restore(self.archive, self.restored, key=key, certificate=certificate)
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_empty_tree(self):
+        self.roundtrip()
+
+    def test_awkward_names_symlinks_empty_files_and_metadata(self):
+        (self.source / "folder").mkdir()
+        (self.source / "empty directory").mkdir()
+        (self.source / "folder" / "tab\tline\n café 中文").write_bytes(b"contents\x00\xff")
+        (self.source / "empty").touch()
+        (self.source / "relative link").symlink_to("folder/tab\tline\n café 中文")
+        (self.source / "dangling").symlink_to("missing")
+        (self.source / "external link").symlink_to("/not/a/real/file")
+        os.chmod(self.source / "folder", 0o751)
+        os.utime(self.source / "empty", ns=(1234567890123456789, 1234567890123456789))
+        self.roundtrip()
+        self.assertEqual((self.restored / "folder" / "tab\tline\n café 中文").read_bytes(), b"contents\x00\xff")
+
+    def test_large_file_across_chunks_and_sets(self):
+        content = self.data(160000)
+        (self.source / "large").write_bytes(content)
+        self.roundtrip()
+        self.assertEqual((self.restored / "large").read_bytes(), content)
+
+    def test_encrypted_corruption_and_read_only_archive(self):
+        key, certificate = self.certificate()
+        (self.source / "large").write_bytes(self.data(160000))
+        backup(self.source, self.archive, certificate, SMALL)
+        flip(next(self.archive.glob("*.cms")))
+        before = snapshot(self.archive)
+        for path in self.archive.iterdir():
+            path.chmod(0o444)
+        self.archive.chmod(0o555)
+        try:
+            restore(self.archive, self.restored, key=key, certificate=certificate)
+        finally:
+            self.archive.chmod(0o755)
+            for path in self.archive.iterdir():
+                path.chmod(0o644)
+        self.assertEqual(snapshot(self.archive), before)
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_missing_chunk_repaired_only_in_scratch(self):
+        (self.source / "large").write_bytes(self.data(160000))
+        backup(self.source, self.archive, settings=SMALL)
+        missing = next(self.archive.glob("*.gz"))
+        missing.unlink()
+        restore(self.archive, self.restored)
+        self.assertFalse(missing.exists())
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_wrong_key_is_a_hard_failure(self):
+        _, certificate = self.certificate()
+        wrong_key, wrong_certificate = self.certificate("wrong")
+        backup(self.source, self.archive, certificate, SMALL)
+        with self.assertRaises(IntegrityError):
+            restore(self.archive, self.restored, key=wrong_key, certificate=wrong_certificate)
+
+    def test_moved_nested_archive_and_reversed_enumeration(self):
+        (self.source / "large").write_bytes(self.data(160000))
+        backup(self.source, self.archive, settings=SMALL)
+        moved = self.root / "moved" / "different" / "hierarchy"
+        moved.parent.mkdir(parents=True)
+        shutil.move(self.archive, moved)
+        real_walk = os.walk
+
+        def reversed_walk(*args, **kwargs):
+            for directory, directories, files in real_walk(*args, **kwargs):
+                yield directory, directories, list(reversed(files))
+
+        with patch("poc.archivator_lib.recovery.os.walk", side_effect=reversed_walk):
+            restore(self.root / "moved", self.restored)
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_unrecoverable_damage_never_succeeds(self):
+        backup(self.source, self.archive, settings=SMALL)
+        for path in list(self.archive.glob("*.gz")) + list(self.archive.glob("*.par2")):
+            path.unlink()
+        with self.assertRaises(IntegrityError):
+            restore(self.archive, self.restored)
+
+    def test_compare_reports_all_differences(self):
+        (self.source / "one").write_bytes(b"one")
+        (self.source / "two").write_bytes(b"two")
+        self.roundtrip()
+        (self.restored / "one").write_bytes(b"changed")
+        (self.restored / "two").unlink()
+        (self.restored / "extra").touch()
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            self.assertEqual(compare(self.source, self.restored), 1)
+        for word in ("Content differs", "Size differs", "Missing", "Unexpected"):
+            self.assertIn(word, report.getvalue())
+
+    def test_nonempty_target_is_not_overwritten(self):
+        backup(self.source, self.archive, settings=SMALL)
+        self.restored.mkdir()
+        (self.restored / "keep").write_bytes(b"keep")
+        with self.assertRaises(ArchiveError):
+            restore(self.archive, self.restored)
+        self.assertEqual((self.restored / "keep").read_bytes(), b"keep")

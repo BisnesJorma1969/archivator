@@ -2,6 +2,7 @@
 
 import os
 import stat
+import sys
 from pathlib import Path, PurePosixPath
 
 from .common import ArchiveError, IntegrityError
@@ -81,3 +82,30 @@ def relative_path(value):
     if os.name == "nt" and ("\\" in value or ":" in value):
         raise IntegrityError(f"Path cannot be represented on this target: {value!r}")
     return path
+
+
+def restore_metadata(root, entries):
+    files = [entry for entry in entries if entry["type"] != "directory"]
+    directories = [entry for entry in entries if entry["type"] == "directory"]
+    directories.sort(key=lambda entry: len(relative_path(entry["path"]).parts), reverse=True)
+    # Creating children changes directory mtimes. Restrictive directory modes
+    # must also wait until their children have been created and verified.
+    for entry in files + directories:
+        path = root / entry["path"]
+        symlink = entry["type"] == "symlink"
+        if not symlink:
+            os.chmod(path, entry["mode"])
+        elif os.chmod in os.supports_follow_symlinks:
+            os.chmod(path, entry["mode"], follow_symlinks=False)
+        elif stat.S_IMODE(path.lstat().st_mode) != entry["mode"]:
+            print(f"Warning: target cannot preserve symlink mode for {entry['path']!r}", file=sys.stderr)
+        if not symlink or os.utime in os.supports_follow_symlinks:
+            try:
+                os.utime(path, ns=(entry["mtime_ns"], entry["mtime_ns"]), follow_symlinks=False)
+            except (NotImplementedError, OverflowError):
+                print(f"Warning: target cannot preserve timestamp for {entry['path']!r}", file=sys.stderr)
+            else:
+                if path.lstat().st_mtime_ns != entry["mtime_ns"]:
+                    print(f"Warning: target timestamp precision/range loss for {entry['path']!r}", file=sys.stderr)
+        else:
+            print(f"Warning: target cannot preserve symlink timestamp for {entry['path']!r}", file=sys.stderr)
