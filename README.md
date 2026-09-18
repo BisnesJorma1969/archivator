@@ -1,7 +1,14 @@
 # Archivator PoC
 
-Local backup, PAR2 recovery, restore, and comparison. Run these commands from the
-repository root on **Ubuntu 26.04**, using Bash.
+The goal is compressed, optionally encrypted backups that tolerate bitrot and
+missing data through PAR2 parity. Backups are split into manageable chunks, with
+parity protecting both stored data and recovery metadata.
+
+They should remain restorable **decades from now**, using off-the-shelf Linux
+tools—zstd, OpenSSL, PAR2, tar, and coreutils—even if Archivator itself is no longer
+available.
+
+Run the PoC commands below from the repository root on **Ubuntu 26.04**, using Bash.
 
 ## Install
 
