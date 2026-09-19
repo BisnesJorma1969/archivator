@@ -19,6 +19,8 @@ def parser():
                         help="Hard maximum for each stored file (default: 268435455)")
     backup.add_argument("--max-group-bytes", type=int, default=14 * 1024 * 1024 * 1024,
                         help="Hard total per group, including metadata/PAR2 (default: 15032385536)")
+    backup.add_argument("--large-file-bytes", type=int,
+                        help="Route files at or above this size to RAW; capped at the safe input limit")
     for name in ("verify", "repair", "restore"):
         command = commands.add_parser(name)
         command.add_argument("archive", type=Path)
@@ -47,7 +49,8 @@ def main(argv=None):
                 from .backup import backup
                 print(f"Backing up {args.source} to {args.archive}", flush=True)
                 from .format import Settings
-                settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes)
+                settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes,
+                                    large_file_bytes=args.large_file_bytes)
                 archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0

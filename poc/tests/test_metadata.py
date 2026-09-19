@@ -19,18 +19,18 @@ class MetadataTests(ArchiveTest):
 
     def test_metadata_copies_are_identical_even_when_encrypted(self):
         self.make_archive(True)
-        local = [path for path in self.archive.rglob("*_inventory_stream-*.cms")
+        local = [path for path in self.archive.rglob("*_inventory*.cms")
                  if "metadata" not in path.relative_to(self.archive).parts]
         for path in local:
             copies = list(self.archive.rglob(path.name))
             self.assertEqual(len(copies), 2)
             self.assertEqual(copies[0].read_bytes(), copies[1].read_bytes())
         self.assertFalse(list(self.archive.rglob("*.jsonl")))
-        self.assertFalse(list(self.archive.rglob("*_inventory_stream-*.zst")))
+        self.assertFalse(list(self.archive.rglob("*_inventory*.zst")))
 
     def test_both_damaged_metadata_copies_recover_before_decryption(self):
         self.make_archive(True)
-        copies = list(self.archive.rglob("*_inventory_stream-*.cms"))
+        copies = list(self.archive.rglob("*_inventory*.cms"))
         originals = {path: sha256(path) for path in copies}
         for path in copies:
             path.write_bytes(b"bad header")
@@ -86,7 +86,7 @@ class MetadataTests(ArchiveTest):
     def test_local_parity_recovers_missing_local_inventory(self):
         self.make_archive()
         shutil.rmtree(self.archive / "metadata")
-        next(self.archive.rglob("*_inventory_stream-*.zst")).unlink()
+        next(self.archive.rglob("*_inventory*.zst")).unlink()
         before = snapshot(self.archive)
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
@@ -94,7 +94,7 @@ class MetadataTests(ArchiveTest):
 
     def test_data_parity_rescues_metadata_when_both_copies_and_central_parity_are_lost(self):
         self.make_archive()
-        copies = list(self.archive.rglob("*_inventory_stream-*.zst"))
+        copies = list(self.archive.rglob("*_inventory*.zst"))
         for path in copies:
             path.unlink()
         for path in (self.archive / "metadata").rglob("*.par2"):
@@ -108,7 +108,7 @@ class MetadataTests(ArchiveTest):
         self.make_archive()
         central = self.archive / "metadata"
         receipt = next(central.rglob("*_checksums.json.zst"))
-        inventory = next(central.rglob("*_inventory_stream-*.zst"))
+        inventory = next(central.rglob("*_inventory*.zst"))
         for path in (receipt, inventory):
             with path.open("r+b") as output:
                 output.write(b"bad!")

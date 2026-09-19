@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, scratch
+from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, scratch, sha256
 from .external import decrypt, executable
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import stage_set, discover, open_archive, recover_set, select
@@ -146,21 +146,26 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
             raise IntegrityError("Chunk ranges do not cover their streams")
         for stream_id in skipped:
             print(f"Skipping incomplete stream {stream_id}: missing or overlapping chunks", flush=True)
-        archive.manifests = [manifest for manifest in archive.manifests
-                             if manifest["members"] and manifest["members"][0]["stream"] not in skipped]
-        streams = {sid: stream for sid, stream in streams.items() if sid not in skipped}
-        archive.entries = [entry for entry in archive.entries if entry.get("stream") not in skipped]
+        manifests = [manifest for manifest in archive.manifests
+                     if any(member["stream"] not in skipped for member in manifest["members"])]
+        owned_paths = set()
+        restored_paths = set()
         for stream in streams.values():
+            if stream["type"] == "tar":
+                owned_paths.update(entry["path"] for entry in stream["inventory"])
+            else:
+                owned_paths.add(stream["path"])
             if stream["type"] == "file" and stream["size"] == 0:
                 (target / stream["path"]).touch(exist_ok=False)
+                restored_paths.add(stream["path"])
         remaining = dict.fromkeys(streams, 0)
-        for manifest in archive.manifests:
+        for manifest in manifests:
             for member in manifest["members"]:
                 remaining[member["stream"]] += 1
         stream_order = {stream["stream"]: index for index, stream in enumerate(archive.streams)}
         # Process sets by logical stream position, not their random IDs or the
         # directory listing. Completed streams can then leave scratch promptly.
-        manifests = sorted(archive.manifests, key=lambda manifest: min(
+        manifests = sorted(manifests, key=lambda manifest: min(
             (stream_order[member["stream"]], member["offset"]) for member in manifest["members"]))
         with scratch("streams-") as temporary:
             stream_directory = Path(temporary)
@@ -169,22 +174,43 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
                 with scratch("restore-set-") as set_temporary:
                     directory = Path(set_temporary)
                     stage_set(archive, manifest, directory)
-                    data_damage, _ = recover_set(archive, manifest, directory)
-                    if data_damage:
-                        print(f"Recovered {len(data_damage)} damaged/missing data chunks in scratch.", flush=True)
+                    unrecoverable = False
+                    try:
+                        data_damage, _ = recover_set(archive, manifest, directory)
+                        if data_damage:
+                            print(f"Recovered {len(data_damage)} damaged/missing members in scratch.", flush=True)
+                    except IntegrityError as error:
+                        unrecoverable = True
+                        print(f"{error}; checking surviving chunks individually.", flush=True)
                     for member in manifest["members"]:
-                        path = stream_directory / member["stream"]
+                        stream_id = member["stream"]
+                        if stream_id in skipped:
+                            continue
+                        path = stream_directory / stream_id
+                        stored = directory / member["filename"]
+                        if unrecoverable and (not stored.is_file() or sha256(stored) != member["stored_sha256"]):
+                            skipped.add(stream_id)
+                            path.unlink(missing_ok=True)
+                            print(f"Skipping stream {stream_id}: a required chunk is missing or damaged", flush=True)
+                            continue
                         mode = "r+b" if path.exists() else "w+b"
                         with path.open(mode) as output:
                             output.seek(member["offset"])
                             unpack_chunk(directory, member, output, encrypted, key, certificate)
-                        remaining[member["stream"]] -= 1
-                        if remaining[member["stream"]] == 0:
-                            finish_stream(path, streams[member["stream"]], archive, target)
-        for entry in archive.entries:
+                        remaining[stream_id] -= 1
+                        if remaining[stream_id] == 0:
+                            stream = streams[stream_id]
+                            finish_stream(path, stream, archive, target)
+                            if stream["type"] == "tar":
+                                restored_paths.update(entry["path"] for entry in stream["inventory"])
+                            else:
+                                restored_paths.add(stream["path"])
+        entries = [entry for entry in archive.entries if entry["type"] == "directory"
+                   or entry["path"] in restored_paths or entry["path"] not in owned_paths]
+        for entry in entries:
             if entry["type"] == "symlink":
                 os.symlink(entry["symlink_target"], target / entry["path"])
-        restore_metadata(target, archive.entries)
+        restore_metadata(target, entries)
         complete = archive.complete is not None and not skipped
     print(f"Restore {'complete' if complete else 'of available streams finished'}: {target}; "
           "content checksums verified. Archive files were not modified.")

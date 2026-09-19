@@ -12,8 +12,8 @@ ARCHIVE_NAME = re.compile(rf"archive-({ID})_")
 CHUNK_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})_"
     rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
-    r"offset-(?P<offset>[0-9]{20})_length-(?P<length>[0-9]{12})"
-    r"\.zst(?P<encrypted>\.cms)?"
+    r"(?:offset-(?P<offset>[0-9]{20})_)?length-(?P<length>[0-9]{12})"
+    r"\.(?P<kind>raw|tar)\.zst(?P<encrypted>\.cms)?"
 )
 
 
@@ -22,9 +22,13 @@ class Settings:
     max_file_bytes: int = 256 * 1024 * 1024 - 1
     max_group_bytes: int = 14 * 1024 * 1024 * 1024
     slice_size: int = 1024 * 1024
+    large_file_bytes: int | None = None
 
     def __post_init__(self):
-        if any(not isinstance(value, int) or value <= 0 for value in vars(self).values()):
+        limits = (self.max_file_bytes, self.max_group_bytes, self.slice_size)
+        if self.large_file_bytes is not None:
+            limits += (self.large_file_bytes,)
+        if any(not isinstance(value, int) or value <= 0 for value in limits):
             raise ArchiveError("All byte limits must be positive integers")
         if self.slice_size % 4:
             raise ArchiveError("PAR2 slice size must be a multiple of four")
@@ -34,10 +38,13 @@ def new_id():
     return secrets.token_hex(16)
 
 
-def chunk_name(archive, parity, chunk, stream, offset, length, encrypted):
+def chunk_name(archive, parity, chunk, stream, offset, length, encrypted, kind="raw"):
+    if kind not in ("raw", "tar") or (kind == "tar" and offset != 0):
+        raise ArchiveError("A TAR chunk must be a complete archive without an offset")
+    coordinates = f"offset-{offset:020d}_" if kind == "raw" else ""
     name = (
         f"archive-{archive}_parity-{parity}_chunk-{chunk:04d}_"
-        f"stream-{stream}_offset-{offset:020d}_length-{length:012d}.zst"
+        f"stream-{stream}_{coordinates}length-{length:012d}.{kind}.zst"
     )
     return name + ".cms" if encrypted else name
 
@@ -47,6 +54,9 @@ def parse_chunk(name):
     if not match:
         raise IntegrityError(f"Invalid chunk filename: {name!r}")
     result = match.groupdict()
+    if (result["offset"] is not None) != (result["kind"] == "raw"):
+        raise IntegrityError("Only RAW chunk filenames must have an offset")
+    result["offset"] = result["offset"] or "0"
     for field in ("chunk", "offset", "length"):
         result[field] = int(result[field])
     result["encrypted"] = bool(result["encrypted"])

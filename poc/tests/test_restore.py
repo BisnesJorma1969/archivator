@@ -143,8 +143,8 @@ class RestoreTests(ArchiveTest):
         backup(self.source, self.archive, settings=SMALL)
         for path in list(self.archive.rglob("*_chunk-*.zst")) + list(self.archive.rglob("*.par2")):
             path.unlink()
-        with self.assertRaises(IntegrityError):
-            restore(self.archive, self.restored)
+        self.assertEqual(restore(self.archive, self.restored), 1)
+        self.assertFalse((self.restored / "lost").exists())
 
     def test_compare_reports_all_differences(self):
         (self.source / "one").write_bytes(b"one")

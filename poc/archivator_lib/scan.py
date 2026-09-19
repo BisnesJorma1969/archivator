@@ -48,6 +48,11 @@ def index_names(names, archive_id):
 
 def stream_problem(chunks):
     """A contiguous observed range is not proof that the stream's tail survived."""
+    kinds = {chunk["kind"] for chunk in chunks}
+    if len(kinds) != 1:
+        return "inconsistent RAW/TAR types"
+    if "tar" in kinds and len(chunks) != 1:
+        return "a TAR stream must be one complete chunk"
     end = 0
     encryption = set()
     for chunk in sorted(chunks, key=lambda item: (item["offset"], item["filename"])):
@@ -142,15 +147,14 @@ def recover_scanned_set(files, names, directory, archive_id, parity_id):
     return status == 0
 
 
-def publish_stream(path, target, stream):
-    """Keep original stream bytes; additionally extract recognizable, safe TARs."""
-    try:
-        bundle = tarfile.open(path, "r:")
-    except tarfile.ReadError:
-        destination = target / f"stream-{stream}.bin"
+def publish_stream(path, target, stream, kind):
+    """The filename declares the format; a RAW source can itself contain a TAR."""
+    if kind == "raw":
+        destination = target / f"stream-{stream}.raw"
         with path.open("rb") as source, destination.open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
         return
+    bundle = tarfile.open(path, "r:")
     with bundle:
         members = bundle.getmembers()
         names = {}
@@ -175,8 +179,7 @@ def publish_stream(path, target, stream):
             progress.update(f"Extracting recovered TAR stream {stream}: {len(members):,} entries")
             bundle.extractall(temporary, members=members, filter="data")
             Path(temporary).rename(target / f"stream-{stream}")
-    # The catalog is missing: a standalone source file could itself be a TAR.
-    # Preserve its complete bytes as well as the extracted view.
+    # Keep the independent TAR available for recovery with ordinary tools.
     with path.open("rb") as source, (target / f"stream-{stream}.tar").open("xb") as output:
         shutil.copyfileobj(source, output, BUFFER_SIZE)
 
@@ -255,7 +258,7 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                         shutil.copyfileobj(source, output, BUFFER_SIZE)
                     usable[chunk["filename"]].unlink()
             try:
-                publish_stream(assembled, target, stream)
+                publish_stream(assembled, target, stream, chunks[0]["kind"])
             except (IntegrityError, tarfile.TarError) as error:
                 skipped += 1
                 print(f"Skipping stream {stream}: {error}", flush=True)

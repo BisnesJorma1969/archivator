@@ -34,7 +34,7 @@ class ParityGroupTests(ArchiveTest):
             restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
             self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
 
-    def test_no_group_mixes_streams_and_tars_never_span_groups(self):
+    def test_whole_streams_share_groups_but_split_raw_files_do_not(self):
         (self.source / "large-a").write_bytes(self.data(300000))
         (self.source / "large-b").write_bytes(self.data(300000, 2))
         for number in range(120):
@@ -43,13 +43,20 @@ class ParityGroupTests(ArchiveTest):
         by_stream = defaultdict(set)
         for manifest in manifests(self.archive):
             ids = {member["stream"] for member in manifest["members"]}
-            self.assertLessEqual(len(ids), 1)
+            if manifest["layout"] == "raw":
+                self.assertEqual(len(ids), 1)
+                self.assertTrue(all(member["kind"] == "raw" for member in manifest["members"]))
+            else:
+                self.assertEqual(len(ids), len(manifest["members"]))
+                self.assertTrue(all(member["offset"] == 0 for member in manifest["members"]))
             for sid in ids:
                 by_stream[sid].add(manifest["parity"])
         for stream in catalog(self.archive):
             if stream["type"] == "tar":
                 self.assertEqual(len(by_stream[stream["stream"]]), 1)
         self.assertTrue(any(len(groups) > 1 for groups in by_stream.values()))
+        self.assertTrue(any(len({member["stream"] for member in group["members"]}) > 1
+                            for group in manifests(self.archive)))
 
     def test_tar_continues_across_directories_and_singleton_falls_back(self):
         for name in ("one", "two"):

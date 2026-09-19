@@ -62,7 +62,7 @@ class BackupTests(ArchiveTest):
                 data = subprocess.run([executable("zstd"), "-qdc", str(path)], capture_output=True, check=True).stdout
             self.assertNotIn(b"secret-client-name", data)
             self.assertNotIn(b"PRIVATE KEY", data)
-        self.assertTrue(list(self.archive.rglob("*_inventory_stream-*.jsonl.zst.cms")))
+        self.assertTrue(list(self.archive.rglob("*_inventory*.jsonl.zst.cms")))
 
     def test_empty_tree_has_metadata_only_recovery_group(self):
         backup(self.source, self.archive, settings=SMALL)

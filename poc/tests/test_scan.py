@@ -16,8 +16,8 @@ from poc.tests.test_recovery import snapshot
 
 
 class ScanTests(ArchiveTest):
-    def write_chunk(self, data, offset=0):
-        name = chunk_name("a" * 32, "b" * 32, 0, "c" * 32, offset, len(data), False)
+    def write_chunk(self, data, offset=0, kind="raw"):
+        name = chunk_name("a" * 32, "b" * 32, 0, "c" * 32, offset, len(data), False, kind)
         self.archive.mkdir(exist_ok=True)
         writer = ZstdWriter(self.archive / name)
         writer.write(data)
@@ -50,7 +50,7 @@ class ScanTests(ArchiveTest):
         (self.source / "document.txt").write_text("recover this document")
         (self.source / "second.txt").write_text("a TAR companion")
         content = self.data(80000)
-        (self.source / "large.bin").write_bytes(content)
+        (self.source / "large.raw").write_bytes(content)
         for encrypted in (False, True):
             with self.subTest(encrypted=encrypted):
                 archive = self.root / f"archive-{encrypted}"
@@ -71,7 +71,7 @@ class ScanTests(ArchiveTest):
                 before = snapshot(archive)
                 scan(archive, index)
                 self.assertEqual(restore(archive, target, key=key if encrypted else None, scan_index=index), 0)
-                self.assertEqual((target / f"stream-{direct['stream']}.bin").read_bytes(), content)
+                self.assertEqual((target / f"stream-{direct['stream']}.raw").read_bytes(), content)
                 self.assertEqual((target / f"stream-{bundle['stream']}" / "document.txt").read_text(),
                                  "recover this document")
                 self.assertTrue((target / f"stream-{bundle['stream']}.tar").is_file())
@@ -107,7 +107,7 @@ class ScanTests(ArchiveTest):
         before = snapshot(self.archive)
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 0)
-        self.assertEqual((self.restored / f"stream-{stream}.bin").read_bytes(), (self.source / "large").read_bytes())
+        self.assertEqual((self.restored / f"stream-{stream}.raw").read_bytes(), (self.source / "large").read_bytes())
         self.assertEqual(snapshot(self.archive), before)
 
     def test_surviving_parity_can_recover_all_missing_chunk_names(self):
@@ -120,7 +120,7 @@ class ScanTests(ArchiveTest):
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 0)
-        self.assertEqual(next(self.restored.glob("*.bin")).read_bytes(), content)
+        self.assertEqual(next(self.restored.glob("*.raw")).read_bytes(), content)
 
     def test_missing_after_scan_and_bad_encryption_key_never_publish_partial_streams(self):
         (self.source / "large").write_bytes(self.data(80000))
@@ -148,7 +148,7 @@ class ScanTests(ArchiveTest):
             member = tarfile.TarInfo("../../escaped")
             member.size = 3
             archive.addfile(member, io.BytesIO(b"bad"))
-        self.write_chunk(contents.getvalue())
+        self.write_chunk(contents.getvalue(), kind="tar")
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 1)
@@ -180,7 +180,7 @@ class ScanTests(ArchiveTest):
             member = tarfile.TarInfo("file.txt")
             member.size = 3
             archive.addfile(member, io.BytesIO(b"abc"))
-        self.write_chunk(contents.getvalue()[:1024])
+        self.write_chunk(contents.getvalue()[:1024], kind="tar")
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 1)
@@ -191,4 +191,4 @@ class ScanTests(ArchiveTest):
         index = self.root / "scan.json.zst"
         self.assertEqual(main(["scan", str(self.archive), str(index)]), 0)
         self.assertEqual(main(["restore", str(self.archive), str(self.restored), "--scan-index", str(index)]), 0)
-        self.assertEqual(next(self.restored.glob("*.bin")).read_bytes(), b"recovered through the CLI")
+        self.assertEqual(next(self.restored.glob("*.raw")).read_bytes(), b"recovered through the CLI")
