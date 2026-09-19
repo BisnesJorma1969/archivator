@@ -10,9 +10,10 @@ random 128-bit values expressed as 32 lowercase hex digits. They are identifiers
 not hashes. Central metadata parity reuses `pid`; it gets no extra random ID.
 
 A **stream** is either an ordinary POSIX/PAX TAR or one original file's raw bytes.
-One TAR stays entirely inside one group. A direct-file stream may span groups.
-No group mixes streams. A TAR contains at least two regular files; a singleton
-is direct. Directories/symlinks alone use a metadata-only group.
+One TAR is one complete chunk. Multiple whole TARs and whole RAW files can share
+an independent group. A split RAW file may span groups, but its groups contain
+no other streams. A TAR contains at least two regular files; a singleton is RAW.
+Directories/symlinks alone need only inventory records, not payload chunks.
 
 The local group lives under `ARCHIVE/<pid[:2]>/`. Its identical metadata copies
 and separate central PAR2 live under `ARCHIVE/metadata/<pid[:2]>/`. Only populated
@@ -21,10 +22,10 @@ under `ARCHIVE/metadata/`.
 
 | Filename after `archive-<aid>_` | Role |
 | --- | --- |
-| `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.zst[.cms]` | Independent payload chunk |
+| `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar.zst[.cms]` | One complete, independently extractable TAR |
+| `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw.zst[.cms]` | Original file bytes: a whole file or a fragment |
 | `parity-<pid>_manifest.json.zst` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
-| `parity-<pid>_metadata_inventory_stream-<sid>.jsonl.zst[.cms]` | Stream description and original source entries; local plus identical central copy |
-| `parity-<pid>_metadata_entries.jsonl.zst[.cms]` | The same metadata role when a group has no byte stream |
+| `parity-<pid>_metadata_inventory.jsonl.zst[.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
 | `parity-<pid>.par2`, `parity-<pid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
 | `metadata_parity-<pid>_checksums.json.zst` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
 | `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
@@ -32,9 +33,9 @@ under `ARCHIVE/metadata/`.
 | `metadata_parity-<pid>_recipient.pem` | Optional normalized public certificate, in the first central set |
 | `metadata_complete.json`, `metadata_complete-copy.json` | Identical uncompressed completion markers |
 
-**Inventories are metadata, not compressed file content.** Their stream ID is
-the same one in the payload chunk names. A TAR inventory lists its members; a
-direct-file inventory identifies the original file and ancestors. Every data
+**Inventories are metadata, not compressed file content.** Stream IDs inside
+the inventory match the payload chunk names. TAR entries list members; RAW entries
+identify the original file and ancestors. Every data
 group has its own manifest and inventory, including groups carrying different
 pieces of one large direct stream. The `stream` term is used consistently for
 both types.
@@ -43,6 +44,8 @@ Generated names contain lowercase ASCII letters, digits, `_`, `-`, `.`, and
 PAR2's `+`. Chunk numbers restart at zero per group and are padded to at least
 four decimal digits, with no four-digit maximum. Offsets use twenty digits and
 lengths twelve; both refer to **uncompressed plaintext**, never ciphertext.
+Offsets occur only in RAW names. TAR length includes headers, member padding,
+end markers and final record padding. Internally its chunk offset is always zero.
 Names remain meaningful when copied into a flat directory. PAR2 records relative
 basenames. Discovery is recursive; archive-file mtimes and enumeration order do
 not matter. Two group-metadata copies are intentional, other duplicates are not.
@@ -55,13 +58,16 @@ DER encoding, AES-256-GCM, RSA≥3072, RSA-OAEP/SHA-256 and MGF1-SHA-256.
 The suffix is `.zst.cms`. Decrypt/authenticate before decompression.
 
 The public manifest contains `version`, `archive`, `parity`, `compression`,
-`encryption`, `settings`, `members`, `source_metadata`, and `source_sha256`.
-Each chunk member records `filename`, `chunk`, `stream`, `offset`, `length`,
+`encryption`, `settings`, `layout`, `members`, `source_metadata`, and `source_sha256`.
+Layout is `independent` (complete streams) or `raw` (one split original file).
+Each chunk member records `filename`, `chunk`, `stream`, `kind` (`tar` or `raw`), `offset`, `length`,
 `stored_length`, `stored_sha256`, `plaintext_sha256`, and `plaintext_sha512`.
 It contains no original source names.
 
-The inventory is JSONL: first `{"stream": ...}`, followed by source entries.
-Stream type is `file` or `tar`; metadata-only groups use null. Original entries
+The inventory is JSONL: first `{"streams": [...]}`, followed by
+`{"stream": "<id>", "entry": {...}}` records. Stream type is `file` or `tar`;
+entries outside a byte stream use a null stream ID, and metadata-only groups
+have an empty streams list. Original entries
 include `path`, `type`, `mode`, `mtime_ns`, and, where applicable, `size` or
 `symlink_target`. File checksums are CRC32, MD5, SHA-1, SHA-256, SHA-512. TAR hashes
 are calculated while writing members. A direct stream's final group records its
@@ -89,6 +95,10 @@ Defaults are **268435455 bytes per final file** and **15032385536 bytes per grou
 Both include format overhead; a group includes its metadata and PAR2. Central
 sets obey the same limits. Compression expansion and CMS wrappers are reserved
 before selecting plaintext chunk sizes; final sizes are checked before publication.
+Complete TAR admission counts TAR/PAX headers and all padding before applying
+the zstd/CMS bound. Groups accumulate actual stored chunk sizes with conservative
+metadata/parity reservations. The optional `--large-file-bytes` routing threshold
+can be lower than the safe input ceiling without reducing RAW chunk sizes.
 
 PAR2 uses 1 MiB slices by default. Recovery is the maximum of 20% of actual
 protected bytes, 125% of the largest member, and one slice more than that member
@@ -143,7 +153,7 @@ For encrypted inventory, use the same CMS decryption below as for a chunk, then
 for TAR streams, their complete member inventory. A private key suffices; the
 public recipient certificate is optional for decryption.
 
-### 3. Decode and place each chunk
+### 3. Decode each chunk
 
 ```bash
 chunk=REPLACE_WITH_ACTUAL_CHUNK_FILENAME
@@ -155,8 +165,24 @@ sha256sum chunk.plain
 ```
 
 For unencrypted data use `zstd -dc "$chunk" > chunk.plain` instead. Check the
-plaintext length and hashes against the manifest. The filename remains enough
-to place bytes when metadata is unavailable:
+plaintext length and hashes against the manifest when available, and the length
+in the filename otherwise.
+
+### 4. Extract a TAR or assemble a RAW file
+
+A `.tar.zst[.cms]` chunk already contains a **complete TAR**. No concatenation or
+offset calculation is needed:
+
+```bash
+tar -tvf chunk.plain
+mkdir -p extracted
+tar -xpf chunk.plain -C extracted
+```
+
+Each TAR can be extracted independently, even when another chunk is lost beyond
+PAR2 recovery. Multiple TAR chunks may be extracted into the same destination.
+
+For a `.raw.zst[.cms]` chunk, the filename supplies its original file position:
 
 ```bash
 offset_field=${chunk#*_offset-}
@@ -167,15 +193,9 @@ dd if=chunk.plain of=reconstructed-stream bs=1M \
 ```
 
 Start with an absent `reconstructed-stream`; repeat for every chunk of the same
-stream, using its numeric offset, never directory order. Check final size and
-whole-stream SHA-256 from the source metadata when available. For a direct
-stream the result is the original file. For a TAR:
-
-```bash
-tar -tvf reconstructed-stream
-mkdir extracted
-tar -xpf reconstructed-stream -C extracted
-```
+RAW stream, using its numeric offset, never directory order. Check final size and
+whole-stream SHA-256 from the source metadata when available. The result is the
+original file, with no TAR wrapper. A singleton RAW stream needs only its one chunk.
 
 Restore direct-file attributes from its inventory. Missing fragments of a large
 file cannot be recovered merely by possessing another group from that stream.

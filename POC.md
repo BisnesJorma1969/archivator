@@ -10,7 +10,7 @@ Compressed, optionally encrypted, bitrot-tolerant backups, split into manageable
 files and protected by standard PAR2. Restore with ordinary Linux tools even
 decades later, without Archivator: PAR2, OpenSSL CMS, zstd, tar, and coreutils.
 Loss of metadata does not by itself destroy payload bytes. Intact chunk filenames
-supply their plaintext offsets and lengths; encrypted payload also needs the
+supply their format and plaintext lengths, plus offsets for RAW chunks; encrypted payload also needs the
 private key. Separate metadata supplies original direct-file names, attributes,
 and authoritative completeness/checksum information.
 
@@ -19,8 +19,7 @@ The PoC proves `source directory → archive directory → restored directory`, 
 custom crypto, custom parity, resume protocol, or filesystem snapshots.
 
 Implementation is under `poc/`; generated data and scratch use ignored
-`poc/work/`. Keep code straightforward and human-readable. No compatibility or
-migration layer is part of this greenfield format.
+`poc/work/`. Keep code straightforward and human-readable.
 
 ## 2. Terminology and identifiers
 
@@ -28,16 +27,17 @@ migration layer is part of this greenfield format.
 | --- | --- |
 | Archive | A complete backup, identified by an archive ID |
 | Stream | Plaintext bytes of one original file or one ordinary POSIX/PAX TAR |
-| Chunk | An independently zstd-compressed, optionally CMS-encrypted stream range |
-| Data parity group | Chunks from **one stream**, local source metadata, public manifest, and PAR2 |
+| Chunk | One complete TAR or a range of RAW file bytes, independently compressed and optionally encrypted |
+| Data parity group | Whole independent streams **or** fragments of one RAW file, plus local metadata and PAR2 |
 | Central metadata set | Identical metadata copies and their checksum receipt, protected by separate PAR2 |
 
 Archive IDs, stream IDs, and data-group IDs are random 128-bit identifiers, not
 content hashes. Each is 32 lowercase hexadecimal digits. Central metadata PAR2
 **reuses its data group's ID**; no extra random metadata or shard IDs are generated.
 
-A TAR belongs wholly to one data group. A large direct-file stream can span many
-groups. A group describing a fragment of a large file is independently
+A TAR is exactly one chunk. Several complete TARs and whole RAW files may share
+one data group. A large direct-file stream can span many groups, but its fragments
+never share a group with other streams. A group describing a fragment is independently
 interpretable and repairable, but cannot reproduce absent fragments.
 
 ## 3. Hard byte limits
@@ -46,6 +46,7 @@ interpretable and repairable, but cannot reproduce absent fragments.
 | --- | ---: |
 | `max_file_bytes` / `--max-file-bytes` | 268435455 (256 MiB − 1 byte) |
 | `max_group_bytes` / `--max-group-bytes` | 15032385536 (14 GiB) |
+| `large_file_bytes` / `--large-file-bytes` | Automatic: the derived safe input ceiling |
 | Internal PAR2 `slice_size` | 1048576 (1 MiB) |
 
 These are exact byte counts. The program does not interpret media marketing
@@ -71,6 +72,11 @@ recipient's CMS wrapper. It also leaves room for a small group by limiting the
 stored chunk allowance to at most one quarter of the group budget. No padding or
 alignment is added between compression frames, CMS, and PAR2 slices.
 
+The large-file threshold is a routing policy, not a chunk-size limit. It can be
+set lower than the derived safe ceiling; higher values are capped at that ceiling.
+Lowering it does not shrink RAW chunks. TAR admission additionally reserves the
+actual TAR/PAX headers, member padding, end markers and final record padding.
+
 ## 4. Source traversal and TAR collection
 
 Visit directories recursively, listing and optionally alphabetizing only the
@@ -82,8 +88,8 @@ Keep the active directory lists and the current bounded TAR inventory in memory,
 not the entire source tree. Write group catalogs progressively. Observable source
 changes abort backup; ordinary stat checks are not a snapshot guarantee.
 
-Files at least as large as the derived plaintext chunk ceiling go directly to
-the direct-file handler. Smaller files are TAR candidates. Try the first fitting
+Files at least as large as the effective large-file threshold go directly to
+the RAW handler. Smaller files are TAR candidates, not guaranteed to fit. Try the first fitting
 candidate in the current directory, looking through its whole remaining list
 when useful. Do not read file contents to estimate compression. Account for PAX
 headers, 512-byte member padding, end records, metadata, encryption, and parity.
@@ -97,7 +103,8 @@ workers.
 A TAR must have at least two regular files. A singleton takes the direct-file
 path before TAR bytes are written; directories and symlinks do not count as its
 companion. Empty files, directories, symlinks, and the root `.` are retained.
-A group with only filesystem metadata needs no artificial TAR or data chunk.
+Metadata-only entries may accompany data or form their own group; they need no
+artificial TAR or data chunk.
 
 Never split an original large file into custom TAR members. TARs remain ordinary
 TARs; direct streams remain the original file bytes.
@@ -107,7 +114,14 @@ TARs; direct streams remain the original file bytes.
 Each chunk is an independent zstd frame, level 3, `--single-thread --check`, no
 dictionary or embedded source name. Compression/decompression use bounded I/O
 buffers. Encrypted frames are binary CMS AuthEnvelopedData in DER, with suffix
-**`.zst.cms`**. Unencrypted frames end in `.zst`.
+**`.tar.zst.cms`** for complete TARs or **`.raw.zst.cms`** for direct file bytes.
+Unencrypted payload uses `.tar.zst` or `.raw.zst`. Source inventories use
+`.jsonl.zst[.cms]`.
+
+Each TAR chunk is a complete ordinary archive, never a slice of a larger TAR.
+No original member crosses a TAR-chunk boundary. Its filename omits `offset`;
+`length` includes the entire uncompressed TAR, including headers and padding.
+RAW chunk names include both the original file offset and the chunk length.
 
 Use AES-256-GCM, an RSA recipient key of at least 3072 bits, RSA-OAEP/SHA-256 and
 MGF1-SHA-256. OpenSSL generates content keys/nonces. Reject weak or unsuitable
@@ -127,10 +141,19 @@ secure erasure. Production limitations remain in section 13.
 
 ## 6. Group sizing and parity
 
-A group never mixes streams. Direct streams close a group before the next stored
-chunk would exceed the byte/metadata/PAR2 budget. TAR admission uses conservative
-bounds so its entire stream and inventory fit one group. No arbitrary chunk-count
-or filename-width limit is used. PAR2's own 32768 source/recovery-block limits
+A group has one of two layouts:
+
+- `independent`: whole TAR streams and whole one-chunk RAW files. Each nonempty
+  stream contributes exactly one chunk; empty files need metadata only.
+- `raw`: chunks of just one split original file, possibly continuing across groups.
+
+Both collect chunks by **actual compressed/encrypted sizes**, closing before the
+next chunk plus reserved metadata/PAR2 exceeds the budget. Thus compressible TAR
+input can contribute many independent TARs to the same group. TAR collection
+itself uses a conservative plaintext bound so each complete TAR fits one file;
+it does not try to fill a compressed chunk to its byte ceiling.
+Metadata reservations and PAR2 limits may still close groups early. No arbitrary
+chunk-count or filename-width limit is used. PAR2's own 32768 source/recovery-block limits
 also constrain admission; slice sizes are positive multiples of four.
 
 Protect **stored** chunks and already compressed/encrypted metadata together.
@@ -166,7 +189,7 @@ metadata must also survive. An index can be replaced by a surviving volume.
 For each group:
 
 1. Finish independent stored chunks.
-2. Write the stream/source inventory, compress it, and encrypt it when requested.
+2. Write the group's streams/source inventory, compress it, and encrypt it when requested.
 3. Write and compress the public group manifest, referencing stored inventory and
    chunk SHA-256 values. It carries settings and plaintext chunk checksums.
 4. Generate data PAR2 over **chunks + stored inventory + stored manifest**.
@@ -185,10 +208,11 @@ normalized public recipient certificate when encrypted. These and completion
 markers are the explicit uncompressed roles. Inventories, manifests, and receipts
 always use zstd, regardless of size or compression ratio.
 
-The inventory's first JSONL record describes its stream; subsequent records
-list original filesystem entries and required ancestors. For TARs it lists TAR
-members. For direct streams it identifies the original file and needed directory
-metadata. Metadata-only groups use a null stream. Repeated ancestor descriptions
+The inventory's first JSONL record is `{"streams": [...]}`, describing all streams
+in the group. Subsequent records are `{"stream": "<id>", "entry": {...}}`, linking
+original filesystem entries and required ancestors to their stream. For TARs these
+are the TAR members. For RAW streams they identify the original file and its
+ancestors. Metadata-only entries use a null stream ID. Repeated ancestor descriptions
 must agree. Direct-stream groups carry the full source size from the start;
 whole-file hashes become available in the final group. Earlier groups still
 have independent plaintext/stored chunk hashes.
@@ -206,9 +230,10 @@ See [FORMAT.md](poc/FORMAT.md) for the complete filename table.
 ```text
 ARCHIVE/
   <pid[:2]>/
-    archive-<aid>_parity-<pid>_chunk-...zst[.cms]
+    archive-<aid>_parity-<pid>_chunk-...tar.zst[.cms]
+    archive-<aid>_parity-<pid>_chunk-...raw.zst[.cms]
     archive-<aid>_parity-<pid>_manifest.json.zst
-    archive-<aid>_parity-<pid>_metadata_inventory_stream-<sid>.jsonl.zst[.cms]
+    archive-<aid>_parity-<pid>_metadata_inventory.jsonl.zst[.cms]
     archive-<aid>_parity-<pid>.par2
     archive-<aid>_parity-<pid>.vol...par2
   metadata/
@@ -225,6 +250,7 @@ Only populated shard directories are created. Many groups can share a shard.
 PAR2 stores basenames relative to its shard. Chunk numbers are local to a group,
 zero-padded to **at least** four digits, without a four-digit maximum. Offsets
 and lengths are plaintext byte coordinates, not compressed/encrypted coordinates.
+Only RAW filenames have offsets; both formats have lengths.
 
 Readers discover files recursively in flat, nested, or mixed layouts. Exactly two
 copies of group metadata are intentional; use recorded checksums to select good
@@ -250,8 +276,10 @@ conflicting valid copies are rejected. A surviving local group can also be
 restored without the central directory/markers. Report that original backup
 completeness cannot be proved, and return 1 for that partial-catalog mode.
 Streams with detected gaps are skipped entirely; never fabricate holes or
-publish a fragment as a complete file. TARs wholly inside surviving groups retain
-standard-tool recoverability.
+publish a fragment as a complete file. If a group cannot be fully repaired, restore
+still checks its surviving chunks against stored hashes and restores complete
+healthy streams. A lost TAR does not prevent restoring its healthy siblings.
+Skipped streams produce exit 1; a partial RAW file is never published.
 
 Normal restore checks stored bytes, CMS authentication, zstd integrity, plaintext
 chunk lengths/hashes, whole-stream hashes when available, and TAR member hashes.
@@ -272,9 +300,10 @@ packets. It writes a separate `.json.zst` index of surviving chunk/data-PAR2 nam
 Restore with `--scan-index` uses those coordinates and available PAR2, checks
 CMS/zstd/declared lengths, and skips streams with detected gaps or bad chunks.
 
-Without source metadata, direct streams use `stream-<id>.bin`. Recognized safe
+Without source metadata, RAW streams use `stream-<id>.raw`. Filename-declared
 TARs are kept as `stream-<id>.tar` and also extracted under `stream-<id>/`.
-Missing tails or whole streams cannot always be detected. Exit 0 in filename-only
+RAW contents are never guessed to be TARs, even if the original file was a TAR.
+Missing RAW tails or whole streams cannot always be detected. Exit 0 in filename-only
 mode means no detected failure, not proof of original backup completeness.
 
 ## 11. CLI, progress, tests, and demo

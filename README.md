@@ -79,7 +79,9 @@ openssl req -x509 -newkey rsa:3072 -noenc \
   --encrypt-cert poc/work/recipient.pem
 ```
 
-Encrypted chunks **and source-name inventories** end in `.zst.cms`. Each group
+Payload names distinguish complete TARs (`.tar.zst.cms`) from direct file bytes
+(`.raw.zst.cms`); omit `.cms` without encryption. Each TAR chunk can be extracted
+independently. Source-name inventories are also encrypted (`.jsonl.zst.cms`). Each group
 keeps its compressed metadata beside the data and PAR2; identical metadata copies
 and their own PAR2 are under `metadata/`. Shards reuse the first two characters
 of the group's ID. Keep passing `archive1`; discovery is recursive.

@@ -7,7 +7,7 @@ backup/damage/restore walkthrough. Python uses only the standard library.
 
 | Command | Purpose |
 | --- | --- |
-| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES]` | Create a backup in an absent/empty directory |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES]` | Create a backup in an absent/empty directory |
 | `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
 | `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
 | `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json.zst]` | Restore into an absent/empty directory; archive remains unchanged |
@@ -20,7 +20,14 @@ PAR2 indexes, recovery volumes, and their packet overhead. The same ceilings
 apply to central metadata protection. Supply exact bytes, not media labels; no
 filesystem overhead is guessed. See [sizing rules](../POC.md#3-hard-byte-limits).
 
-Encrypted payload and source-name metadata both use `.zst.cms`. Verification and
+`--large-file-bytes` routes files at or above the given source size directly to
+RAW. Its default is the derived safe input ceiling; a higher value is capped
+there. A lower threshold does not change RAW chunk sizes. Smaller files are TAR
+candidates, subject to space for complete TAR headers/padding and zstd/CMS overhead.
+
+Payload names end in `.tar.zst[.cms]` or `.raw.zst[.cms]`; source-name metadata
+uses `.jsonl.zst[.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
+Each TAR payload is a whole archive, not a fragment. Verification and
 PAR2 repair operate on stored ciphertext and require no key. Restore requires
 `--decrypt-key` and validates CMS authentication before decompression.
 
@@ -42,9 +49,11 @@ member checksums.
 
 ## Recovery behavior
 
-Data groups contain chunks from one stream and their own compressed metadata,
-protected together by PAR2. A TAR never crosses groups; a large direct-file
-stream may. Each group has identical metadata copies under `metadata/`, with
+Data groups contain either whole independent TARs/RAW files or fragments of one
+large RAW file, plus their own compressed metadata, protected together by PAR2.
+Each TAR is exactly one chunk. A split RAW file may span groups; its fragments
+never share groups with other streams. Groups accumulate actual stored chunk
+sizes, reserving metadata and parity. Each group has identical metadata copies under `metadata/`, with
 separate PAR2 protection there. The public group manifest identifies stored bytes;
 its inventory describes source files and is encrypted when encryption is enabled.
 The word **stream** means a TAR's bytes or a direct file's bytes, not a parity group.
@@ -55,6 +64,10 @@ It restores complete streams, skips detected gaps, and returns 1 because it cann
 prove the original backup is complete. A large file's fragment is independently
 repairable, not a complete file. No zero-filled holes or fabricated completion
 markers are produced.
+
+If PAR2 cannot repair a whole group, restore still recovers complete streams from
+its individually verified surviving chunks. Missing/damaged streams are skipped,
+and restore returns 1. Losing one TAR does not discard the group's other TARs.
 
 Verify/restore can recover metadata in private scratch. Healthy inputs are
 read-only hardlinks where possible; damaged/unknown inputs are ordinary copies
@@ -95,16 +108,17 @@ The index selects its archive ID; optional `--archive-id` must agree.
 
 Restore tries available PAR2 in scratch, including recovery of filenames missing
 when scanned. It checks declared plaintext lengths, zstd frames, and CMS tags.
-Streams with detected gaps, overlaps, unreadable chunks, or malformed recognized
+Streams with detected gaps, overlaps, unreadable chunks, or malformed declared
 TARs are skipped entirely. Other streams continue.
 
 | Output | Meaning |
 | --- | --- |
-| `stream-<id>.bin` | Reconstructed bytes not recognized as TAR; original direct-file name unknown |
-| `stream-<id>.tar` | Raw reconstructed TAR bytes, retained because an original direct file could itself be a TAR |
+| `stream-<id>.raw` | Reconstructed RAW file bytes; original direct-file name unknown |
+| `stream-<id>.tar` | Complete TAR bytes, identified by the payload filename |
 | `stream-<id>/` | Safely extracted view of that TAR |
 
-Without authoritative source metadata, missing tail chunks or entire streams may
+RAW streams are not automatically extracted even if their contents are a TAR.
+Without authoritative source metadata, missing RAW tail chunks or entire streams may
 be undetectable. Exit 0 means no **detected** gaps/decoding failures, not proof of
 original completeness. Exit 1 means skipped streams, unresolved PAR2 sets, or no
 recoverable stream. Extraction rejects unsafe paths, duplicates, special files,
