@@ -23,6 +23,8 @@ class Settings:
     max_group_bytes: int = 14 * 1024 * 1024 * 1024
     slice_size: int = 1024 * 1024
     large_file_bytes: int | None = None
+    waiting_groups: int = 4
+    group_close_percent: int = 95
 
     def __post_init__(self):
         limits = (self.max_file_bytes, self.max_group_bytes, self.slice_size)
@@ -32,6 +34,10 @@ class Settings:
             raise ArchiveError("All byte limits must be positive integers")
         if self.slice_size % 4:
             raise ArchiveError("PAR2 slice size must be a multiple of four")
+        if not isinstance(self.waiting_groups, int) or self.waiting_groups < 0:
+            raise ArchiveError("Waiting group count must be a nonnegative integer")
+        if not isinstance(self.group_close_percent, int) or not 1 <= self.group_close_percent <= 100:
+            raise ArchiveError("Group closing percentage must be an integer from 1 to 100")
 
 
 def new_id():

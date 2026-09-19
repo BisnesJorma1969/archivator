@@ -94,8 +94,10 @@ class IndependentChunkTests(ArchiveTest):
         chunks = [parse_chunk(path.name) for path in self.archive.rglob("*.raw.zst")
                   if parse_chunk(path.name)["stream"] == split["stream"]]
         self.assertEqual(max(chunk["length"] for chunk in chunks), input_limit(SMALL.max_file_bytes))
-        whole = next(group for group in manifests(self.archive) if group["layout"] == "independent")
-        self.assertEqual(len(whole["members"]), 2)
+        small_ids = {stream["stream"] for stream in catalog(self.archive) if stream["path"] in ("one", "two")}
+        whole = next(group for group in manifests(self.archive)
+                     if small_ids <= {member["stream"] for member in group["members"]})
+        self.assertEqual(len([member for member in whole["members"] if member["stream"] in small_ids]), 2)
         args = parser().parse_args(["backup", "source", "archive", "--large-file-bytes", "4096"])
         self.assertEqual(args.large_file_bytes, 4096)
         with self.assertRaises(ArchiveError):

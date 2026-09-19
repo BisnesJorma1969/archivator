@@ -43,26 +43,28 @@ def with_parents(entries):
 
 
 def inventory_bound(sources):
-    # Digests are not known until reading the file. Reserve all five hex digests
-    # and their JSON keys; JSON escaping of source paths is already included.
+    # Reserve digests even before reading a file. The bound must stay unchanged
+    # when a completed stream receives its real digests in an open group.
+    digests = {"crc32", "md5", "sha1", "sha256", "sha512"}
     total = 1024
     for stream, entries in sources.values():
-        total += len(json_bytes(stream)) + 512
-        total += sum(len(json_bytes(public_entry(entry))) + 600 for entry in with_parents(entries))
+        for record in [stream or {}] + with_parents(entries):
+            unsigned = {key: value for key, value in record.items()
+                        if not key.startswith("_") and key not in digests}
+            total += len(json_bytes(unsigned)) + 600
     return total
 
 
 class ParityWriter:
-    """Whole independent units, or fragments of one RAW file, per bounded group."""
+    """One bounded recovery group; placement and lifetime belong to GroupQueue."""
 
     def __init__(self, archive, archive_id, settings, catalog,
-                 certificate=None, encryption_overhead=0, independent=False):
+                 certificate=None, encryption_overhead=0):
         self.archive = archive
         self.archive_id = archive_id
         self.settings = settings
         self.catalog = catalog
         self.sources = {}
-        self.independent = independent
         self.certificate = certificate
         self.encryption_overhead = encryption_overhead
         self.staging = archive / ".tmp"
@@ -78,11 +80,15 @@ class ParityWriter:
     def manifest(self, members, source_digest):
         return {"version": 1, "archive": self.archive_id, "parity": self.parity_id,
                 "compression": "zstd", "encryption": "cms-aes-256-gcm" if self.certificate else "none",
-                "settings": vars(self.settings), "layout": "independent" if self.independent else "raw",
+                "settings": vars(self.settings),
                 "members": members,
                 "source_metadata": self.source_name(), "source_sha256": source_digest}
 
     def fits(self, members, sources, private_size=None):
+        return self.budget(members, sources, private_size) is not None
+
+    def budget(self, members, sources, private_size=None):
+        """Stored data plus conservative metadata/PAR2 bytes, or no feasible fit."""
         settings = self.settings
         private_size = private_size or inventory_bound(sources)
         source_length = stored_bound(private_size, self.encryption_overhead)
@@ -93,11 +99,12 @@ class ParityWriter:
         prefix = parity_prefix(self.archive_id, self.parity_id)
         lengths[prefix + "_metadata_index-chunks.json.zst"] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
-            return False
+            return None
         try:
             plan = parity_plan(lengths, settings.slice_size, settings.max_file_bytes)
-            if sum(lengths.values()) + plan.total_bytes > settings.max_group_bytes:
-                return False
+            total = sum(lengths.values()) + plan.total_bytes
+            if total > settings.max_group_bytes:
+                return None
             # The identical central copies need their own parity and a receipt.
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
@@ -108,11 +115,13 @@ class ParityWriter:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
                 central[metadata_prefix(self.archive_id, self.parity_id) + "_" + role] = path.stat().st_size
             if max(central.values()) > settings.max_file_bytes:
-                return False
+                return None
             protection = parity_plan(central, settings.slice_size, settings.max_file_bytes)
-            return sum(central.values()) + protection.total_bytes <= settings.max_group_bytes
+            if sum(central.values()) + protection.total_bytes > settings.max_group_bytes:
+                return None
+            return total
         except ArchiveError:
-            return False
+            return None
 
     def candidate(self, stream, size, number=0, offset=0, length=1):
         stream_id = stream["stream"]
@@ -123,35 +132,37 @@ class ParityWriter:
                 "stored_length": size, "stored_sha256": "0" * 64,
                 "plaintext_sha256": "0" * 64, "plaintext_sha512": "0" * 128}
 
-    def add(self, path, stream, entries, offset, length, hashes):
-        sources = {**self.sources, stream["stream"]: (stream, entries)}
-        candidate = self.candidate(stream, path.stat().st_size, len(self.members), offset, length)
-        if not self.fits(self.members + [candidate], sources):
-            self.finish_set()
-            sources = {stream["stream"]: (stream, entries)}
-            candidate = self.candidate(stream, path.stat().st_size, 0, offset, length)
-            if not self.fits([candidate], sources):
-                raise ArchiveError("Byte limits cannot hold one data chunk with its metadata and parity")
-        candidate.update(plaintext_sha256=hashes["sha256"], plaintext_sha512=hashes["sha512"],
-                         stored_sha256=sha256(path))
-        shard = self.archive / self.parity_id[:2]
-        shard.mkdir(exist_ok=True)
-        os.replace(path, shard / candidate["filename"])
-        self.members.append(candidate)
-        self.sources = sources
-        print(f"Stored chunk: {length:,} plaintext bytes -> {candidate['stored_length']:,} stored bytes", flush=True)
-
-    def add_metadata(self, stream, entries):
-        """Empty files and directory-only input still need a protected inventory."""
+    def proposed(self, chunks, stream, entries):
         key = stream["stream"] if stream else None
         if key is None and key in self.sources:
             entries = self.sources[key][1] + entries
         sources = {**self.sources, key: (stream, entries)}
-        if not self.fits(self.members, sources):
-            self.finish_set()
-            sources = {key: (stream, entries)}
-            if not self.fits([], sources):
-                raise ArchiveError("Source metadata cannot fit the configured byte limits")
+        members = list(self.members)
+        for chunk in chunks:
+            member = self.candidate(stream, chunk["stored_length"], len(members),
+                                    chunk["offset"], chunk["length"])
+            member.update(stored_sha256=chunk["stored_sha256"],
+                          plaintext_sha256=chunk["plaintext_sha256"],
+                          plaintext_sha512=chunk["plaintext_sha512"])
+            members.append(member)
+        return members, sources
+
+    def can_add(self, chunks, stream, entries):
+        members, sources = self.proposed(chunks, stream, entries)
+        return self.fits(members, sources)
+
+    def append(self, chunks, stream, entries):
+        members, sources = self.proposed(chunks, stream, entries)
+        if not self.fits(members, sources):
+            raise ArchiveError("Group cannot hold the selected content with metadata and parity")
+        shard = self.archive / self.parity_id[:2]
+        if chunks:
+            shard.mkdir(exist_ok=True)
+        for chunk, member in zip(chunks, members[len(self.members):]):
+            os.replace(chunk["path"], shard / member["filename"])
+            print(f"Stored chunk: {member['length']:,} plaintext bytes -> "
+                  f"{member['stored_length']:,} stored bytes; group {self.parity_id}", flush=True)
+        self.members = members
         self.sources = sources
 
     def finish_set(self):
@@ -200,14 +211,93 @@ class ParityWriter:
         print(f"Finished group: {total:,}/{self.settings.max_group_bytes:,} bytes including metadata and PAR2", flush=True)
         self.members = []
         self.sources = {}
-        self.parity_id = new_id()
+
+
+class GroupQueue:
+    """One active group and a bounded, oldest-first list of waiting groups."""
+
+    def __init__(self, make_group):
+        self.make_group = make_group
+        self.planner = make_group()  # Empty-group feasibility, never published.
+        self.settings = self.planner.settings
+        self.active = None
+        self.waiting = []
+
+    def used_bytes(self, group):
+        budget = group.budget(group.members, group.sources)
+        # A changed central receipt reservation can also prevent further additions.
+        return self.settings.max_group_bytes if budget is None else budget
+
+    def close_on_miss(self, group):
+        return self.used_bytes(group) * 100 >= self.settings.max_group_bytes * self.settings.group_close_percent
+
+    def retire_active(self):
+        if self.active is None:
+            return
+        group = self.active
+        self.active = None
+        if self.close_on_miss(group):
+            group.finish_set()
+            return
+        self.waiting.append(group)
+        if len(self.waiting) > self.settings.waiting_groups:
+            # max() keeps the first (oldest) group when byte budgets tie.
+            fullest = max(self.waiting, key=self.used_bytes)
+            self.waiting.remove(fullest)
+            fullest.finish_set()
+        print(f"Group queue: {len(self.waiting)}/{self.settings.waiting_groups} waiting", flush=True)
+
+    def place(self, chunks, stream, entries):
+        """Admit an entire RAW file, one complete TAR, or metadata-only entries."""
+        for group in list(self.waiting):
+            if group.can_add(chunks, stream, entries):
+                group.append(chunks, stream, entries)
+                return
+            if self.close_on_miss(group):
+                self.waiting.remove(group)
+                group.finish_set()
+        if self.active is not None and self.active.can_add(chunks, stream, entries):
+            self.active.append(chunks, stream, entries)
+            return
+        self.retire_active()
+        self.active = self.make_group()
+        self.active.append(chunks, stream, entries)
+
+    def start_large_file(self):
+        # The file has exceeded an EMPTY group's budget, not merely the space
+        # left in a populated group. Its first fragment must start fresh.
+        for group in list(self.waiting):
+            if self.close_on_miss(group):
+                self.waiting.remove(group)
+                group.finish_set()
+        self.retire_active()
+        self.active = self.make_group()
+
+    def append_fragment(self, chunk, stream, entries):
+        if not self.active.can_add([chunk], stream, entries):
+            self.active.finish_set()
+            self.active = self.make_group()
+        self.active.append([chunk], stream, entries)
+        # The final group stays active when the file ends; subsequent whole
+        # files/TARs may fill its remainder. Intermediate groups never wait.
+
+    def finish(self):
+        for group in self.waiting:
+            group.finish_set()
+        self.waiting.clear()
+        if self.active is not None:
+            self.active.finish_set()
+            self.active = None
 
 
 class StreamWriter:
     """Independent zstd/CMS chunks with a conservative plaintext input ceiling."""
 
-    def __init__(self, parity, stream, entries):
-        self.parity = parity
+    def __init__(self, queue, stream, entries):
+        self.queue = queue
+        self.parity = queue.planner
+        self.chunks = []
+        self.spanning = False
         self.stream = stream
         self.entries = entries
         self.size = 0
@@ -250,10 +340,38 @@ class StreamWriter:
             path.unlink()
             path = encrypted
         check_files([path], self.parity.settings.max_file_bytes, self.parity.settings.max_group_bytes)
-        self.parity.add(path, self.stream, self.entries, self.size - self.chunk_length,
-                        self.chunk_length, self.chunk_hashes.values())
+        offset = self.size - self.chunk_length
+        staged = self.parity.staging / f"buffer-{self.stream['stream']}-{offset}.zst"
+        if self.parity.certificate:
+            staged = staged.with_name(staged.name + ".cms")
+        os.replace(path, staged)
+        hashes = self.chunk_hashes.values()
+        chunk = {"path": staged, "offset": offset, "length": self.chunk_length,
+                 "stored_length": staged.stat().st_size, "stored_sha256": sha256(staged),
+                 "plaintext_sha256": hashes["sha256"], "plaintext_sha512": hashes["sha512"]}
+        if self.spanning:
+            self.queue.append_fragment(chunk, self.stream, self.entries)
+        else:
+            self.chunks.append(chunk)
+            if not self.parity.can_add(self.chunks, self.stream, self.entries):
+                if self.stream["type"] == "tar":
+                    raise ArchiveError("A complete TAR and its metadata cannot fit an empty group")
+                self.spanning = True
+                self.queue.start_large_file()
+                for pending in self.chunks:
+                    self.queue.append_fragment(pending, self.stream, self.entries)
+                self.chunks.clear()
+            else:
+                progress.update(f"Buffered stream {self.stream['stream']}: {len(self.chunks):,} stored chunks")
         self.chunk_length = 0
         self.chunk_hashes = Hashes()
+
+    def finish(self):
+        self.stream.update(self.hashes.values())
+        self.finish_chunk()
+        if not self.spanning:
+            self.queue.place(self.chunks, self.stream, self.entries)
+            self.chunks.clear()
 
     def close(self):
         if self.compressed:
@@ -342,31 +460,23 @@ def backup(source, archive, certificate=None, settings=None):
                 output.write(f"recipient-sha256={fingerprint}\n")
         catalog.extra.append(format_path)
 
-        def writer(independent=False):
-            return ParityWriter(archive, archive_id, settings, catalog, certificate, overhead, independent)
+        def writer():
+            return ParityWriter(archive, archive_id, settings, catalog, certificate, overhead)
 
-        small_group = writer(independent=True)
+        queue = GroupQueue(writer)
 
         def direct(entry, accompanying=()):
             print(f"Archiving file: {entry['path']!r} ({entry['size']:,} bytes)", flush=True)
             stream = {**public_entry(entry), "stream": new_id()}
-            # Whole files can share a group with whole TARs. Only split files
-            # get private groups, so fragments of unrelated files never mix.
-            group = small_group if entry["size"] <= small_group.input_bytes else writer()
             entries = list(accompanying) + [entry]
-            sink = StreamWriter(group, stream, entries)
+            sink = StreamWriter(queue, stream, entries)
             check_unchanged(source / entry["path"], entry)
             try:
                 with (source / entry["path"]).open("rb") as original:
                     while data := original.read(BUFFER_SIZE):
                         sink.write(data)
                 check_unchanged(source / entry["path"], entry)
-                sink.finish_chunk()
-                stream.update(sink.hashes.values())
-                if not sink.size:
-                    group.add_metadata(stream, entries)
-                if group is not small_group:
-                    group.finish_set()
+                sink.finish()
             finally:
                 sink.close()
 
@@ -380,16 +490,15 @@ def backup(source, archive, certificate=None, settings=None):
             elif not files:
                 for entry in entries:
                     check_unchanged(source / entry["path"], entry)
-                small_group.add_metadata(None, entries)
+                queue.place([], None, entries)
             else:
                 print(f"Packing TAR stream: {len(files):,} files", flush=True)
                 stream = {"stream": new_id(), "type": "tar", "size": tar_bytes(entries)}
-                sink = StreamWriter(small_group, stream, entries)
+                sink = StreamWriter(queue, stream, entries)
                 try:
                     inventory = write_tar(source, entries, sink)
-                    stream.update(size=sink.size, **sink.hashes.values())
                     sink.entries = inventory
-                    sink.finish_chunk()
+                    sink.finish()
                 finally:
                     sink.close()
 
@@ -397,7 +506,7 @@ def backup(source, archive, certificate=None, settings=None):
         pending_paths = set()
         pending_tar_bytes = 0
         pending_inventory_bytes = 2048
-        planner = writer(independent=True)
+        planner = queue.planner
         planned_stream = {"stream": "0" * 32, "type": "tar"}
 
         def append_if_fits(entry):
@@ -448,7 +557,7 @@ def backup(source, archive, certificate=None, settings=None):
                     else:
                         flush([entry])
         flush(pending)
-        small_group.finish_set()
+        queue.finish()
         catalog.finish()
     finally:
         progress.update("Removing backup temporary files")

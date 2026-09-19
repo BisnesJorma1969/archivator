@@ -21,6 +21,10 @@ def parser():
                         help="Hard total per group, including metadata/PAR2 (default: 15032385536)")
     backup.add_argument("--large-file-bytes", type=int,
                         help="Route files at or above this size to RAW; capped at the safe input limit")
+    backup.add_argument("--waiting-groups", type=int, default=4,
+                        help="Maximum waiting groups in addition to the active group (default: 4)")
+    backup.add_argument("--group-close-percent", type=int, default=95,
+                        help="Close a non-fitting group at this budget percentage (default: 95)")
     for name in ("verify", "repair", "restore"):
         command = commands.add_parser(name)
         command.add_argument("archive", type=Path)
@@ -50,7 +54,8 @@ def main(argv=None):
                 print(f"Backing up {args.source} to {args.archive}", flush=True)
                 from .format import Settings
                 settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes,
-                                    large_file_bytes=args.large_file_bytes)
+                                    large_file_bytes=args.large_file_bytes, waiting_groups=args.waiting_groups,
+                                    group_close_percent=args.group_close_percent)
                 archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0

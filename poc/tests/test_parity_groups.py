@@ -34,24 +34,26 @@ class ParityGroupTests(ArchiveTest):
             restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
             self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
 
-    def test_whole_streams_share_groups_but_split_raw_files_do_not(self):
+    def test_spanning_raw_begins_fresh_and_tars_remain_whole(self):
         (self.source / "large-a").write_bytes(self.data(300000))
         (self.source / "large-b").write_bytes(self.data(300000, 2))
         for number in range(120):
             (self.source / f"small-{number}").write_bytes(self.data(1000, number))
         backup(self.source, self.archive, settings=SMALL)
         by_stream = defaultdict(set)
+        descriptions = {stream["stream"]: stream for stream in catalog(self.archive)}
         for manifest in manifests(self.archive):
             ids = {member["stream"] for member in manifest["members"]}
-            if manifest["layout"] == "raw":
-                self.assertEqual(len(ids), 1)
-                self.assertTrue(all(member["kind"] == "raw" for member in manifest["members"]))
-            else:
-                self.assertEqual(len(ids), len(manifest["members"]))
-                self.assertTrue(all(member["offset"] == 0 for member in manifest["members"]))
+            for sid in ids:
+                members = [member for member in manifest["members"] if member["stream"] == sid]
+                end = members[-1]["offset"] + members[-1]["length"]
+                if end < descriptions[sid]["size"]:
+                    self.assertEqual(ids, {sid})
+                elif members[0]["offset"] > 0:
+                    self.assertEqual(manifest["members"][0]["stream"], sid)
             for sid in ids:
                 by_stream[sid].add(manifest["parity"])
-        for stream in catalog(self.archive):
+        for stream in descriptions.values():
             if stream["type"] == "tar":
                 self.assertEqual(len(by_stream[stream["stream"]]), 1)
         self.assertTrue(any(len(groups) > 1 for groups in by_stream.values()))

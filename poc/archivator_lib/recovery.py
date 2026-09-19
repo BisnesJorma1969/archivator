@@ -232,10 +232,7 @@ def validate_manifest(manifest, archive_id, name, digest):
         raise IntegrityError("Invalid private metadata filename")
     if not valid_digest(manifest["source_sha256"]):
         raise IntegrityError("Invalid source metadata checksum")
-    streams = set()
-    layout = manifest["layout"]
-    if layout not in ("independent", "raw"):
-        raise IntegrityError("Invalid group layout")
+    streams = {}
     for number, member in enumerate(manifest["members"]):
         expected = {"archive": archive_id, "parity": parity_id, "chunk": number,
                     "stream": member["stream"], "offset": member["offset"],
@@ -248,13 +245,11 @@ def validate_manifest(manifest, archive_id, name, digest):
             raise IntegrityError("Invalid chunk checksum")
         if not re.fullmatch(r"[0-9a-f]{128}", member["plaintext_sha512"]):
             raise IntegrityError("Invalid chunk SHA-512")
-        if layout == "independent" and (member["offset"] != 0 or member["stream"] in streams):
-            raise IntegrityError("Independent groups must contain whole, distinct streams")
-        if layout == "raw" and member["kind"] != "raw":
-            raise IntegrityError("A split RAW group must contain only RAW chunks")
-        streams.add(member["stream"])
-    if layout == "raw" and len(streams) > 1:
-        raise IntegrityError("Fragments of different RAW streams must not share a group")
+        previous = streams.get(member["stream"])
+        if previous is not None and (member["kind"] != "raw" or previous["kind"] != "raw"
+                                     or member["offset"] != previous["offset"] + previous["length"]):
+            raise IntegrityError("Non-contiguous RAW chunks or repeated TAR stream within a group")
+        streams[member["stream"]] = member
     manifest.update(_name=name, _sha256=digest)
     return manifest
 
@@ -486,13 +481,22 @@ def load_sources(archive, key, certificate):
             kind = "tar" if stream["type"] == "tar" else "raw"
             if any(member["kind"] != kind for member in members):
                 raise IntegrityError("Source stream type and filename disagree")
-            if stream["type"] == "tar" or manifest["layout"] == "independent":
-                if stream["size"] == 0 and stream["type"] == "file":
-                    if members:
-                        raise IntegrityError("Empty file has payload chunks")
-                elif (len(members) != 1 or members[0]["offset"] != 0
-                      or members[0]["length"] != stream["size"]):
-                    raise IntegrityError("Independent stream is not one complete chunk")
+            if stream["type"] == "tar":
+                if (len(members) != 1 or members[0]["offset"] != 0
+                        or members[0]["length"] != stream["size"]):
+                    raise IntegrityError("TAR stream is not one complete chunk")
+            elif stream["size"] == 0:
+                if members:
+                    raise IntegrityError("Empty file has payload chunks")
+            else:
+                if not members or members[-1]["offset"] + members[-1]["length"] > stream["size"]:
+                    raise IntegrityError("Invalid RAW stream range")
+                end = members[-1]["offset"] + members[-1]["length"]
+                partial = members[0]["offset"] != 0 or end != stream["size"]
+                if partial and manifest["members"][0]["stream"] != stream_id:
+                    raise IntegrityError("A spanning RAW file must start in an empty group")
+                if end < stream["size"] and len(group_streams) != 1:
+                    raise IntegrityError("An intermediate RAW group must not contain other streams")
             old = streams.get(stream_id)
             if old and any(old.get(field) != stream.get(field) for field in ("type", "size", "path")):
                 raise IntegrityError("Conflicting stream descriptions")
