@@ -10,7 +10,7 @@ available. **Loss of separate metadata must not mean loss of file contents.**
 The minimum for manual data recovery should be the intact backup data files,
 retaining their chunk filenames, and the private decryption key when encrypted.
 Everything else should use standard formats and tooling wherever possible.
-Metadata may still be needed to recover original paths for standalone large-file
+Metadata may still be needed to recover original paths for standalone direct-file
 streams and to verify that a backup is complete.
 
 Run the PoC commands below from the repository root on **Ubuntu 26.04**, using Bash.
@@ -79,10 +79,14 @@ openssl req -x509 -newkey rsa:3072 -noenc \
   --encrypt-cert poc/work/recipient.pem
 ```
 
-Encrypted data chunks end in `.zst.cms`. Metadata remains unencrypted.
-Data chunks, data PAR2, and each data group's manifest share a two-character
-shard directory from that group's ID. Other metadata and metadata PAR2 stay at
-the archive root. Keep using `archive1` as the command argument; discovery is recursive.
+Encrypted chunks **and source-name inventories** end in `.zst.cms`. Each group
+keeps its compressed metadata beside the data and PAR2; identical metadata copies
+and their own PAR2 are under `metadata/`. Shards reuse the first two characters
+of the group's ID. Keep passing `archive1`; discovery is recursive.
+
+Defaults: **268435455 bytes per stored file** and **15032385536 bytes per group**,
+including metadata and PAR2. Override with `--max-file-bytes` and
+`--max-group-bytes`, using exact bytes. No filesystem/media overhead is guessed.
 
 ### Damage and verify (both modes)
 
@@ -102,8 +106,8 @@ their format or metadata.
 You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
-damaged data blocks**. Deleting PAR2 files reduces that capacity. Automatic
-recovery needs at least one intact marker: `*_metadata_complete.json` or `*_metadata_complete-copy.json`.
+damaged data blocks**. Deleting PAR2 files reduces that capacity. Full-catalog
+recovery uses at least one intact marker: `*_metadata_complete.json` or `*_metadata_complete-copy.json`.
 
 Check the damaged archive:
 
@@ -150,7 +154,8 @@ needs the private key:
 ./poc/archivator verify poc/work/demo/archive1
 ```
 
-If metadata is lost, use [filename-only scan and recovery](poc/README.md#filename-only-recovery).
+Without central metadata, surviving groups can still restore their complete streams.
+If local metadata is also lost, use [filename-only scan and recovery](poc/README.md#filename-only-recovery).
 It can recover surviving streams without rebuilding the original metadata first.
 
 ## Automated tests
@@ -161,4 +166,4 @@ python3 -m unittest discover -s poc/tests -t . -v
 
 See [demo options](poc/demo/README.md), [CLI and encryption reference](poc/README.md),
 [manual recovery](poc/FORMAT.md), and
-[mandatory production checksum requirements](POC.md#24-mandatory-checksum-requirements-for-a-real-implementation).
+[mandatory production checksum requirements](POC.md#12-mandatory-checksum-requirements-for-a-real-implementation).

@@ -28,8 +28,8 @@ assumptions, not measured office-population statistics:
 
 The three `.bak` files receive 75% of the SQL byte budget; nine `.trn` files
 receive 25%. Sizes vary within each group. Payloads mix 35–65% fresh random bytes
-with repeated record-like bytes. Default `.bak` files exceed the PoC's 256 MiB
-direct-file threshold and span multiple chunks.
+with repeated record-like bytes. Default `.bak` files exceed the PoC's derived
+direct-file threshold (slightly below 256 MiB by default) and span multiple chunks.
 
 Logs have service/host/date paths and repeated log lines. Their lognormal sizes
 have a 2 KiB median and are bounded to 256 bytes–64 KiB. All source3 files are
@@ -68,7 +68,7 @@ Options for `poc/demo/bitrot.py`:
 | `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
 | `--dry-run` | Off | Write the damage plan without modifying archives |
 | `--report` | Timestamped JSON under `poc/work/demo/` | Must be outside archives and not already exist |
-| `--include-bootstrap` | Off | Also damage both completion-marker copies; automatic recovery needs one intact copy |
+| `--include-bootstrap` | Off | Also damage both completion-marker copies; full-catalog recovery needs one intact copy |
 
 ### Damage model
 
@@ -106,12 +106,12 @@ exhaust one recovery set even when the archive-wide percentage is small; verify
 reports whether the particular damage is recoverable.
 
 Protected catalogs, manifests, inventories, and the checksum index are eligible
-metadata, including their compressed `.zst` representations. Both bootstrap copies,
+metadata, including their compressed `.zst` and encrypted `.zst.cms` representations. Both bootstrap copies,
 `metadata_complete.json` and `metadata_complete-copy.json`, are preserved by default; their sizes
 still count toward the total backup size. If the requested budget exceeds eligible
 bytes, it is capped and the actual percentage is reported. Add `--include-bootstrap`
-to include both copies; automatic recovery fails if neither remains valid, even
-with surviving PAR2 data. High percentages can also exhaust
+to include both copies; full-catalog bootstrap needs an intact marker. Local
+groups and filename-only recovery do not require those markers. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 
 There is no archive-format parsing or integrity precheck. Arbitrary regular files,

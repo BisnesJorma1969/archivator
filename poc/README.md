@@ -1,120 +1,88 @@
-# CLI reference
+# PoC command reference
 
-A local-filesystem implementation of [the specification](../POC.md), using Python's
-standard library, ordinary zstd, OpenSSL CMS AES-256-GCM, and PAR2.
+Use the [root README](../README.md) for the single Ubuntu 26.04 installation and
+backup/damage/restore walkthrough. Python uses only the standard library.
 
-For installation and the runnable test workflow, use the [root README](../README.md).
-This page describes command behavior and options. Commands use `./poc/archivator`
-from the repository root; `--help` lists their arguments.
+## Commands
 
-## Destinations and scratch
-
-`work/` is gitignored. Test fixtures and restore scratch are created there and
-cleaned up after use. Keep sufficient space there for a parity set, metadata, and
-unfinished streams; backup temporary files instead live in `ARCHIVE_DIR/.tmp/`.
-
-Data chunks, data PAR2, and each data-set manifest use two-character shard
-directories from the data parity-set ID. Other metadata, including markers,
-inventories, and metadata PAR2, stays at the archive root.
-Directories are created only when publishing files. Continue passing
-the archive root, not an individual shard, to commands.
-
-A stream is either a TAR bundle or one large original file. Only TAR streams
-have a separate `metadata_inventory_stream-<id>.jsonl.zst` listing their contents;
-direct-file metadata is in the shared `metadata_streams.jsonl.zst` catalog.
-These inventories are not parity-group manifests. See [names and contents](FORMAT.md#names-and-contents).
-
-Backup and restore destinations must be absent or empty. Source and destination
-must not overlap. The source, archive being read, or restore target must not
-contain the work directory itself; individual directories *under* `work/` are fine.
-
-## Encryption options
-
-The [root demo workflow](../README.md#back-up) includes OpenSSL key generation
-and the encrypted backup/restore commands.
-
-| Command | Option |
+| Command | Purpose |
 | --- | --- |
-| `backup` | `--encrypt-cert CERT.pem` |
-| `restore` | `--decrypt-key KEY.pem`; optionally `--decrypt-cert CERT.pem` |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES]` | Create a backup in an absent/empty directory |
+| `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
+| `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
+| `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json.zst]` | Restore into an absent/empty directory; archive remains unchanged |
+| `scan ARCHIVE INDEX.json.zst [--archive-id ID]` | Build a filename-only recovery index |
+| `compare SOURCE TARGET` | Compare paths, types, contents, and supported filesystem metadata |
 
-Encryption requires an RSA key of at least 3072 bits. Each `.zst.cms` chunk uses
-CMS AES-256-GCM with RSA-OAEP, SHA-256, and MGF1-SHA-256.
-The archive stores only the normalized public certificate and its SHA-256
-fingerprint. Catalogs, inventories, paths, sizes, and checksums remain plaintext.
-Only compressed chunk contents are encrypted. The PoC's CLI accepts private keys
-without a passphrase; it does not prompt for passwords or manage keys.
-Plaintext staging uses owner-only directories and compressed/decrypted chunk files.
-See [intentional cryptographic limitations](../POC.md#25-cryptographic-limitations-and-production-requirements)
-for key management, metadata authentication, and post-quantum requirements.
+Run these through `./poc/archivator`. Backup limits default to **268435455 bytes
+per stored file** and **15032385536 bytes per group**. Group sizes include metadata,
+PAR2 indexes, recovery volumes, and their packet overhead. The same ceilings
+apply to central metadata protection. Supply exact bytes, not media labels; no
+filesystem overhead is guessed. See [sizing rules](../POC.md#3-hard-byte-limits).
 
-## Commands and exit codes
+Encrypted payload and source-name metadata both use `.zst.cms`. Verification and
+PAR2 repair operate on stored ciphertext and require no key. Restore requires
+`--decrypt-key` and validates CMS authentication before decompression.
 
-Commands announce major stages and emit a status line to stderr every five seconds
-while running, including during quiet zstd, OpenSSL, and PAR2 operations. Status
-shows elapsed time, the current activity, and byte/entry counts where available.
-Compare shows completed/total file pairs, cumulative MiB read from both trees,
-average read/hash throughput, and the current source or target filename. These
-are five-second snapshots, not a delay between files. It reads every matching
-regular file on both sides; the final summary includes total bytes and duration.
-It is an activity indicator, not an estimated completion percentage. Lines are
-flushed immediately and also appear when output is redirected.
+Each command announces major stages and reports its current activity every five
+seconds, including while external tools are running. This is a heartbeat, **not
+a five-second delay per file**. Compare reports cumulative files, bytes, and rate.
 
-| Command | Meaning |
-| --- | --- |
-| `backup SOURCE_DIR ARCHIVE_DIR` | Create an archive from the source tree. |
-| `verify ARCHIVE_DIR` | Check every archive, report intact/repairable/unrecoverable, and never modify archive files. |
-| `repair ARCHIVE_DIR` | Recover stored chunks and metadata, and replenish lost/damaged PAR2 protection. |
-| `restore ARCHIVE_DIR RESTORE_DIR` | Repair scratch copies automatically, validate stored and plaintext content, then restore the tree. |
-| `scan ARCHIVE_DIR INDEX.json.zst` | Build a filename-only recovery index without reading archive contents; select one archive with `--archive-id ID` if needed. |
-| `compare SOURCE_DIR RESTORE_DIR` | Compare paths, types, file contents, and supported filesystem metadata. |
+### Exit codes
 
-Verify returns **1 for any damage**, even when everything is recoverable. Its
-output distinguishes data loss from damage that can be repaired. Verification
-checks stored bytes and PAR2 capacity; it does not decrypt encrypted chunks or
-promise that a particular private key will work. Normal restore verifies CMS
-authentication, zstd, chunk hashes, whole-stream hashes, and TAR entry hashes.
+- `0`: success, intact archive, or identical trees.
+- `1`: integrity/comparison failure, or restore with an incomplete/unproven catalog.
+- `2`: usage or operational failure.
 
-Verify can recover metadata in scratch to finish its diagnosis. Restore never
-requires archive write access. Neither writes repairs back. Only `repair` does.
-Repair operates directly on stored data and metadata, with no staging copies or
-links. If a later set fails, earlier changes remain and the command reports this.
-It publishes refreshed
-checksum metadata and both completion-marker copies after all sets are usable.
+Verify returns 1 for **any** damage, including repairable corruption, missing
+metadata copies, or lost parity. Its report distinguishes repairable and
+unrecoverable data. It does not prove that a private key works. Restore also
+checks plaintext lengths/hashes, complete stream hashes when available, and TAR
+member checksums.
 
-For read-only verification/restore, recovery scratch uses hard links for read-only
-inputs. Before scratch repair, damaged data is copied, never repaired through a
-hard link. If the checksum index is damaged, metadata whose health cannot yet be
-established is copied too. Unsupported or cross-filesystem hard links fall back
-to ordinary copies; no copy-on-write cloning is used.
+## Recovery behavior
 
-Directories can contain multiple archives or nested archive directories. Names
-are indexed once, then only the relevant parity set is read. Verify checks
-all discovered IDs and reports incomplete archives. Repair and restore require
-`--archive-id ID` when more than one ID exists; verify also accepts that selector.
-Duplicate identical filenames anywhere in the selected hierarchy are ambiguous
-and rejected. Moving directories or changing archive-file mtimes is harmless.
-For in-place repair, scattered files of the selected archive are gathered into
-the root-metadata/data-shard layout using renames. This requires one filesystem; repair
-does not fall back to copying across filesystems. Other archives are not moved.
+Data groups contain chunks from one stream and their own compressed metadata,
+protected together by PAR2. A TAR never crosses groups; a large direct-file
+stream may. Each group has identical metadata copies under `metadata/`, with
+separate PAR2 protection there. The public group manifest identifies stored bytes;
+its inventory describes source files and is encrypted when encryption is enabled.
+The word **stream** means a TAR's bytes or a direct file's bytes, not a parity group.
 
-Exit codes for all commands:
+Normal restore uses the complete, protected central catalog. With the central
+catalog/markers absent, normal restore can also use standalone local groups.
+It restores complete streams, skips detected gaps, and returns 1 because it cannot
+prove the original backup is complete. A large file's fragment is independently
+repairable, not a complete file. No zero-filled holes or fabricated completion
+markers are produced.
 
-- `0`: success / intact archive / identical trees
-- `1`: integrity, recovery, or comparison failure
-- `2`: usage or operational failure
+Verify/restore can recover metadata in private scratch. Healthy inputs are
+read-only hardlinks where possible; damaged/unknown inputs are ordinary copies
+before PAR2 repair. Unsupported/cross-filesystem hardlinks fall back to copies.
+No copy-on-write cloning is used. Neither operation changes archive files.
 
-Backup cannot be resumed. Without either valid completion-marker copy, an archive
-is incomplete. A failed restore may leave verified files and partial output in its
-destination; use a fresh empty destination for a retry. Neither command silently
-treats partial work as success.
+Explicit repair operates in place. Data and PAR2 files are never copied or
+hardlinked into repair staging. Restoring one intentional metadata duplicate
+from the other can copy its verified bytes. Scattered inputs are normalized by
+same-filesystem renames; an unavailable cross-filesystem rename is not silently
+replaced with a copy. Earlier repairs remain if a later group fails.
+
+Discovery supports flat, sharded, nested, and mixed layouts. Exactly two copies
+of group metadata are expected, selected using checksums; other duplicate
+basenames are rejected. Verify checks all discovered archive IDs by default.
+Repair, restore, and scan require `--archive-id` when several archives are present.
+Archive-file mtimes and directory order are irrelevant.
+
+Either self-checksummed completion-marker copy anchors the central catalog.
+Conflicting valid copies are rejected. Backup cannot resume, and failed work is
+not marked complete. A failed restore can leave verified files or partial scratch
+output in its destination; retry into a fresh empty directory.
 
 ## Filename-only recovery
 
-If metadata/indexes are lost, scan surviving chunk and data PAR2 filenames.
-Flat, sharded, nested, and mixed directories work; no metadata or payload contents
-are read, no hashes are calculated, and the archive is unchanged. The output is
-a separate zstd-compressed JSON index and must not already exist.
+If even local metadata is unavailable, scan surviving chunk and data-PAR2 names.
+This reads no archive contents, hashes, or PAR2 packets and never changes the
+archive. The separate index must not already exist.
 
 ```bash
 ./poc/archivator scan poc/work/demo/archive1 poc/work/recovery1.json.zst
@@ -123,86 +91,50 @@ a separate zstd-compressed JSON index and must not already exist.
 ```
 
 For encrypted data, add `--decrypt-key poc/work/recipient-key.pem` to restore.
-The index selects its archive ID; optional `--archive-id` must agree with it.
-The recovery target must be absent or empty.
+The index selects its archive ID; optional `--archive-id` must agree.
 
-Restore tries available data PAR2 in scratch, including recovery of filenames
-missing at scan time. It checks declared chunk lengths, available zstd frame
-checksums, and CMS authentication when encrypted. Streams with detected gaps,
-overlaps, missing/unreadable chunks, or malformed recognized TARs are **skipped
-entirely**; no fragments or zero-filled gaps are published. Other streams continue.
+Restore tries available PAR2 in scratch, including recovery of filenames missing
+when scanned. It checks declared plaintext lengths, zstd frames, and CMS tags.
+Streams with detected gaps, overlaps, unreadable chunks, or malformed recognized
+TARs are skipped entirely. Other streams continue.
 
-Without the catalog, original standalone-file names and even stream types are
-unknown. Outputs are named by stream ID:
-
-| Output | Contents |
+| Output | Meaning |
 | --- | --- |
-| `stream-<id>.bin` | Reconstructed bytes not recognized as TAR |
-| `stream-<id>.tar` | Original reconstructed TAR bytes, retained because a source file could itself have been a TAR |
-| `stream-<id>/` | Extracted view of that TAR, with its embedded paths; separate per stream to avoid collisions |
+| `stream-<id>.bin` | Reconstructed bytes not recognized as TAR; original direct-file name unknown |
+| `stream-<id>.tar` | Raw reconstructed TAR bytes, retained because an original direct file could itself be a TAR |
+| `stream-<id>/` | Safely extracted view of that TAR |
 
-This is not a verified recreation of the original tree: original metadata hashes,
-final stream lengths, and standalone-file paths/modes/timestamps are unavailable.
-Missing tail chunks and entirely missing streams cannot always be detected.
-TAR extraction uses Python's explicit `data` safety filter, not trusted extraction;
-unsafe paths, special files, hard links, and duplicate entries are rejected.
-[Python TAR extraction filters](https://docs.python.org/3.13/library/tarfile.html#extraction-filters)
-
-Exit `0` means every known stream was recovered without detected gaps or decoding
-errors, **not** that the original backup is provably complete. Exit `1` means
-streams were skipped, PAR2 sets remained unresolved, or nothing was recoverable.
-Normal restore without `--scan-index` retains its full metadata/hash requirements.
+Without authoritative source metadata, missing tail chunks or entire streams may
+be undetectable. Exit 0 means no **detected** gaps/decoding failures, not proof of
+original completeness. Exit 1 means skipped streams, unresolved PAR2 sets, or no
+recoverable stream. Extraction rejects unsafe paths, duplicates, special files,
+and hardlinks and uses Python's explicit `data` filter.
 
 ## Filesystem conventions
 
-Directories, regular files, and symlinks are supported. Special files are rejected.
-Hard-linked source files are archived as independent regular files. Ownership,
-ACLs, extended attributes, and alternate data streams are not preserved.
+Directories, regular files, symlinks, and empty files are supported. Source
+hardlinks become independent files. Ownership, ACLs, xattrs, alternate streams,
+and snapshots are outside this PoC. Modes and nanosecond mtimes use ordinary OS
+APIs; unsupported symlink metadata or timestamp precision is reported. Directory
+attributes are applied last, deepest-first. Compare requires exact POSIX modes
+and mtimes; unsupported platforms get explicit precision warnings, not emulation.
 
-Modes and timestamps use ordinary platform APIs. Directory metadata is restored
-last. Known timestamp precision/range loss or unsupported symlink metadata is
-reported as a warning, without emulation. Compare checks modes and exact mtimes on
-POSIX; on other platforms timestamp differences are warnings and POSIX modes are
-not compared. Data, path, type, size, and symlink-target mismatches always fail.
-Unrepresentable target paths and unavailable symlink creation fail explicitly.
-Integration testing is performed on Linux; Windows/macOS execution is not claimed
-as tested.
+Only Linux is integration-tested. Source changes observable through stat checks
+abort backup. Source/archive/target overlap and symlink/nonempty destinations are
+rejected. Paths may be under `poc/work/`, but must not contain `poc/work/` itself.
 
-## Code map
+## Code and tests
 
-`archivator_lib/` contains small modules with concrete responsibilities:
+- `backup.py`, `filesystem.py`: directory-local selection, TAR/direct streams, and publication.
+- `limits.py`, `format.py`: byte budgets, PAR2 sizing, filenames and settings.
+- `external.py`: zstd, CMS and PAR2 subprocesses.
+- `metadata.py`, `recovery.py`: metadata copies/checksum chain, validation and repair.
+- `restore.py`, `scan.py`, `compare.py`: reconstruction, fallback recovery and comparison.
+- `cli.py`, `progress.py`, `common.py`: command handling and shared small helpers.
 
-- `cli.py`: argument parsing and exit codes
-- `progress.py`: periodic status display; does not parallelize archive processing
-- `filesystem.py`, `common.py`, `format.py`: scanning, checksums, names, and defaults
-- `external.py`: streaming zstd compression, OpenSSL, and PAR2 subprocesses
-- `metadata.py`: fixed per-role zstd compression and completion-marker checksums
-- `backup.py`: TAR/direct streams, independent chunks, parity, and finalization
-- `recovery.py`: archive discovery, metadata validation, verify, and explicit repair
-- `restore.py`, `compare.py`: reconstruction, safe extraction, and tree comparison
-- `scan.py`: filename-only indexes and recovery when archive metadata is unavailable
+The [root README](../README.md#automated-tests) has the test command. Tests use real
+standard tools, small fixtures, encrypted/plain round trips, hard-limit checks,
+metadata loss, standalone groups, and manual recovery without Archivator restore.
 
-Production settings are fixed to the specification. Tests pass a small `Settings`
-instance directly; there are no tuning flags, parallel workers, or plugin layers.
-Source changes observable through ordinary stat checks abort backup; this is not a
-filesystem snapshot implementation.
-
-## Test coverage
-
-The test command is in the [root README](../README.md#automated-tests).
-
-The suite uses real zstd, OpenSSL, and PAR2 and does not silently skip missing dependencies.
-It covers all twenty required scenarios, a 2,001-file multi-TAR round trip,
-encrypted and unencrypted loss/corruption, strict verification, explicit repair,
-metadata recovery, read-only archives, CLI exit codes, and unsafe extraction.
-It also reconstructs an encrypted direct-file stream using only PAR2, OpenSSL,
-zstd, GNU dd, and sha256sum, without calling the PoC restore implementation.
-
-See [FORMAT.md](FORMAT.md) for format details and manual recovery commands.
-
-## Checksum scope
-
-The PoC does not provide uniform MD5/SHA-1/CRC coverage for direct-file sources,
-cloud-compatible stored-object checksums, or fixed upload-block checksums. These
-are [mandatory requirements for a real implementation](../POC.md#24-mandatory-checksum-requirements-for-a-real-implementation),
-with 8 MiB upload blocks selected for that future work.
+Cloud-native checksums, wire encodings, multipart composition and **8 MiB upload
+block digests** are not implemented. They remain [mandatory production work](../POC.md#12-mandatory-checksum-requirements-for-a-real-implementation).
