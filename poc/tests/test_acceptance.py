@@ -39,15 +39,17 @@ class AcceptanceTests(ArchiveTest):
                 target = self.root / f"restored-{encrypted}"
                 (self.source / "large").write_bytes(self.data(160000))
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                manifest = next(item for item in manifests(archive) if item["members"])
-                # Damage one data slice and lose a whole recovery volume. The
-                # other three volumes retain more than enough recovery blocks.
+                manifest = next(item for item in manifests(archive) if item["par2"]["volumes"] >= 2)
+                # Damage one data slice and lose one recovery volume from a set
+                # with surviving redundancy. A tail with only one volume cannot
+                # repair any data after that entire recovery volume is deleted.
                 flip(next(archive.rglob(manifest["members"][0]["filename"])))
                 volume = next(archive.rglob(f"*_datagroup-{manifest['datagroup']}.vol*.par2"))
                 volume.unlink()
                 before = snapshot(archive)
                 self.assertEqual(verify(archive), 1)
-                restore(archive, target, key=key if encrypted else None, certificate=certificate if encrypted else None)
+                self.assertEqual(restore(archive, target, key=key if encrypted else None,
+                                         certificate=certificate if encrypted else None), 0)
                 self.assertEqual(snapshot(archive), before)
                 self.assertEqual(compare(self.source, target), 0)
                 self.assertEqual((self.source / "large").read_bytes(), (target / "large").read_bytes())

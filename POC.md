@@ -346,6 +346,10 @@ lost together while sufficient parity survives. Bootstrap PAR2 is generated
 before publishing the roots; PAR2 needs no readable root/settings to recover them.
 The root's `bootstrap_files` map records the auxiliary files' stored sizes and
 SHA-256 values. Neither the private key nor original source paths occur here.
+The uncompressed `format.txt` includes settings and a short, self-contained
+standard-tool recovery guide covering TAR, RAW, optional zstd/CMS and both PAR2
+levels. Its text comes from [recovery.txt](poc/archivator_lib/recovery.txt); no second
+archive-side guide is generated. It shares the bootstrap set's file/media caps.
 
 Catalog roots, format text and the PEM certificate are the explicit uncompressed
 metadata roles. Inventories, manifests, supergroup indexes and receipts use zstd
@@ -590,3 +594,20 @@ The following gaps are recognized; their production remedies are intentionally
    [OpenSSL CMS KEM support](https://docs.openssl.org/3.6/man3/CMS_get0_RecipientInfos/),
    [ML-KEM in CMS (RFC 9936)](https://www.rfc-editor.org/rfc/rfc9936.html),
    [NIST post-quantum guidance](https://www.nist.gov/cybersecurity-and-privacy/what-post-quantum-cryptography)
+
+
+## 14. Preservation-service requirements outside this PoC
+
+Keep this PoC focused on recovering the original bytes with standard tools.
+Production deployment additionally needs:
+
+- Independent complete archive copies in separate failure domains; parity inside
+  one copy does not replace disaster-recovery copies.
+- A documented schedule for integrity checks, plus checks after transfers and
+  media migrations, recorded outcomes, and a response to detected damage.
+- Separate, tested long-term key custody and recovery, as described above.
+
+Payload interpretation, provenance and preservation-event records belong to the
+surrounding service or source dataset. No provenance schema, event database,
+scrub scheduler or OAIS/NDSA implementation framework is added to this PoC.
+The presence of hashes and repair tools alone is not a preservation-maturity claim.

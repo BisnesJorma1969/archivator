@@ -154,7 +154,11 @@ class MetadataTests(ArchiveTest):
         self.assertEqual(root['par2']['slice_size'], 4096)
         expected = {name: (self.archive / name).read_bytes()
                     for name in [*catalog_root_names(archive_id), *root['bootstrap_files']]}
-        self.assertTrue(any(name.endswith('_format.txt') for name in expected))
+        guide = next(data for name, data in expected.items() if name.endswith('_format.txt'))
+        self.assertIn(b'RECOVERY WITHOUT ARCHIVATOR', guide)
+        self.assertIn(b'openssl cms -decrypt', guide)
+        self.assertIn(b'NUMERIC plaintext offset', guide)
+        self.assertIn(b'par2 repair -B', guide)
         self.assertTrue(any(name.endswith('_recipient.pem') for name in expected))
         bootstrap = [path for path in self.archive.iterdir() if path.is_file()]
         self.assertLess(sum(path.stat().st_size for path in bootstrap), 64 * 1024)

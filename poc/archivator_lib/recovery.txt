@@ -1,0 +1,75 @@
+RECOVERY WITHOUT ARCHIVATOR
+
+This archive uses ordinary files, not a proprietary container. Tools: a PAR2 v2
+client for repair, OpenSSL for .cms, zstd for .zst, and tar for .tar. A suffix is
+absent when that transformation is disabled. The settings above are byte limits;
+actual PAR2 slice sizes and recovery counts are recorded per set, not globally.
+
+Layout and metadata
+-------------------
+Archive, supergroup, datagroup and stream IDs are random identifiers, not hashes.
+Data lives under data/<supergroup-prefix>/<supergroup>/<datagroup>/. Central
+metadata copies live under metadata/<supergroup-prefix>/<supergroup>/<datagroup>/.
+All generated basenames are unique; -spare marks an identical metadata copy.
+Original source names are in TAR headers and index-files.jsonl[.zst][.cms], not
+in chunk basenames. JSON/JSONL is UTF-8 with escaped names. Public index-chunks
+records chunk order, sizes, SHA-256 of stored bytes and plaintext SHA-256/SHA-512.
+Each set's public technical metadata records par2: {slice_size, blocks, volumes}.
+The small catalog-root files link metadata sets; they are not the full inventory.
+
+Repair stored bytes BEFORE decrypting or decompressing
+----------------------------------------------------
+A datagroup PAR2 set protects its chunks and primary indexes. Central metadata
+has separate PAR2. Supergroup PAR2 protects several datagroups and their metadata,
+but not local .par2 files. Root PAR2 protects both catalog roots, this text, and
+the optional public recipient certificate. PAR2 recovery needs no decryption key.
+
+Work on recovery inputs: par2 repair modifies damaged member files. Gather the
+set's index and surviving .vol...par2 files together. A surviving recovery volume
+can replace a missing .par2 index. From a local set's member directory, use:
+
+  par2 verify SET.par2
+  par2 repair SET.par2
+
+Replace SET with the selected set's basename. Try local repair first. For outer
+repair, retain/reconstruct the data/ and metadata/ layout described above, gather
+all volumes from the supergroup's numbered parity directories, and use:
+
+  par2 repair -B/absolute/recovery-root /absolute/gathered/SUPERGROUP.par2
+
+The PAR2 packets contain member names, lengths, checksums and slice size. Repair
+requires enough surviving recovery blocks for every missing/damaged source block;
+loss percentages are not additive between sets. If recovery is insufficient,
+other intact complete TAR chunks and complete RAW streams are still usable.
+
+Decode healthy or repaired chunks
+--------------------------------
+For a .tar.zst.cms chunk, the standard-tool sequence is:
+
+  openssl cms -decrypt -binary -inform DER -in INPUT.tar.zst.cms -out chunk.zst -inkey private-key.pem
+  zstd -d chunk.zst -o chunk.tar
+  tar -tvf chunk.tar
+  mkdir recovered
+  tar -xpf chunk.tar -C recovered
+
+Replace INPUT and the key path. Skip decryption when .cms is absent; skip zstd
+when .zst is absent. CMS is DER AuthEnvelopedData, AES-256-GCM with RSA-OAEP,
+SHA-256 and MGF1-SHA-256. The archived certificate is public, NOT the private key.
+Keep the private key separately; encrypted content is unrecoverable without it.
+
+Every .tar[.zst][.cms] chunk is a COMPLETE independent TAR: do not concatenate
+TAR chunks. Multiple chunks can be extracted into the same recovery directory.
+
+A .raw[.zst][.cms] chunk has no TAR wrapper. Decode it in the same order, then
+assemble only chunks with the same stream ID by NUMERIC plaintext offset, not
+by datagroup or chunk-number sorting. Basenames record offset and plaintext
+length in bytes. For each decoded fragment, using decimal OFFSET without padding:
+
+  dd if=fragment.raw of=restored.raw bs=1M oflag=seek_bytes seek=OFFSET conv=notrunc
+
+Start with a new output file and require contiguous coverage. Check final size
+and whole-file hashes against the source inventory when available. If metadata
+is lost, RAW bytes remain recoverable but original paths/attributes and final
+completeness may be unknown. Do not present a file with gaps as a complete restore.
+Source inventories additionally record CRC32 (ZIP), MD5, SHA-1, SHA-256 and SHA-512.
+Stored hashes/PAR2 detect accidental damage, not malicious archive replacement.

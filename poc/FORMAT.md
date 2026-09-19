@@ -137,6 +137,11 @@ These files contain the checksum-chain root, not the full catalog. The `-spare`
 file is byte-identical to the primary. Markers are published last, after generating their own bootstrap PAR2, and are not signed. Without PAR2,
 the copies, receipts, and checksum chain still exist; parity-hash maps are empty.
 
+The root-level `format.txt` is uncompressed and contains both the concrete
+settings and a [standard-tool recovery guide](archivator_lib/recovery.txt), so the
+archive remains self-explanatory without this repository. It is covered by root
+PAR2 and the same hard byte limits; no additional guide file is generated.
+
 ### Why separate metadata files?
 
 The public chunk index supports verification/repair without a private key. The

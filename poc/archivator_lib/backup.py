@@ -542,6 +542,9 @@ def backup(source, archive, certificate=None, settings=None):
         if fingerprint:
             with format_path.open("a") as output:
                 output.write(f"recipient-sha256={fingerprint}\n")
+        with format_path.open("a", encoding="utf-8") as output:
+            output.write("\n" + Path(__file__).with_name("recovery.txt").read_text(encoding="utf-8"))
+        check_files([format_path], settings.max_file_bytes, settings.max_datagroup_bytes)
         catalog.bootstrap_files.append(format_path)
 
         def writer():
