@@ -43,7 +43,7 @@ def store_metadata(path, staging=None, certificate=None, compression=True):
     if compression:
         encoded = staging / (path.name + ".zst")
         run([executable("zstd"), "-q", "-3", "--single-thread", "--check",
-             str(path), "-o", str(encoded)], activity=f"Compressing metadata: {path.name!r}")
+             str(path), "-o", str(encoded)], activity="Compressing metadata")
     encoded.chmod(0o600)
     if certificate:
         encrypted = encoded.with_name(encoded.name + ".cms")
@@ -74,7 +74,7 @@ def unpack_metadata(path, destination=None, key=None, certificate=None):
     target = destination / compressed.with_suffix("").name
     target.unlink(missing_ok=True)
     run([executable("zstd"), "-qd", str(compressed), "-o", str(target)],
-        activity=f"Decompressing verified metadata: {path.name!r}")
+        activity="Decompressing verified metadata")
     if path.suffix == ".cms":
         compressed.unlink()
     return target

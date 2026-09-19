@@ -74,7 +74,7 @@ def extract_tar(path, target, inventory):
                 if name not in expected or name in seen:
                     raise IntegrityError(f"Unexpected or duplicate TAR entry: {name!r}")
                 seen.add(name)
-                progress.update(f"Extracting TAR entry {len(seen):,}/{len(expected):,}: {name!r}")
+                progress.update(f"Extracting TAR: {len(seen):,}/{len(expected):,} entries")
                 entry = expected[name]
                 destination = target / name
                 if entry["type"] == "directory":
@@ -109,7 +109,7 @@ def finish_stream(path, stream, archive, target):
     if "sha256" in stream and (hashes["sha256"] != stream["sha256"] or hashes["sha512"] != stream["sha512"]):
         raise IntegrityError("Reconstructed whole-stream checksum mismatch")
     if stream["type"] == "file":
-        progress.update(f"Writing restored file: {stream['path']!r} ({stream['size']:,} bytes)")
+        progress.update(f"Writing restored RAW stream {stream['stream'][:8]}: {stream['size']:,} bytes")
         with path.open("rb") as source, (target / stream["path"]).open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
     else:

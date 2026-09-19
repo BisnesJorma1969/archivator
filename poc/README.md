@@ -56,7 +56,11 @@ PAR2 repair operate on stored ciphertext and require no key. Restore requires
 
 Each command announces major stages and reports its current activity every five
 seconds, including while external tools are running. This is a heartbeat, **not
-a five-second delay per file**. Compare reports cumulative files, bytes, and rate.
+a five-second delay per file**. TAR encoding reports entry and plaintext-byte
+counters together; RAW encoding reports plaintext/chunk bytes. Compare reports
+cumulative files, bytes, and rate. Routine status never lists source/member names.
+Actionable failures, warnings, and comparison differences retain filenames for
+diagnosis, so error logs may contain sensitive paths.
 
 ### Exit codes
 

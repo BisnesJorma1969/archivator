@@ -32,14 +32,14 @@ def identity(info):
 
 def scan(root):
     root = Path(root)
-    progress.update(f"Scanning {str(root)!r}: 0 entries")
+    progress.update("Scanning: 0 entries")
     if root.is_symlink() or not root.is_dir():
         raise ArchiveError(f"Source must be a directory, not a symlink: {root}")
     entries = []
     pending = [root]
     while pending:
         path = pending.pop()
-        progress.update(f"Scanning: {len(entries):,} entries found; {str(path)!r}")
+        progress.update(f"Scanning: {len(entries):,} entries found")
         info = path.lstat()
         relative = path.relative_to(root).as_posix()
         entry = {
@@ -93,7 +93,7 @@ def directory_batches(root):
         with os.scandir(path) as children:
             names = sorted(child.name for child in children)
         entries = [describe(path / name, ancestors) for name in names]
-        progress.update(f"Scanning directory {directory['path']!r}: {len(entries):,} entries")
+        progress.update(f"Scanning directory: {len(entries):,} entries")
         yield directory, entries
         for entry in entries:
             if entry["type"] == "directory":
@@ -131,7 +131,7 @@ def restore_metadata(root, entries):
     # Creating children changes directory mtimes. Restrictive directory modes
     # must also wait until their children have been created and verified.
     for index, entry in enumerate(files + directories, 1):
-        progress.update(f"Applying modes and timestamps: {index:,}/{len(entries):,} entries; {entry['path']!r}")
+        progress.update(f"Applying modes and timestamps: {index:,}/{len(entries):,} entries")
         path = root / entry["path"]
         symlink = entry["type"] == "symlink"
         if not symlink:

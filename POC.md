@@ -136,6 +136,10 @@ Each TAR chunk is a complete ordinary archive, never a slice of a larger TAR.
 No original member crosses a TAR-chunk boundary. Its filename omits `offset`;
 `length` includes the entire uncompressed TAR, including headers and padding.
 RAW chunk names include both the original file offset and the chunk length.
+The filename length is counted from bytes actually written. TAR records are
+10,240 bytes here: member padding and final record rounding can make well-filled
+TARs exactly the same length. Directory-local lookahead often reaches the same
+record-aligned input ceiling; no extra padding fills unused chunk capacity.
 
 Use AES-256-GCM, an RSA recipient key of at least 3072 bits, RSA-OAEP/SHA-256 and
 MGF1-SHA-256. OpenSSL generates content keys/nonces. Reject weak or unsuitable
@@ -364,7 +368,9 @@ See the single [CLI reference](poc/README.md). Exit codes are 0 for success,
 1 for integrity/comparison failure or unproven partial-catalog restore, and 2 for
 usage/operational failure. Major stages print immediately; an activity heartbeat
 appears every five seconds, including while external tools run. It is not a delay
-between files or a fabricated completion percentage.
+between files or a fabricated completion percentage. Routine status omits
+source/member names and combines TAR entry/byte counters in one message. Errors,
+warnings, and comparison differences retain actionable filenames.
 
 Tests use small explicit settings and real zstd/OpenSSL/PAR2. All eight feature
 combinations are covered, including dependency-free operation when all are disabled. They cover hard

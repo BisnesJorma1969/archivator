@@ -314,6 +314,16 @@ class StreamWriter:
         self.chunk_hashes = Hashes()
         self.chunk_length = 0
         self.chunk_output = None
+        self.tar_entry = 0
+        self.tar_entries = 0
+
+    def report_progress(self):
+        kind = "TAR" if self.stream["type"] == "tar" else "RAW"
+        entries = f"entry {self.tar_entry:,}/{self.tar_entries:,}; " if kind == "TAR" else ""
+        progress.update(
+            f"Encoding {kind} {self.stream['stream'][:8]}: {entries}"
+            f"{self.size:,}/{self.stream['size']:,} plaintext bytes; "
+            f"chunk {self.chunk_length:,}/{self.parity.input_bytes:,} bytes")
 
     def write(self, data):
         length = len(data)
@@ -330,13 +340,12 @@ class StreamWriter:
                     self.chunk_output = os.fdopen(descriptor, "wb")
             count = min(len(remaining), self.parity.input_bytes - self.chunk_length)
             piece = remaining[:count]
-            progress.update(f"Encoding stream: {self.size:,} plaintext bytes; "
-                            f"current chunk {self.chunk_length:,}/{self.parity.input_bytes:,}")
             self.chunk_output.write(piece)
             self.hashes.update(piece)
             self.chunk_hashes.update(piece)
             self.chunk_length += count
             self.size += count
+            self.report_progress()
             remaining = remaining[count:]
             if self.chunk_length == self.parity.input_bytes and self.stream["type"] != "tar":
                 self.finish_chunk()
@@ -417,9 +426,11 @@ def tar_bytes(entries):
 def write_tar(source, entries, sink):
     inventory = []
     entries = with_parents(entries)
+    sink.tar_entries = len(entries)
     with tarfile.open(fileobj=sink, mode="w|", format=tarfile.PAX_FORMAT) as output:
         for index, entry in enumerate(entries, 1):
-            progress.update(f"Packing TAR entry {index:,}/{len(entries):,}: {entry['path']!r}")
+            sink.tar_entry = index
+            sink.report_progress()
             path = source / entry["path"]
             if "_identity" in entry:
                 check_unchanged(path, entry)
@@ -486,7 +497,7 @@ def backup(source, archive, certificate=None, settings=None):
         queue = GroupQueue(writer)
 
         def direct(entry, accompanying=()):
-            print(f"Archiving file: {entry['path']!r} ({entry['size']:,} bytes)", flush=True)
+            print(f"Archiving RAW stream: {entry['size']:,} plaintext bytes", flush=True)
             stream = {**public_entry(entry), "stream": new_id()}
             entries = list(accompanying) + [entry]
             sink = StreamWriter(queue, stream, entries)

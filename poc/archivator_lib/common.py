@@ -51,12 +51,12 @@ def file_hashes(path, lookup=False):
     hashes = Hashes(lookup)
     total = Path(path).stat().st_size
     completed = 0
-    progress.update(f"Hashing file: 0/{total:,} bytes; {Path(path).name!r}")
+    progress.update(f"Hashing file: 0/{total:,} bytes")
     with open(path, "rb") as source:
         while data := source.read(BUFFER_SIZE):
             hashes.update(data)
             completed += len(data)
-            progress.update(f"Hashing file: {completed:,}/{total:,} bytes; {Path(path).name!r}")
+            progress.update(f"Hashing file: {completed:,}/{total:,} bytes")
     return hashes.values()
 
 
@@ -65,7 +65,7 @@ def sha256(path, on_read=None):
     digest = hashlib.sha256()
     if on_read is None:
         total = Path(path).stat().st_size
-        progress.update(f"Checking SHA-256: 0/{total:,} bytes; {Path(path).name!r}")
+        progress.update(f"Checking SHA-256: 0/{total:,} bytes")
     completed = 0
     with open(path, "rb") as source:
         while data := source.read(BUFFER_SIZE):
@@ -74,19 +74,19 @@ def sha256(path, on_read=None):
                 on_read(len(data))
             else:
                 completed += len(data)
-                progress.update(f"Checking SHA-256: {completed:,}/{total:,} bytes; {Path(path).name!r}")
+                progress.update(f"Checking SHA-256: {completed:,}/{total:,} bytes")
     return digest.hexdigest()
 
 
 def write_json(path, value):
-    progress.update(f"Writing metadata: {Path(path).name!r}")
+    progress.update("Writing metadata")
     with open(path, "w", encoding="utf-8", newline="\n") as output:
         json.dump(value, output, ensure_ascii=True, indent=2, sort_keys=True)
         output.write("\n")
 
 
 def read_json(path):
-    progress.update(f"Reading metadata: {Path(path).name!r}")
+    progress.update("Reading metadata")
     try:
         with open(path, encoding="utf-8") as source:
             return json.load(source)
@@ -97,12 +97,12 @@ def read_json(path):
 def write_jsonl(path, entries):
     with open(path, "w", encoding="utf-8", newline="\n") as output:
         for index, entry in enumerate(entries, 1):
-            progress.update(f"Writing inventory entry {index:,}: {Path(path).name!r}")
+            progress.update(f"Writing inventory: {index:,} entries")
             output.write(json.dumps(entry, ensure_ascii=True, sort_keys=True) + "\n")
 
 
 def read_jsonl(path):
-    progress.update(f"Reading inventory: {Path(path).name!r}")
+    progress.update("Reading inventory")
     try:
         with open(path, encoding="utf-8") as source:
             return [json.loads(line) for line in source if line.strip()]

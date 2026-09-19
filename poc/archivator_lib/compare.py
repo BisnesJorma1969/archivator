@@ -42,7 +42,7 @@ def compare(source, target):
     print(f"Comparing {len(shared):,} shared entries, {len(file_names):,} file pairs; "
           f"{total_bytes:,} bytes to read across source and target", flush=True)
     for name in shared:
-        activity = f"Checking metadata: {name!r}"
+        activity = "Checking metadata"
         report_read()
         left, right = original[name], restored[name]
         if left["type"] != right["type"]:
@@ -51,10 +51,10 @@ def compare(source, target):
         if left["type"] == "file":
             if left["size"] != right["size"]:
                 differences.append(f"Size differs: {name!r}")
-            activity = f"SHA-256 source: {name!r}"
+            activity = "SHA-256 source"
             report_read()
             source_hash = sha256(source / name, on_read=report_read)
-            activity = f"SHA-256 target: {name!r}"
+            activity = "SHA-256 target"
             report_read()
             target_hash = sha256(target / name, on_read=report_read)
             if source_hash != target_hash:

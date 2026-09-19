@@ -43,7 +43,7 @@ def discover(root):
         raise ArchiveError(f"Archive location must be a directory: {root}")
     archives = {}
     for directory, subdirectories, names in os.walk(root, followlinks=False):
-        progress.update(f"Discovering archives: {len(archives)} IDs; scanning {directory!r}")
+        progress.update(f"Discovering archives: {len(archives)} IDs")
         subdirectories[:] = sorted(name for name in subdirectories if name != ".tmp")
         for name in sorted(names):
             match = ARCHIVE_NAME.match(name)
@@ -84,7 +84,7 @@ def stage_existing(files, names, destination, expected=None, writable=True, arch
     expected = expected or {}
     destination.mkdir(parents=True, exist_ok=True)
     for index, name in enumerate(names, 1):
-        progress.update(f"Preparing recovery inputs: {index}/{len(names)}; {name!r}")
+        progress.update(f"Preparing recovery inputs: {index:,}/{len(names):,} files")
         target = stored_path(destination, name) if archive_layout else destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         path = files.get(name)
@@ -105,7 +105,7 @@ def stage_existing(files, names, destination, expected=None, writable=True, arch
                 # Cross-filesystem, read-only, and non-hardlink-capable archives
                 # still work. Never use a symlink or repair an alias to bad data.
                 pass
-        progress.update(f"Copying recovery input: {index}/{len(names)}; {name!r}")
+        progress.update(f"Copying recovery input: {index:,}/{len(names):,} files")
         shutil.copyfile(path, target)
 
 
