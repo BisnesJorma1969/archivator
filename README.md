@@ -89,6 +89,8 @@ of the group's ID. Keep passing `archive1`; discovery is recursive.
 Defaults: **268435455 bytes per stored file** and **15032385536 bytes per group**,
 including metadata and PAR2. Override with `--max-file-bytes` and
 `--max-group-bytes`, using exact bytes. No filesystem/media overhead is guessed.
+Grouping defaults to one active group plus four waiting groups and a 95%
+close-on-miss threshold; see the [queue options](poc/README.md#commands).
 
 ### Damage and verify (both modes)
 

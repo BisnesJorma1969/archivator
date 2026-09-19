@@ -7,7 +7,7 @@ backup/damage/restore walkthrough. Python uses only the standard library.
 
 | Command | Purpose |
 | --- | --- |
-| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES]` | Create a backup in an absent/empty directory |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES] [--waiting-groups COUNT] [--group-close-percent PERCENT]` | Create a backup in an absent/empty directory |
 | `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
 | `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
 | `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json.zst]` | Restore into an absent/empty directory; archive remains unchanged |
@@ -24,6 +24,14 @@ filesystem overhead is guessed. See [sizing rules](../POC.md#3-hard-byte-limits)
 RAW. Its default is the derived safe input ceiling; a higher value is capped
 there. A lower threshold does not change RAW chunk sizes. Smaller files are TAR
 candidates, subject to space for complete TAR headers/padding and zstd/CMS overhead.
+
+`--waiting-groups` defaults to **4**, plus one active group; zero disables waiting.
+`--group-close-percent` defaults to **95** and accepts 1–100. A group meeting this
+threshold closes when the next whole unit does not fit, not immediately upon
+reaching the threshold. Waiting groups are tried oldest-first; when slots run
+out, the fullest is closed (oldest on a tie). There is no age counter or artificial
+zero padding. Full [placement rules](../POC.md#6-group-sizing-and-parity) include
+metadata/PAR2 reservations and bounded on-disk buffering of the current RAW file.
 
 Payload names end in `.tar.zst[.cms]` or `.raw.zst[.cms]`; source-name metadata
 uses `.jsonl.zst[.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
@@ -49,13 +57,16 @@ member checksums.
 
 ## Recovery behavior
 
-Data groups contain either whole independent TARs/RAW files or fragments of one
-large RAW file, plus their own compressed metadata, protected together by PAR2.
-Each TAR is exactly one chunk. A split RAW file may span groups; its fragments
-never share groups with other streams. Groups accumulate actual stored chunk
-sizes, reserving metadata and parity. Each group has identical metadata copies under `metadata/`, with
-separate PAR2 protection there. The public group manifest identifies stored bytes;
-its inventory describes source files and is encrypted when encryption is enabled.
+Data groups contain whole TARs/RAW files, or a spanning RAW file's range, plus
+their own compressed metadata, protected together by PAR2. Each TAR is exactly
+one chunk; a whole RAW file may contain several. A file that cannot fit an empty
+group starts fresh and spans groups. Its final group may accept subsequent whole
+files/TARs. Groups accumulate actual stored chunk sizes, reserving metadata and
+parity. Each group has identical metadata copies under `metadata/`, with
+separate PAR2 protection there. The public manifest,
+`metadata_index-chunks.json.zst`, describes stored chunks; the
+`metadata_index-files.jsonl.zst[.cms]` inventory describes original RAW files and
+TAR members and is encrypted when encryption is enabled.
 The word **stream** means a TAR's bytes or a direct file's bytes, not a parity group.
 
 Normal restore uses the complete, protected central catalog. With the central

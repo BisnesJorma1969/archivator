@@ -28,7 +28,7 @@ Implementation is under `poc/`; generated data and scratch use ignored
 | Archive | A complete backup, identified by an archive ID |
 | Stream | Plaintext bytes of one original file or one ordinary POSIX/PAX TAR |
 | Chunk | One complete TAR or a range of RAW file bytes, independently compressed and optionally encrypted |
-| Data parity group | Whole independent streams **or** fragments of one RAW file, plus local metadata and PAR2 |
+| Data parity group | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and PAR2 |
 | Central metadata set | Identical metadata copies and their checksum receipt, protected by separate PAR2 |
 
 Archive IDs, stream IDs, and data-group IDs are random 128-bit identifiers, not
@@ -36,8 +36,9 @@ content hashes. Each is 32 lowercase hexadecimal digits. Central metadata PAR2
 **reuses its data group's ID**; no extra random metadata or shard IDs are generated.
 
 A TAR is exactly one chunk. Several complete TARs and whole RAW files may share
-one data group. A large direct-file stream can span many groups, but its fragments
-never share a group with other streams. A group describing a fragment is independently
+one data group, including RAW files made of several chunks. A RAW file that cannot
+fit an empty group starts fresh and spans as many groups as needed. Its final
+group can accept subsequent whole files/TARs. A group describing a fragment is independently
 interpretable and repairable, but cannot reproduce absent fragments.
 
 ## 3. Hard byte limits
@@ -47,6 +48,8 @@ interpretable and repairable, but cannot reproduce absent fragments.
 | `max_file_bytes` / `--max-file-bytes` | 268435455 (256 MiB − 1 byte) |
 | `max_group_bytes` / `--max-group-bytes` | 15032385536 (14 GiB) |
 | `large_file_bytes` / `--large-file-bytes` | Automatic: the derived safe input ceiling |
+| `waiting_groups` / `--waiting-groups` | 4, in addition to one active group |
+| `group_close_percent` / `--group-close-percent` | 95, applied when the next whole unit does not fit |
 | Internal PAR2 `slice_size` | 1048576 (1 MiB) |
 
 These are exact byte counts. The program does not interpret media marketing
@@ -84,8 +87,9 @@ current directory. There is no full-source pre-scan, global size sort, or second
 whole-tree validation pass. Supported inputs are directories, regular files,
 and symbolic links, using `lstat` without following links. Reject special files.
 
-Keep the active directory lists and the current bounded TAR inventory in memory,
-not the entire source tree. Write group catalogs progressively. Observable source
+Keep the active directory lists, current TAR inventory and bounded open-group
+inventories in memory, not the entire source tree or payload bytes. Write group
+catalogs as groups close. Observable source
 changes abort backup; ordinary stat checks are not a snapshot guarantee.
 
 Files at least as large as the effective large-file threshold go directly to
@@ -141,17 +145,46 @@ secure erasure. Production limitations remain in section 13.
 
 ## 6. Group sizing and parity
 
-A group has one of two layouts:
+Placement uses **actual compressed/encrypted chunk sizes**, with conservative
+metadata/PAR2 reservations. A whole RAW file, however many chunks it contains,
+stays in one group whenever it fits an empty group. It is never split across
+groups merely because the current group already contains other data.
 
-- `independent`: whole TAR streams and whole one-chunk RAW files. Each nonempty
-  stream contributes exactly one chunk; empty files need metadata only.
-- `raw`: chunks of just one split original file, possibly continuing across groups.
+The queue has **one active group and at most four waiting groups** by default:
 
-Both collect chunks by **actual compressed/encrypted sizes**, closing before the
-next chunk plus reserved metadata/PAR2 exceeds the budget. Thus compressible TAR
-input can contribute many independent TARs to the same group. TAR collection
-itself uses a conservative plaintext bound so each complete TAR fits one file;
-it does not try to fill a compressed chunk to its byte ceiling.
+1. Try each waiting group, oldest first, then the active group. Add a complete
+   RAW file or complete TAR only if the whole unit fits.
+2. When a unit does not fit a group, close that group if its budget is at least
+   **95%** of the group limit. A smaller group may remain waiting.
+3. If a new group would exceed the waiting limit, close the fullest candidate;
+   equal budgets close the oldest. There is no age counter or timeout.
+4. If a RAW file exceeds an empty group's budget, start it in a fresh group.
+   Close intermediate groups as they fill. Its last group stays active and may
+   accept subsequent whole RAW files/TARs under the same queue rules.
+5. Close every remaining group at the end of backup. Closed groups are never
+   reopened, moved between groups, or given regenerated parity just to improve fill.
+
+`--waiting-groups` accepts zero or more. `--group-close-percent` accepts 1–100;
+100 avoids early percentage-based closure. The percentage is **not a fill cap**:
+an already 95%-full group still accepts a whole unit that fits. Fill is measured
+using stored payload plus reserved metadata and PAR2, not plaintext input size.
+No artificial zero padding is written to fill chunks or groups.
+
+While deciding placement, completed chunks of the current RAW file wait in
+private staging until EOF or until they exceed one empty group's budget. At
+most one group-sized candidate plus one crossing chunk needs buffering; payload
+stays on disk. The file is read/compressed/encrypted once, and buffered chunks
+are renamed into their selected shard, not copied or recompressed. After a file
+is known to span groups, subsequent chunks are placed as they finish.
+
+Waiting groups retain their already stored data and bounded inventories; their
+final metadata and PAR2 are produced only on closure. More waiting groups trade
+additional metadata memory and delayed protection for potentially better fill.
+Group closure order need not follow input order: IDs and RAW offsets determine
+reconstruction, and the central checksum chain follows closure order.
+
+TAR collection uses a conservative plaintext bound so each complete TAR fits
+one file; it does not try to fill a compressed chunk to its byte ceiling.
 Metadata reservations and PAR2 limits may still close groups early. No arbitrary
 chunk-count or filename-width limit is used. PAR2's own 32768 source/recovery-block limits
 also constrain admission; slice sizes are positive multiples of four.

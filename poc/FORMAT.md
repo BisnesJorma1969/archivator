@@ -11,8 +11,10 @@ not hashes. Central metadata parity reuses `pid`; it gets no extra random ID.
 
 A **stream** is either an ordinary POSIX/PAX TAR or one original file's raw bytes.
 One TAR is one complete chunk. Multiple whole TARs and whole RAW files can share
-an independent group. A split RAW file may span groups, but its groups contain
-no other streams. A TAR contains at least two regular files; a singleton is RAW.
+a group, including RAW files with several chunks. A RAW file spans groups only
+when it cannot fit an empty one; it starts in a fresh group. Intermediate groups
+contain only that file, while its final group can accept subsequent whole streams.
+A TAR contains at least two regular files; a singleton is RAW.
 Directories/symlinks alone need only inventory records, not payload chunks.
 
 The local group lives under `ARCHIVE/<pid[:2]>/`. Its identical metadata copies
@@ -63,8 +65,7 @@ DER encoding, AES-256-GCM, RSA≥3072, RSA-OAEP/SHA-256 and MGF1-SHA-256.
 The suffix is `.zst.cms`. Decrypt/authenticate before decompression.
 
 The public manifest contains `version`, `archive`, `parity`, `compression`,
-`encryption`, `settings`, `layout`, `members`, `source_metadata`, and `source_sha256`.
-Layout is `independent` (complete streams) or `raw` (one split original file).
+`encryption`, `settings`, `members`, `source_metadata`, and `source_sha256`.
 Each chunk member records `filename`, `chunk`, `stream`, `kind` (`tar` or `raw`), `offset`, `length`,
 `stored_length`, `stored_sha256`, `plaintext_sha256`, and `plaintext_sha512`.
 It contains no original source names.
@@ -104,6 +105,11 @@ Complete TAR admission counts TAR/PAX headers and all padding before applying
 the zstd/CMS bound. Groups accumulate actual stored chunk sizes with conservative
 metadata/parity reservations. The optional `--large-file-bytes` routing threshold
 can be lower than the safe input ceiling without reducing RAW chunk sizes.
+
+Whole RAW files and whole TARs are placed through one active group and a bounded
+queue, defaulting to four waiting groups and a 95% close-on-miss threshold.
+See the [queue rules](../POC.md#6-group-sizing-and-parity). These are writer policies,
+not a required restore order. No artificial chunk/group padding is used.
 
 PAR2 uses 1 MiB slices by default. Recovery is the maximum of 20% of actual
 protected bytes, 125% of the largest member, and one slice more than that member
