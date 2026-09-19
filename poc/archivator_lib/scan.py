@@ -10,12 +10,12 @@ from pathlib import Path
 from .common import ArchiveError, BUFFER_SIZE, IntegrityError, scratch
 from .external import ZstdWriter, check_parity, executable, run
 from .filesystem import empty_destination, relative_path
-from .format import CHUNK_NAME, ID, parse_chunk, parity_prefix
+from .format import CHUNK_NAME, ID, parse_chunk, group_prefix
 from .progress import progress
 from .recovery import discover, select, stage_existing
 
 DATA_PARITY_NAME = re.compile(
-    rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})"
+    rf"archive-(?P<archive>{ID})_group-(?P<group>{ID})"
     r"(?:\.vol[0-9]+\+[0-9]+)?\.par2")
 
 
@@ -39,7 +39,7 @@ def index_names(names, archive_id):
             entry = match.groupdict()
         if entry["archive"] != archive_id:
             raise IntegrityError("Scan index mixes archive IDs")
-        group = groups.setdefault(entry["parity"], [])
+        group = groups.setdefault(entry["group"], [])
         if name in group:
             raise IntegrityError(f"Duplicate scan index filename: {name}")
         group.append(name)
@@ -138,11 +138,11 @@ def read_index(path):
         raise IntegrityError(f"Malformed scan index: {error}") from error
 
 
-def recover_scanned_set(files, names, directory, archive_id, parity_id):
+def recover_scanned_set(files, names, directory, archive_id, group_id):
     # Verify read-only links first. Without manifests, a repair-needed set has
     # no trusted per-file hashes, so copy its data before allowing PAR2 writes.
     stage_existing(files, names, directory, writable=False)
-    prefix = parity_prefix(archive_id, parity_id)
+    prefix = group_prefix(archive_id, group_id)
     status = check_parity(directory, prefix) if any(name.endswith(".par2") for name in names) else 4
     if status == 1:
         data_names = [name for name in names if CHUNK_NAME.fullmatch(name)]
@@ -152,10 +152,10 @@ def recover_scanned_set(files, names, directory, archive_id, parity_id):
         try:
             status = check_parity(directory, prefix, repair=True)
         except IntegrityError as error:
-            print(f"PAR2 could not finish set {parity_id}: {error}", flush=True)
+            print(f"PAR2 could not finish set {group_id}: {error}", flush=True)
             status = 2
     if status:
-        print(f"Set {parity_id}: no usable full-set PAR2 verification; checking surviving chunks individually.",
+        print(f"Set {group_id}: no usable full-set PAR2 verification; checking surviving chunks individually.",
               flush=True)
     return status == 0
 
@@ -218,17 +218,17 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
     with scratch("scan-streams-") as temporary:
         decoded = Path(temporary)
         usable = {}
-        for number, (parity_id, names) in enumerate(sorted(groups.items()), 1):
-            print(f"Recovering scanned set {number}/{len(groups)}: {parity_id}", flush=True)
+        for number, (group_id, names) in enumerate(sorted(groups.items()), 1):
+            print(f"Recovering scanned set {number}/{len(groups)}: {group_id}", flush=True)
             with scratch("scan-set-") as set_temporary:
                 directory = Path(set_temporary)
-                verified = recover_scanned_set(files, names, directory, selected, parity_id)
+                verified = recover_scanned_set(files, names, directory, selected, group_id)
                 recovered = []
                 for path in sorted(directory.iterdir()):
                     if not CHUNK_NAME.fullmatch(path.name):
                         continue
                     chunk = parse_chunk(path.name)
-                    if chunk["archive"] != selected or chunk["parity"] != parity_id:
+                    if chunk["archive"] != selected or chunk["group"] != group_id:
                         raise IntegrityError("PAR2 recovered a chunk belonging to a different set")
                     if chunk["length"] <= 0:
                         raise IntegrityError("PAR2 recovered a chunk with an invalid declared length")
@@ -236,7 +236,7 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                     known[path.name] = chunk
                     recovered.append(chunk)
                 if (not recovered and not verified) or (not verified and any(name.endswith(".par2") for name in names)):
-                    unresolved_sets.append(parity_id)
+                    unresolved_sets.append(group_id)
                 for chunk in recovered:
                     if chunk["encrypted"] and not key:
                         raise ArchiveError("Encrypted chunks recovered by PAR2 require --decrypt-key")

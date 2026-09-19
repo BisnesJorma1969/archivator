@@ -36,11 +36,11 @@ Implementation is under `poc/`; generated data and scratch use ignored
 | Archive | A complete backup, identified by an archive ID |
 | Stream | Plaintext bytes of one original file or one ordinary POSIX/PAX TAR |
 | Chunk | One complete TAR or a range of RAW file bytes, optionally compressed and/or encrypted |
-| Data parity group | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and optional PAR2 |
+| Group | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and optional PAR2 |
 | Central metadata set | Identical metadata copies and their checksum receipt, optionally protected by separate PAR2 |
 
 Archive IDs, stream IDs, and data-group IDs are random 128-bit identifiers, not
-content hashes. Each is 32 lowercase hexadecimal digits. Central metadata PAR2
+content hashes. Each is 32 lowercase hexadecimal digits. Central metagroup PAR2
 **reuses its data group's ID**; no extra random metadata or shard IDs are generated.
 
 A TAR is exactly one chunk. Several complete TARs and whole RAW files may share
@@ -205,7 +205,7 @@ also constrain admission when PAR2 is enabled; slice sizes are positive multiple
 
 With PAR2 disabled, groups retain both metadata copies and all checksums, but
 contain no PAR2 files and have no parity reservation or PAR2 block-capacity limit.
-Checksum receipts carry empty parity-hash maps. Missing/corrupt payloads cannot
+Checksum receipts carry empty group-hash maps. Missing/corrupt payloads cannot
 be reconstructed; repair may still recover an intentional metadata duplicate
 from its healthy counterpart and never invents parity for a non-PAR2 archive.
 
@@ -245,11 +245,11 @@ For each group:
 2. Write the group's streams/source inventory; compress and/or encrypt as requested.
 3. Write the public group manifest, optionally compressing it, referencing stored inventory and
    chunk SHA-256 values. It carries settings and plaintext chunk checksums.
-4. When enabled, generate data PAR2 over **chunks + stored inventory + stored manifest**.
+4. When enabled, generate group PAR2 over **chunks + stored inventory + stored manifest**.
 5. Make byte-identical inventory/manifest copies under `metadata/`, adding
    `-spare` before `.json`/`.jsonl` in their filenames.
 6. Write a central checksum receipt (compressed when enabled) covering these
-   copies and any finished data PAR2 files; add central PAR2 when enabled.
+   copies and any finished group PAR2 files; add central PAR2 when enabled.
 
 The local manifest never hashes PAR2 generated from itself. Each central receipt
 also records the previous central receipt's stored SHA-256 and PAR2 hashes. The
@@ -285,26 +285,26 @@ See [FORMAT.md](poc/FORMAT.md) for the complete filename table.
 
 ```text
 ARCHIVE/
-  <pid[:2]>/
-    archive-<aid>_parity-<pid>_chunk-...tar[.zst][.cms]
-    archive-<aid>_parity-<pid>_chunk-...raw[.zst][.cms]
-    archive-<aid>_parity-<pid>_metadata_index-chunks.json[.zst]
-    archive-<aid>_parity-<pid>_metadata_index-files.jsonl[.zst][.cms]
-    archive-<aid>_parity-<pid>.par2
-    archive-<aid>_parity-<pid>.vol...par2
+  <gid[:2]>/
+    archive-<aid>_group-<gid>_chunk-...tar[.zst][.cms]
+    archive-<aid>_group-<gid>_chunk-...raw[.zst][.cms]
+    archive-<aid>_group-<gid>_metadata_index-chunks.json[.zst]
+    archive-<aid>_group-<gid>_metadata_index-files.jsonl[.zst][.cms]
+    archive-<aid>_group-<gid>.par2
+    archive-<aid>_group-<gid>.vol...par2
   metadata/
-    <pid[:2]>/
-      archive-<aid>_parity-<pid>_metadata_index-chunks-spare.json[.zst]
-      archive-<aid>_parity-<pid>_metadata_index-files-spare.jsonl[.zst][.cms]
-      archive-<aid>_metadata_parity-<pid>_checksums.json[.zst]
-      archive-<aid>_metadata_parity-<pid>.par2
-      archive-<aid>_metadata_parity-<pid>.vol...par2
+    <gid[:2]>/
+      archive-<aid>_group-<gid>_metadata_index-chunks-spare.json[.zst]
+      archive-<aid>_group-<gid>_metadata_index-files-spare.jsonl[.zst][.cms]
+      archive-<aid>_metadata_group-<gid>_checksums.json[.zst]
+      archive-<aid>_metadata_group-<gid>.par2
+      archive-<aid>_metadata_group-<gid>.vol...par2
     archive-<aid>_metadata_catalog-root.json
     archive-<aid>_metadata_catalog-root-spare.json
 ```
 
 Only populated shard directories are created. Many groups can share a shard.
-PAR2 files in this layout exist only when enabled. Group IDs and the `parity-`
+PAR2 files in this layout exist only when enabled. Group IDs and the `group-`
 name component remain in use without PAR2. PAR2 stores basenames relative to its shard. Chunk numbers are local to a group,
 zero-padded to **at least** four digits, without a four-digit maximum. Offsets
 and lengths are plaintext byte coordinates, not compressed/encrypted coordinates.
@@ -356,7 +356,7 @@ Compare checks paths, types, file SHA-256, sizes, symlinks, POSIX modes and mtim
 ## 10. Filename-only scan
 
 `scan` reads names and file types only, never archive contents, checksums, or PAR2
-packets. It writes a separate `.json` or `.json.zst` index of surviving chunk/data-PAR2 names.
+packets. It writes a separate `.json` or `.json.zst` index of surviving chunk/group-PAR2 names.
 Restore with `--scan-index` uses those coordinates and available PAR2, checks
 CMS/zstd/declared lengths, and skips streams with detected gaps or bad chunks.
 

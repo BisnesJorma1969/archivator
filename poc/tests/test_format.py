@@ -9,18 +9,18 @@ from poc.archivator_lib.limits import recovery_blocks
 
 class FormatTests(unittest.TestCase):
     def test_chunk_numbers_can_grow_beyond_four_digits(self):
-        archive, parity, stream = new_id(), new_id(), new_id()
+        archive, group, stream = new_id(), new_id(), new_id()
         for number in (0, 9999, 10000, 1234567):
             with self.subTest(number=number):
-                name = chunk_name(archive, parity, number, stream, 0, 256, False)
+                name = chunk_name(archive, group, number, stream, 0, 256, False)
                 self.assertEqual(parse_chunk(name)["chunk"], number)
-        self.assertIn("_chunk-0000_", chunk_name(archive, parity, 0, stream, 0, 256, False))
+        self.assertIn("_chunk-0000_", chunk_name(archive, group, 0, stream, 0, 256, False))
 
     def test_independent_filename_contains_recovery_coordinates(self):
-        archive, parity, stream = new_id(), new_id(), new_id()
-        name = chunk_name(archive, parity, 3, stream, 512, 256, True)
+        archive, group, stream = new_id(), new_id(), new_id()
+        name = chunk_name(archive, group, 3, stream, 512, 256, True)
         self.assertEqual(parse_chunk(name), {
-            "archive": archive, "parity": parity, "stream": stream,
+            "archive": archive, "group": group, "stream": stream,
             "chunk": 3, "offset": 512, "length": 256, "encrypted": True, "kind": "raw", "compressed": True,
         })
         with self.assertRaises(IntegrityError):

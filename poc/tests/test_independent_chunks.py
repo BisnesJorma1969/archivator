@@ -77,8 +77,8 @@ class IndependentChunkTests(ArchiveTest):
         for path in self.archive.rglob("archive-*"):
             self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes)
         for group in manifests(self.archive):
-            prefix = f"archive-{group['archive']}_parity-{group['parity']}"
-            size = sum(path.stat().st_size for path in (self.archive / group["parity"][:2]).glob(prefix + "*"))
+            prefix = f"archive-{group['archive']}_group-{group['group']}"
+            size = sum(path.stat().st_size for path in (self.archive / group["group"][:2]).glob(prefix + "*"))
             self.assertLessEqual(size, SMALL.max_group_bytes)
         self.assertEqual(restore(self.archive, self.restored, key=key), 0)
         self.assertEqual(compare(self.source, self.restored), 0)

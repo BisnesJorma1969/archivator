@@ -135,7 +135,7 @@ class WholeFilePlacementTests(ArchiveTest):
             for member in group["members"]:
                 stream = descriptions[member["stream"]]
                 if stream["type"] == "file":
-                    result.setdefault(stream["path"], set()).add(group["parity"])
+                    result.setdefault(stream["path"], set()).add(group["group"])
         return result
 
     def test_multi_chunk_whole_raw_files_can_share_one_group(self):
@@ -190,7 +190,7 @@ class WholeFilePlacementTests(ArchiveTest):
         tail = next(iter(groups["c"]))
         isolated = self.root / "isolated"
         isolated.mkdir()
-        for path in (self.archive / tail[:2]).glob(f"*_parity-{tail}*"):
+        for path in (self.archive / tail[:2]).glob(f"*_group-{tail}*"):
             shutil.copyfile(path, isolated / path.name)
         target = self.root / "partial"
         self.assertEqual(restore(isolated, target), 1)

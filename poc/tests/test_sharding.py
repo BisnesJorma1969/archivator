@@ -19,8 +19,8 @@ class ShardingTests(ArchiveTest):
             if "_catalog-root" in path.name:
                 self.assertEqual(path.parent, self.archive / "metadata")
             else:
-                parity_id = path.name.split("_parity-")[1][:32]
-                self.assertEqual(path.parent.name, parity_id[:2])
+                group_id = path.name.split("_group-")[1][:32]
+                self.assertEqual(path.parent.name, group_id[:2])
         self.assertFalse(list(self.archive.rglob(".tmp")))
         self.assertTrue(all(any(path.iterdir()) for path in self.archive.rglob("*") if path.is_dir()))
 

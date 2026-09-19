@@ -10,7 +10,7 @@ from itertools import chain
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, directory_batches, empty_destination, ensure_disjoint, public_entry
-from .format import Settings, chunk_name, metadata_prefix, new_id, parity_prefix, spare_metadata_name
+from .format import Settings, chunk_name, metadata_prefix, new_id, group_prefix, spare_metadata_name
 from .limits import ceil_div, check_files, input_limit, parity_plan, stored_bound
 from .metadata import MetadataWriter, json_bytes, store_metadata
 from .progress import progress
@@ -55,7 +55,7 @@ def inventory_bound(sources):
     return total
 
 
-class ParityWriter:
+class GroupWriter:
     """One bounded recovery group; placement and lifetime belong to GroupQueue."""
 
     def __init__(self, archive, archive_id, settings, catalog,
@@ -68,20 +68,20 @@ class ParityWriter:
         self.certificate = certificate
         self.encryption_overhead = encryption_overhead
         self.staging = archive / ".tmp"
-        self.parity_id = new_id()
+        self.group_id = new_id()
         self.members = []
         self.input_bytes = input_limit(min(settings.max_file_bytes, settings.max_group_bytes // 4),
                                        encryption_overhead, settings.compression)
 
     def source_name(self):
-        prefix = parity_prefix(self.archive_id, self.parity_id)
+        prefix = group_prefix(self.archive_id, self.group_id)
         name = prefix + "_metadata_index-files.jsonl"
         if self.settings.compression:
             name += ".zst"
         return name + ".cms" if self.certificate else name
 
     def manifest(self, members, source_digest):
-        return {"version": 1, "archive": self.archive_id, "parity": self.parity_id,
+        return {"version": 1, "archive": self.archive_id, "group": self.group_id,
                 "compression": "zstd" if self.settings.compression else "none",
                 "encryption": "cms-aes-256-gcm" if self.certificate else "none",
                 "settings": vars(self.settings),
@@ -100,7 +100,7 @@ class ParityWriter:
         manifest_length = stored_bound(len(manifest_bytes.encode("ascii")) + 1, compression=settings.compression)
         lengths = {member["filename"]: member["stored_length"] for member in members}
         lengths[self.source_name()] = source_length
-        prefix = parity_prefix(self.archive_id, self.parity_id)
+        prefix = group_prefix(self.archive_id, self.group_id)
         suffix = ".zst" if settings.compression else ""
         lengths[prefix + "_metadata_index-chunks.json" + suffix] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
@@ -113,13 +113,13 @@ class ParityWriter:
             # The identical central copies need their own parity and a receipt.
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
-            receipt_name = metadata_prefix(self.archive_id, self.parity_id) + "_checksums.json" + suffix
+            receipt_name = metadata_prefix(self.archive_id, self.group_id) + "_checksums.json" + suffix
             central = {spare_metadata_name(self.source_name()): source_length,
                        spare_metadata_name(prefix + "_metadata_index-chunks.json" + suffix): manifest_length,
                        receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             for path in self.catalog.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
-                central[metadata_prefix(self.archive_id, self.parity_id) + "_" + role] = path.stat().st_size
+                central[metadata_prefix(self.archive_id, self.group_id) + "_" + role] = path.stat().st_size
             if max(central.values()) > settings.max_file_bytes:
                 return None
             protection = parity_plan(central, settings.slice_size, settings.max_file_bytes, settings.par2)
@@ -132,7 +132,7 @@ class ParityWriter:
     def candidate(self, stream, size, number=0, offset=0, length=1):
         stream_id = stream["stream"]
         kind = "tar" if stream["type"] == "tar" else "raw"
-        return {"filename": chunk_name(self.archive_id, self.parity_id, number, stream_id,
+        return {"filename": chunk_name(self.archive_id, self.group_id, number, stream_id,
                                         offset, length, bool(self.certificate), kind, self.settings.compression),
                 "chunk": number, "stream": stream_id, "kind": kind, "offset": offset, "length": length,
                 "stored_length": size, "stored_sha256": "0" * 64,
@@ -161,22 +161,22 @@ class ParityWriter:
         members, sources = self.proposed(chunks, stream, entries)
         if not self.fits(members, sources):
             raise ArchiveError("Group cannot hold the selected content with metadata and parity")
-        shard = self.archive / self.parity_id[:2]
+        shard = self.archive / self.group_id[:2]
         if chunks:
             shard.mkdir(exist_ok=True)
         for chunk, member in zip(chunks, members[len(self.members):]):
             os.replace(chunk["path"], shard / member["filename"])
             print(f"Stored chunk: {member['length']:,} plaintext bytes -> "
-                  f"{member['stored_length']:,} stored bytes; group {self.parity_id}", flush=True)
+                  f"{member['stored_length']:,} stored bytes; group {self.group_id}", flush=True)
         self.members = members
         self.sources = sources
 
     def finish_set(self):
         if not self.sources:
             return
-        shard = self.archive / self.parity_id[:2]
+        shard = self.archive / self.group_id[:2]
         shard.mkdir(exist_ok=True)
-        prefix = parity_prefix(self.archive_id, self.parity_id)
+        prefix = group_prefix(self.archive_id, self.group_id)
         source_name = self.source_name().removesuffix(".cms").removesuffix(".zst")
 
         def records():
@@ -201,7 +201,7 @@ class ParityWriter:
         if sum(lengths.values()) + plan.total_bytes > self.settings.max_group_bytes:
             raise ArchiveError("Group metadata and PAR2 exceed the byte budget")
         protection = f"{plan.blocks:,} PAR2 slices" if self.settings.par2 else "PAR2 disabled"
-        print(f"Finalizing group {self.parity_id}: {len(self.members):,} chunks, "
+        print(f"Finalizing group {self.group_id}: {len(self.members):,} chunks, "
               f"{sum(lengths.values()):,} stored bytes; {protection}", flush=True)
         directory = self.staging / "parity"
         directory.mkdir()
@@ -216,7 +216,7 @@ class ParityWriter:
             parity_hashes[path.name] = sha256(path)
             os.replace(path, shard / path.name)
         directory.rmdir()
-        self.catalog.add(self.parity_id, [shard / stored, shard / manifest_name], parity_hashes)
+        self.catalog.add(self.group_id, [shard / stored, shard / manifest_name], parity_hashes)
         print(f"Finished group: {total:,}/{self.settings.max_group_bytes:,} bytes including metadata and enabled parity", flush=True)
         self.members = []
         self.sources = {}
@@ -304,7 +304,7 @@ class StreamWriter:
 
     def __init__(self, queue, stream, entries):
         self.queue = queue
-        self.parity = queue.planner
+        self.planner = queue.planner
         self.chunks = []
         self.spanning = False
         self.stream = stream
@@ -323,22 +323,22 @@ class StreamWriter:
         progress.update(
             f"Encoding {kind} {self.stream['stream'][:8]}: {entries}"
             f"{self.size:,}/{self.stream['size']:,} plaintext bytes; "
-            f"chunk {self.chunk_length:,}/{self.parity.input_bytes:,} bytes")
+            f"chunk {self.chunk_length:,}/{self.planner.input_bytes:,} bytes")
 
     def write(self, data):
         length = len(data)
-        if self.stream["type"] == "tar" and self.size + length > self.parity.input_bytes:
+        if self.stream["type"] == "tar" and self.size + length > self.planner.input_bytes:
             raise ArchiveError("A complete TAR must fit in one independent chunk")
         remaining = memoryview(data)
         while remaining:
             if self.chunk_output is None:
-                path = self.parity.staging / "chunk"
-                if self.parity.settings.compression:
+                path = self.planner.staging / "chunk"
+                if self.planner.settings.compression:
                     self.chunk_output = ZstdWriter(path)
                 else:
                     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                     self.chunk_output = os.fdopen(descriptor, "wb")
-            count = min(len(remaining), self.parity.input_bytes - self.chunk_length)
+            count = min(len(remaining), self.planner.input_bytes - self.chunk_length)
             piece = remaining[:count]
             self.chunk_output.write(piece)
             self.hashes.update(piece)
@@ -347,28 +347,28 @@ class StreamWriter:
             self.size += count
             self.report_progress()
             remaining = remaining[count:]
-            if self.chunk_length == self.parity.input_bytes and self.stream["type"] != "tar":
+            if self.chunk_length == self.planner.input_bytes and self.stream["type"] != "tar":
                 self.finish_chunk()
         return length
 
     def finish_chunk(self):
         if not self.chunk_length:
             return
-        if self.parity.settings.compression:
+        if self.planner.settings.compression:
             self.chunk_output.finish()
         else:
             self.chunk_output.close()
         self.chunk_output = None
-        path = self.parity.staging / "chunk"
-        if self.parity.certificate:
-            encrypted = self.parity.staging / "chunk.cms"
-            encrypt(path, encrypted, self.parity.certificate)
+        path = self.planner.staging / "chunk"
+        if self.planner.certificate:
+            encrypted = self.planner.staging / "chunk.cms"
+            encrypt(path, encrypted, self.planner.certificate)
             path.unlink()
             path = encrypted
-        check_files([path], self.parity.settings.max_file_bytes, self.parity.settings.max_group_bytes)
+        check_files([path], self.planner.settings.max_file_bytes, self.planner.settings.max_group_bytes)
         offset = self.size - self.chunk_length
-        staged = self.parity.staging / f"buffer-{self.stream['stream']}-{offset}"
-        if self.parity.certificate:
+        staged = self.planner.staging / f"buffer-{self.stream['stream']}-{offset}"
+        if self.planner.certificate:
             staged = staged.with_name(staged.name + ".cms")
         os.replace(path, staged)
         hashes = self.chunk_hashes.values()
@@ -379,7 +379,7 @@ class StreamWriter:
             self.queue.append_fragment(chunk, self.stream, self.entries)
         else:
             self.chunks.append(chunk)
-            if not self.parity.can_add(self.chunks, self.stream, self.entries):
+            if not self.planner.can_add(self.chunks, self.stream, self.entries):
                 if self.stream["type"] == "tar":
                     raise ArchiveError("A complete TAR and its metadata cannot fit an empty group")
                 self.spanning = True
@@ -492,7 +492,7 @@ def backup(source, archive, certificate=None, settings=None):
         catalog.extra.append(format_path)
 
         def writer():
-            return ParityWriter(archive, archive_id, settings, catalog, certificate, overhead)
+            return GroupWriter(archive, archive_id, settings, catalog, certificate, overhead)
 
         queue = GroupQueue(writer)
 

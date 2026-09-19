@@ -94,7 +94,7 @@ class MetadataTests(ArchiveTest):
         self.assertEqual(compare(self.source, self.restored), 0)
         self.assertEqual(snapshot(self.archive), before)
 
-    def test_data_parity_rescues_metadata_when_both_copies_and_central_parity_are_lost(self):
+    def test_group_parity_rescues_metadata_when_both_copies_and_central_parity_are_lost(self):
         self.make_archive()
         copies = list(self.archive.rglob("*_metadata_index-files*.zst"))
         for path in copies:

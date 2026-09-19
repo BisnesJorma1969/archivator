@@ -86,7 +86,7 @@ separate PAR2 protection there when enabled. The public manifest,
 `metadata_index-chunks.json[.zst]`, describes stored chunks; the
 `metadata_index-files.jsonl[.zst][.cms]` inventory describes original RAW files and
 TAR members and is encrypted when encryption is enabled.
-The word **stream** means a TAR's bytes or a direct file's bytes, not a parity group.
+The word **stream** means a TAR's bytes or a direct file's bytes, not a group.
 
 Normal restore uses the complete, protected central catalog. With the central
 catalog/markers absent, normal restore can also use standalone local groups.
@@ -124,7 +124,7 @@ output in its destination; retry into a fresh empty directory.
 
 ## Filename-only recovery
 
-If even local metadata is unavailable, scan surviving chunk and data-PAR2 names.
+If even local metadata is unavailable, scan surviving chunk and group-PAR2 names.
 This reads no archive contents, hashes, or PAR2 packets and never changes the
 archive. The separate index must not already exist. Choose `.json` for an uncompressed
 index requiring no zstd executable, or `.json.zst` for a compressed one.

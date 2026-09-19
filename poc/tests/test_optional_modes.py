@@ -65,9 +65,9 @@ class OptionalModeTests(ArchiveTest):
                         if encryption:
                             self.assertNotIn(b"private-notes.txt", path.read_bytes())
                             self.assertNotIn(b"private-large.bin", path.read_bytes())
-                    for parity_id in {parse_chunk(path.name)["parity"] for path in chunks}:
-                        for directory in (archive / parity_id[:2], archive / "metadata" / parity_id[:2]):
-                            group = [path for path in directory.iterdir() if parity_id in path.name]
+                    for group_id in {parse_chunk(path.name)["group"] for path in chunks}:
+                        for directory in (archive / group_id[:2], archive / "metadata" / group_id[:2]):
+                            group = [path for path in directory.iterdir() if group_id in path.name]
                             self.assertLessEqual(sum(path.stat().st_size for path in group), settings.max_group_bytes)
                     self.assertEqual(verify(archive), 0)
                     before = snapshot(archive)

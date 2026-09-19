@@ -40,7 +40,7 @@ class BackupTests(ArchiveTest):
         decoded = [subprocess.run([executable("zstd"), "-qdc", str(path)],
                                   capture_output=True, check=True).stdout for path in chunks]
         self.assertEqual(b"".join(decoded), contents)
-        self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
+        self.assertGreater(len({parse_chunk(path.name)["group"] for path in chunks}), 1)
         self.assertEqual(direct["md5"], hashlib.md5(contents).hexdigest())
 
     def test_singleton_is_direct_and_encrypted_metadata_hides_its_name(self):

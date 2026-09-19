@@ -5,9 +5,9 @@ commands live only in the [root README](../README.md).
 
 ## Names and layout
 
-`aid`, `pid`, and `sid` are archive, data parity-group, and stream IDs: independent
+`aid`, `gid`, and `sid` are archive, data group-group, and stream IDs: independent
 random 128-bit values expressed as 32 lowercase hex digits. They are identifiers,
-not hashes. Central metadata parity reuses `pid`; it gets no extra random ID.
+not hashes. Central metadata parity reuses `gid`; it gets no extra random ID.
 
 A **stream** is either an ordinary POSIX/PAX TAR or one original file's raw bytes.
 One TAR is one complete chunk. Multiple whole TARs and whole RAW files can share
@@ -17,26 +17,26 @@ contain only that file, while its final group can accept subsequent whole stream
 A TAR contains at least two regular files; a singleton is RAW.
 Directories/symlinks alone need only inventory records, not payload chunks.
 
-The local group lives under `ARCHIVE/<pid[:2]>/`. Its byte-identical `-spare` metadata copies
-and separate central PAR2 live under `ARCHIVE/metadata/<pid[:2]>/`. Only populated
+The local group lives under `ARCHIVE/<gid[:2]>/`. Its byte-identical `-spare` metadata copies
+and separate central PAR2 live under `ARCHIVE/metadata/<gid[:2]>/`. Only populated
 shards are created; several groups can share one shard. Catalog-root markers live
 under `ARCHIVE/metadata/`. Optional `.zst` and `.cms` suffixes describe the enabled
-transforms. PAR2 files exist only when enabled; group IDs and the `parity-` name
+transforms. PAR2 files exist only when enabled; group IDs and the `group-` name
 component are used regardless.
 
 | Filename after `archive-<aid>_` | Role |
 | --- | --- |
-| `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar[.zst][.cms]` | One complete, independently extractable TAR |
-| `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Original file bytes: a whole file or a fragment |
-| `parity-<pid>_metadata_index-chunks.json[.zst]` | Public group structure, settings, chunk hashes and stored-inventory hash; local primary |
-| `parity-<pid>_metadata_index-files.jsonl[.zst][.cms]` | Group's stream descriptions and original source entries; local primary |
-| `parity-<pid>_metadata_index-chunks-spare.json[.zst]` | Byte-identical public-index spare under `metadata/` |
-| `parity-<pid>_metadata_index-files-spare.jsonl[.zst][.cms]` | Byte-identical source-inventory spare under `metadata/` |
-| `parity-<pid>.par2`, `parity-<pid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
-| `metadata_parity-<pid>_checksums.json[.zst]` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
-| `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
-| `metadata_parity-<pid>_format.txt` | Small uncompressed format/settings note, in the first central set |
-| `metadata_parity-<pid>_recipient.pem` | Optional normalized public certificate, in the first central set |
+| `group-<gid>_chunk-<n>_stream-<sid>_length-<length>.tar[.zst][.cms]` | One complete, independently extractable TAR |
+| `group-<gid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Original file bytes: a whole file or a fragment |
+| `group-<gid>_metadata_index-chunks.json[.zst]` | Public group structure, settings, chunk hashes and stored-inventory hash; local primary |
+| `group-<gid>_metadata_index-files.jsonl[.zst][.cms]` | Group's stream descriptions and original source entries; local primary |
+| `group-<gid>_metadata_index-chunks-spare.json[.zst]` | Byte-identical public-index spare under `metadata/` |
+| `group-<gid>_metadata_index-files-spare.jsonl[.zst][.cms]` | Byte-identical source-inventory spare under `metadata/` |
+| `group-<gid>.par2`, `group-<gid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
+| `metadata_group-<gid>_checksums.json[.zst]` | Central receipt: metadata-copy hashes/lengths, group-PAR2 hashes, previous central link |
+| `metadata_group-<gid>.par2`, `metadata_group-<gid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
+| `metadata_group-<gid>_format.txt` | Small uncompressed format/settings note, in the first central set |
+| `metadata_group-<gid>_recipient.pem` | Optional normalized public certificate, in the first central set |
 | `metadata_catalog-root.json`, `metadata_catalog-root-spare.json` | Identical uncompressed catalog-root markers |
 
 **Inventories are metadata, not compressed file content.** Stream IDs inside
@@ -95,9 +95,9 @@ Names are JSON strings, including escaped Unicode, tabs, newlines and filesystem
 surrogate escapes. CRC32 matches ZIP. Digests are lowercase hex. SHA-256/SHA-512
 are integrity checks; the older digests are lookup aids.
 
-When PAR2 is enabled, local stored metadata is finished **before data PAR2**, so the same recovery set
+When PAR2 is enabled, local stored metadata is finished **before group PAR2**, so the same recovery set
 can recreate a missing manifest/inventory. Make its identical central copies,
-then write the central receipt with the finished data-PAR2 hashes. Central PAR2
+then write the central receipt with the finished group-PAR2 hashes. Central PAR2
 protects that receipt and the copies. No manifest hashes its own PAR2.
 
 Each receipt links backward to the preceding central receipt's SHA-256 and PAR2
@@ -106,7 +106,7 @@ so they do not grow with the archive's group count. `marker_sha256` hashes
 canonical ASCII JSON, sorted keys and compact separators, excluding that field.
 These files contain the checksum-chain root, not the full catalog. The `-spare`
 file is byte-identical to the primary. Markers are published last, are outside PAR2, and are not signed. Without PAR2,
-the copies, receipts, and checksum chain still exist; parity-hash maps are empty.
+the copies, receipts, and checksum chain still exist; group-hash maps are empty.
 
 ## Sizing and recovery capacity
 
@@ -150,13 +150,13 @@ It does not need the central `metadata/` directory.
 
 ```bash
 aid=REPLACE_WITH_ARCHIVE_ID
-pid=REPLACE_WITH_GROUP_ID
+gid=REPLACE_WITH_GROUP_ID
 archive=/absolute/path/to/archive
 scratch=/absolute/path/to/manual-scratch
 mkdir -p "$scratch"
-cp "$archive/${pid:0:2}"/archive-"$aid"_parity-"$pid"* "$scratch/"
+cp "$archive/${gid:0:2}"/archive-"$aid"_group-"$gid"* "$scratch/"
 cd "$scratch"
-base="archive-${aid}_parity-${pid}"
+base="archive-${aid}_group-${gid}"
 par2 verify "$base.par2"
 par2 repair "$base.par2"
 ```
@@ -167,8 +167,8 @@ group. Public manifests can be inspected with `zstd -dc "$base"_metadata_index-c
 Without compression, read the `.json` manifest directly.
 Check stored SHA-256 values before decoding payload.
 
-For central metadata recovery, copy that set's files from `metadata/<pid[:2]>`
-into scratch and run the same PAR2 commands against its `metadata_parity-<pid>`
+For central metadata recovery, copy that set's files from `metadata/<gid[:2]>`
+into scratch and run the same PAR2 commands against its `metadata_group-<gid>`
 prefix. Its protected receipt identifies the previous central set. Either valid
 catalog-root marker supplies the final checksum root.
 

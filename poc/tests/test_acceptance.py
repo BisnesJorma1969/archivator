@@ -43,7 +43,7 @@ class AcceptanceTests(ArchiveTest):
                 # Damage one data slice and lose a whole recovery volume. The
                 # other three volumes retain more than enough recovery blocks.
                 flip(next(archive.rglob(manifest["members"][0]["filename"])))
-                volume = next(archive.rglob(f"*_parity-{manifest['parity']}.vol*.par2"))
+                volume = next(archive.rglob(f"*_group-{manifest['group']}.vol*.par2"))
                 volume.unlink()
                 before = snapshot(archive)
                 self.assertEqual(verify(archive), 1)

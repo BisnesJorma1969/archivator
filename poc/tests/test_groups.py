@@ -8,7 +8,7 @@ from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
 
 
-class ParityGroupTests(ArchiveTest):
+class GroupTests(ArchiveTest):
     def test_defaults_are_exact_byte_limits(self):
         self.assertEqual(Settings().max_file_bytes, 268435455)
         self.assertEqual(Settings().max_group_bytes, 15032385536)
@@ -26,11 +26,11 @@ class ParityGroupTests(ArchiveTest):
                     group = "bootstrap"
                 else:
                     group = ("central" if "metadata" in path.relative_to(archive).parts else "local",
-                             path.parent.name, path.name.split("_parity-")[-1][:32])
+                             path.parent.name, path.name.split("_group-")[-1][:32])
                 totals[group] += path.stat().st_size
             self.assertTrue(all(size <= SMALL.max_group_bytes for size in totals.values()), totals)
             chunks = list(archive.rglob("*_chunk-*"))
-            self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
+            self.assertGreater(len({parse_chunk(path.name)["group"] for path in chunks}), 1)
             restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
             self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
 
@@ -52,7 +52,7 @@ class ParityGroupTests(ArchiveTest):
                 elif members[0]["offset"] > 0:
                     self.assertEqual(manifest["members"][0]["stream"], sid)
             for sid in ids:
-                by_stream[sid].add(manifest["parity"])
+                by_stream[sid].add(manifest["group"])
         for stream in descriptions.values():
             if stream["type"] == "tar":
                 self.assertEqual(len(by_stream[stream["stream"]]), 1)
@@ -117,7 +117,7 @@ class ParityGroupTests(ArchiveTest):
         group = next(item for item in manifests(self.archive) if item["members"])
         isolated = self.root / "isolated"
         isolated.mkdir()
-        for path in (self.archive / group["parity"][:2]).glob(f"*_parity-{group['parity']}*"):
+        for path in (self.archive / group["group"][:2]).glob(f"*_group-{group['group']}*"):
             shutil.copyfile(path, isolated / path.name)
         self.assertEqual(restore(isolated, self.restored), 1)
         self.assertFalse((self.restored / "large").exists())

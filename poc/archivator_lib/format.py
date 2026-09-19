@@ -10,7 +10,7 @@ from .common import ArchiveError, IntegrityError
 ID = r"[0-9a-f]{32}"
 ARCHIVE_NAME = re.compile(rf"archive-({ID})_")
 CHUNK_NAME = re.compile(
-    rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})_"
+    rf"archive-(?P<archive>{ID})_group-(?P<group>{ID})_"
     rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
     r"(?:offset-(?P<offset>[0-9]{20})_)?length-(?P<length>[0-9]{12})"
     r"\.(?P<kind>raw|tar)(?P<compressed>\.zst)?(?P<encrypted>\.cms)?"
@@ -48,12 +48,12 @@ def new_id():
     return secrets.token_hex(16)
 
 
-def chunk_name(archive, parity, chunk, stream, offset, length, encrypted, kind="raw", compressed=True):
+def chunk_name(archive, group, chunk, stream, offset, length, encrypted, kind="raw", compressed=True):
     if kind not in ("raw", "tar") or (kind == "tar" and offset != 0):
         raise ArchiveError("A TAR chunk must be a complete archive without an offset")
     coordinates = f"offset-{offset:020d}_" if kind == "raw" else ""
     name = (
-        f"archive-{archive}_parity-{parity}_chunk-{chunk:04d}_"
+        f"archive-{archive}_group-{group}_chunk-{chunk:04d}_"
         f"stream-{stream}_{coordinates}length-{length:012d}.{kind}"
     )
     if compressed:
@@ -76,12 +76,12 @@ def parse_chunk(name):
     return result
 
 
-def parity_prefix(archive, parity):
-    return f"archive-{archive}_parity-{parity}"
+def group_prefix(archive, group):
+    return f"archive-{archive}_group-{group}"
 
 
 def group_metadata(name):
-    return bool(re.fullmatch(rf"archive-{ID}_parity-{ID}_metadata_index-"
+    return bool(re.fullmatch(rf"archive-{ID}_group-{ID}_metadata_index-"
                              r"(?:chunks(?:-spare)?\.json(?:\.zst)?|"
                              r"files(?:-spare)?\.jsonl(?:\.zst)?(?:\.cms)?)", name))
 
@@ -97,20 +97,20 @@ def spare_metadata_name(name):
 def stored_path(root, name):
     """Canonical destinations; discovery also accepts flat or mixed layouts."""
     root = Path(root)
-    match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
+    match = re.match(rf"archive-{ID}_group-({ID})(?:_|\.)", name)
     if match:
         if group_metadata(name) and name != primary_metadata_name(name):
             return root / "metadata" / match[1][:2] / name
         return root / match[1][:2] / name
-    match = re.match(rf"archive-{ID}_metadata_parity-({ID})(?:_|\.)", name)
+    match = re.match(rf"archive-{ID}_metadata_group-({ID})(?:_|\.)", name)
     if match:
         return root / "metadata" / match[1][:2] / name
     return root / "metadata" / name
 
 
-def metadata_prefix(archive, parity):
+def metadata_prefix(archive, group):
     # Reuse the data group's ID; metadata protection needs no new random ID.
-    return f"archive-{archive}_metadata_parity-{parity}"
+    return f"archive-{archive}_metadata_group-{group}"
 
 
 def archive_filename(name, archive):

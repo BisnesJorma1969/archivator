@@ -96,9 +96,9 @@ class MetadataWriter:
         self.count = 0
         self.extra = []
 
-    def add(self, parity_id, metadata, data_parity):
-        prefix = metadata_prefix(self.archive_id, parity_id)
-        destination = self.archive / "metadata" / parity_id[:2]
+    def add(self, group_id, metadata, group_parity):
+        prefix = metadata_prefix(self.archive_id, group_id)
+        destination = self.archive / "metadata" / group_id[:2]
         destination.mkdir(parents=True, exist_ok=True)
         members = {}
         check_files([*metadata, *self.extra], self.settings.max_file_bytes, self.settings.max_group_bytes)
@@ -114,9 +114,9 @@ class MetadataWriter:
             shutil.copyfile(path, target)
             members[name] = {"sha256": sha256(path), "size": path.stat().st_size}
         receipt = {
-            "version": 1, "archive": self.archive_id, "parity": parity_id,
+            "version": 1, "archive": self.archive_id, "group": group_id,
             "previous": self.previous, "members": members,
-            "data_parity": data_parity,
+            "group_parity": group_parity,
         }
         name = prefix + "_checksums.json"
         staging_root = self.archive / ".tmp"
@@ -141,7 +141,7 @@ class MetadataWriter:
             hashes[path.name] = sha256(path)
             os.replace(path, destination / path.name)
         staging.rmdir()
-        self.previous = {"parity": parity_id, "receipt_sha256": sha256(destination / name),
+        self.previous = {"group": group_id, "receipt_sha256": sha256(destination / name),
                          "parity_hashes": hashes}
         self.count += 1
         self.extra = []
