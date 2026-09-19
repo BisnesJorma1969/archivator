@@ -38,7 +38,7 @@ and the encrypted backup/restore commands.
 | `backup` | `--encrypt-cert CERT.pem` |
 | `restore` | `--decrypt-key KEY.pem`; optionally `--decrypt-cert CERT.pem` |
 
-Encryption requires an RSA key of at least 3072 bits. Each `.zst.enc` chunk uses
+Encryption requires an RSA key of at least 3072 bits. Each `.zst.cms` chunk uses
 CMS AES-256-GCM with RSA-OAEP, SHA-256, and MGF1-SHA-256.
 The archive stores only the normalized public certificate and its SHA-256
 fingerprint. Catalogs, inventories, paths, sizes, and checksums remain plaintext.

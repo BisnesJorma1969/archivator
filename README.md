@@ -79,7 +79,7 @@ openssl req -x509 -newkey rsa:3072 -noenc \
   --encrypt-cert poc/work/recipient.pem
 ```
 
-Encrypted data chunks end in `.zst.enc`. Metadata remains unencrypted.
+Encrypted data chunks end in `.zst.cms`. Metadata remains unencrypted.
 Data chunks, data PAR2, and each data group's manifest share a two-character
 shard directory from that group's ID. Other metadata and metadata PAR2 stay at
 the archive root. Keep using `archive1` as the command argument; discovery is recursive.
@@ -99,7 +99,7 @@ the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
 The damager accepts arbitrary files and already-damaged archives without validating
 their format or metadata.
 
-You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.enc`) and
+You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
 damaged data blocks**. Deleting PAR2 files reduces that capacity. Automatic

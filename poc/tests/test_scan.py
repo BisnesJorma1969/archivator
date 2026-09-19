@@ -131,7 +131,7 @@ class ScanTests(ArchiveTest):
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, key=wrong_key, scan_index=index), 1)
         self.assertEqual(list(self.restored.iterdir()), [])
-        chunks = sorted(self.archive.rglob("*_chunk-*.enc"), key=lambda path: parse_chunk(path.name)["offset"])
+        chunks = sorted(self.archive.rglob("*_chunk-*.cms"), key=lambda path: parse_chunk(path.name)["offset"])
         missing = chunks[-1]
         stream = parse_chunk(missing.name)["stream"]
         missing.unlink()

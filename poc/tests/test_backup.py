@@ -75,9 +75,9 @@ class BackupTests(ArchiveTest):
         combined.write_bytes(certificate.read_bytes() + key.read_bytes())
         (self.source / "tiny").write_bytes(b"hello")
         archive_id = backup(self.source, self.archive, combined, SMALL)
-        chunks = sorted(self.archive.rglob("*.enc"), key=lambda path: parse_chunk(path.name)["offset"])
+        chunks = sorted(self.archive.rglob("*.cms"), key=lambda path: parse_chunk(path.name)["offset"])
         self.assertTrue(chunks)
-        self.assertTrue(all(chunk.name.endswith(".zst.enc") for chunk in chunks))
+        self.assertTrue(all(chunk.name.endswith(".zst.cms") for chunk in chunks))
         self.assertFalse(list(self.archive.rglob("*_chunk-*.zst")))
         stream = bytearray()
         for chunk in chunks:

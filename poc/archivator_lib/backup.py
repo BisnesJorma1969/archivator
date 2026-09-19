@@ -124,7 +124,7 @@ class StreamWriter:
         self.compressed = None
         path = self.parity.staging / "chunk.zst"
         if self.certificate:
-            encrypted = self.parity.staging / "chunk.zst.enc"
+            encrypted = self.parity.staging / "chunk.zst.cms"
             encrypt(path, encrypted, self.certificate)
             path.unlink()
             path = encrypted

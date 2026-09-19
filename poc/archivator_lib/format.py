@@ -13,7 +13,7 @@ CHUNK_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})_"
     rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
     r"offset-(?P<offset>[0-9]{20})_length-(?P<length>[0-9]{12})"
-    r"\.zst(?P<encrypted>\.enc)?"
+    r"\.zst(?P<encrypted>\.cms)?"
 )
 
 
@@ -45,7 +45,7 @@ def chunk_name(archive, parity, chunk, stream, offset, length, encrypted):
         f"archive-{archive}_parity-{parity}_chunk-{chunk:04d}_"
         f"stream-{stream}_offset-{offset:020d}_length-{length:012d}.zst"
     )
-    return name + ".enc" if encrypted else name
+    return name + ".cms" if encrypted else name
 
 
 def parse_chunk(name):

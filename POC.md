@@ -167,7 +167,7 @@ No spaces. No Unicode. Lowercase only.
 Example encrypted chunk:
 
 ```text
-archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst.enc
+archive-<aid>_parity-<pid>_chunk-0003_stream-<sid>_offset-00000000000805306368_length-000268435456.zst.cms
 ```
 
 Unencrypted:
@@ -451,7 +451,7 @@ Use binary CMS AuthEnvelopedData with AES-256-GCM and DER encoding, via
 both OAEP and MGF1 explicitly use SHA-256.
 [OpenSSL CMS options](https://docs.openssl.org/3.5/man1/openssl-cms/)
 
-Each chunk is encrypted independently and stored with the **`.zst.enc`** suffix.
+Each chunk is encrypted independently and stored with the **`.zst.cms`** suffix.
 OpenSSL generates the content key and GCM nonce; restore checks authentication
 before decompression and removes failed decryption output.
 

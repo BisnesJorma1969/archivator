@@ -39,7 +39,7 @@ in those locations, in scratch for restore/verify or by renames for in-place rep
 | `metadata_inventory_stream-<sid>.jsonl.zst` | Only for TAR streams: contained source paths, types, metadata, and file checksums |
 | `metadata_recipient.pem` | Optional normalized public X.509 certificate |
 | `parity-<pid>_manifest.json.zst` | One manifest beside each data set: chunk coordinates, hashes, lengths, and recovery capacity; protected by metadata PAR2 |
-| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.enc]` | Independent stored chunk |
+| `parity-<pid>_chunk-<number>_stream-<sid>_offset-<offset>_length-<length>.zst[.cms]` | Independent stored chunk |
 | `parity-<pid>.par2` and `.vol<start>+<count>.par2` | Data PAR2 index and four approximately uniform volumes |
 | `metadata_checksums.json.zst` | SHA-256 map for ordinary metadata and data-set PAR2 files |
 | `metadata.par2` and `metadata.vol<start>+<count>.par2` | One metadata recovery set per archive; no separate set ID |
@@ -66,7 +66,7 @@ normal authoritative content digest; restore also verifies recorded SHA-512.
 Each chunk is an independent zstd frame, compressed at level 3 with
 `--single-thread --check` and no dictionary. Frames contain no source filename or
 timestamp. Encrypted chunks wrap that zstd data in binary OpenSSL CMS
-AuthEnvelopedData with AES-256-GCM and DER encoding, stored as `.zst.enc`.
+AuthEnvelopedData with AES-256-GCM and DER encoding, stored as `.zst.cms`.
 The recipient uses RSA of at least 3072 bits with RSA-OAEP, SHA-256, and
 MGF1-SHA-256. These algorithm parameters are encoded in CMS. Encryption does not
 change plaintext stream coordinates. No private key is copied into archive metadata.

@@ -38,7 +38,7 @@ class EncryptionTests(ArchiveTest):
             with patch("poc.archivator_lib.backup.encrypt", side_effect=check_and_encrypt):
                 backup(self.source, self.archive, certificate, SMALL)
             self.assertTrue(encrypted_chunks)
-            chunk = next(self.archive.rglob("*.zst.enc"))
+            chunk = next(self.archive.rglob("*.zst.cms"))
             decoded = self.root / "decoded.zst"
             for reuse_output in (False, True):
                 with self.subTest(reuse_output=reuse_output):
@@ -53,7 +53,7 @@ class EncryptionTests(ArchiveTest):
         key, certificate = self.certificate()
         plaintext = self.root / "plaintext"
         plaintext.write_bytes(b"independent chunk" * 100)
-        encrypted = self.root / "chunk.zst.enc"
+        encrypted = self.root / "chunk.zst.cms"
         encrypt(plaintext, encrypted, certificate)
         structure = run([executable("openssl"), "asn1parse", "-inform", "DER",
                          "-in", str(encrypted)])
@@ -70,7 +70,7 @@ class EncryptionTests(ArchiveTest):
         key, certificate = self.certificate()
         plaintext = self.root / "plaintext"
         plaintext.write_bytes(b"private chunk" * 100)
-        encrypted = self.root / "chunk.zst.enc"
+        encrypted = self.root / "chunk.zst.cms"
         encrypt(plaintext, encrypted, certificate)
         structure = run([executable("openssl"), "asn1parse", "-inform", "DER",
                          "-in", str(encrypted)])
