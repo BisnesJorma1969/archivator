@@ -32,7 +32,7 @@ class ScanTests(ArchiveTest):
     def test_scan_reads_names_not_payload_or_metadata_contents(self):
         name = self.write_chunk(b"payload")
         (self.archive / name).write_bytes(b"not even a zstd frame")
-        (self.archive / ("archive-" + "a" * 32 + "_metadata_complete.json")).write_bytes(b"invalid json")
+        (self.archive / ("archive-" + "a" * 32 + "_metadata_catalog-root.json")).write_bytes(b"invalid json")
         nested = self.archive / "nested" / "deeper"
         nested.mkdir(parents=True)
         (self.archive / name).rename(nested / name)

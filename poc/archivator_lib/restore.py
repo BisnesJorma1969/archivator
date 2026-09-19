@@ -155,7 +155,7 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
                 offset = member["offset"] + member["length"]
             if offset != stream["size"]:
                 skipped.add(stream_id)
-        if skipped and archive.complete:
+        if skipped and archive.catalog_root:
             raise IntegrityError("Chunk ranges do not cover their streams")
         for stream_id in skipped:
             print(f"Skipping incomplete stream {stream_id}: missing or overlapping chunks", flush=True)
@@ -224,7 +224,7 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
             if entry["type"] == "symlink":
                 os.symlink(entry["symlink_target"], target / entry["path"])
         restore_metadata(target, entries)
-        complete = archive.complete is not None and not skipped
+        complete = archive.catalog_root is not None and not skipped
     print(f"Restore {'complete' if complete else 'of available streams finished'}: {target}; "
           "content checksums verified. Archive files were not modified.")
     return 0 if complete else 1

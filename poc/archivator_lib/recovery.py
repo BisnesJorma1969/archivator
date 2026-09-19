@@ -12,7 +12,7 @@ from .external import check_parity, create_parity
 from .filesystem import relative_path
 from .format import ARCHIVE_NAME, ID, Settings, archive_filename, metadata_prefix, parity_prefix, parse_chunk, stored_path
 from .limits import parity_plan
-from .metadata import completion_digest, completion_names, unpack_metadata
+from .metadata import catalog_root_digest, catalog_root_names, unpack_metadata
 from .progress import progress
 
 
@@ -59,7 +59,7 @@ def discover(root):
 class Archive:
     id: str
     files: dict
-    complete: dict | None
+    catalog_root: dict | None
     metadata: Path
     checksums: dict = field(default_factory=dict)
     format: dict = field(default_factory=dict)
@@ -162,16 +162,16 @@ def validate_entries(entries):
 
 
 
-def read_completion(archive_id, files):
+def read_catalog_root(archive_id, files):
     valid, damaged = [], []
-    for name in completion_names(archive_id):
+    for name in catalog_root_names(archive_id):
         path = files.get(name)
         try:
             if path is None or path.is_symlink():
                 raise IntegrityError("Missing marker")
             marker = read_json(path)
             if (marker["version"] != 1 or marker["archive"] != archive_id
-                    or marker["marker_sha256"] != completion_digest(marker)
+                    or marker["marker_sha256"] != catalog_root_digest(marker)
                     or not isinstance(marker["groups"], int) or marker["groups"] < 1):
                 raise IntegrityError("Invalid marker")
             settings = Settings(**marker["settings"])
@@ -180,9 +180,9 @@ def read_completion(archive_id, files):
         except (OSError, ArchiveError, KeyError, TypeError, ValueError):
             damaged.append(name)
     if not valid:
-        raise IntegrityError("No valid completion marker copy")
+        raise IntegrityError("No valid catalog-root marker copy")
     if any(marker != valid[0] for marker in valid[1:]):
-        raise IntegrityError("Valid completion marker copies disagree; cannot choose a checksum root")
+        raise IntegrityError("Valid catalog-root marker copies disagree; cannot choose a checksum root")
     return valid[0], damaged
 
 
@@ -290,10 +290,10 @@ def repair_verified_set(directory, prefix, hashes, settings, parity_hashes, repl
 
 
 def load_central(archive, original, in_place):
-    link = archive.complete["last"]
-    settings = Settings(**archive.complete["settings"])
+    link = archive.catalog_root["last"]
+    settings = Settings(**archive.catalog_root["settings"])
     seen = set()
-    for number in range(archive.complete["groups"]):
+    for number in range(archive.catalog_root["groups"]):
         if link is None:
             raise IntegrityError("Metadata chain ended early")
         validate_link(link, archive.id, settings.par2)
@@ -305,7 +305,7 @@ def load_central(archive, original, in_place):
         group_prefix = parity_prefix(archive.id, parity_id)
         suffix = ".zst" if settings.compression else ""
         receipt_name = prefix + "_checksums.json" + suffix
-        print(f"Checking metadata set {number + 1}/{archive.complete['groups']}: {parity_id}", flush=True)
+        print(f"Checking metadata set {number + 1}/{archive.catalog_root['groups']}: {parity_id}", flush=True)
         if in_place:
             directory = original.root / "metadata" / parity_id[:2]
             directory.mkdir(parents=True, exist_ok=True)
@@ -402,12 +402,12 @@ def load_central(archive, original, in_place):
         name = group_prefix + "_metadata_index-chunks.json" + suffix
         manifest = read_json(unpack_metadata(directory / name, archive.metadata))
         manifest = validate_manifest(manifest, archive.id, name, hashes[name])
-        if manifest["settings"] != archive.complete["settings"]:
-            raise IntegrityError("Group settings disagree with completion marker")
+        if manifest["settings"] != archive.catalog_root["settings"]:
+            raise IntegrityError("Group settings disagree with catalog-root marker")
         archive.manifests.append(manifest)
         link = receipt["previous"]
     if link is not None:
-        raise IntegrityError("Metadata chain exceeds the completion marker's group count")
+        raise IntegrityError("Metadata chain exceeds the catalog-root marker's group count")
     archive.manifests.reverse()
 
 
@@ -530,7 +530,7 @@ def load_sources(archive, key, certificate):
     for stream in streams.values():
         if stream["type"] == "file":
             entries[stream["path"]] = stream
-        if archive.complete and (not valid_digest(stream.get("sha256"))
+        if archive.catalog_root and (not valid_digest(stream.get("sha256"))
                                  or not re.fullmatch(r"[0-9a-f]{128}", stream.get("sha512", ""))):
             raise IntegrityError("Missing completed stream checksum")
     archive.streams = list(streams.values())
@@ -546,13 +546,13 @@ def load_sources(archive, key, certificate):
 def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
     with scratch("metadata-") as temporary:
         try:
-            marker_names = completion_names(archive_id)
-            complete, marker_damage = (None, [])
+            marker_names = catalog_root_names(archive_id)
+            catalog_root, marker_damage = (None, [])
             if any(name in files for name in marker_names):
-                complete, marker_damage = read_completion(archive_id, files)
-            archive = Archive(archive_id, dict(files), complete, Path(temporary))
+                catalog_root, marker_damage = read_catalog_root(archive_id, files)
+            archive = Archive(archive_id, dict(files), catalog_root, Path(temporary))
             archive.metadata_damage.extend(marker_damage)
-            if complete:
+            if catalog_root:
                 load_central(archive, files, in_place)
             else:
                 load_local(archive, files, in_place)
@@ -691,13 +691,13 @@ def repair(root, archive_id=None):
                             shutil.copyfile(good, path)
                 recover_set(archive, manifest, directory, replenish=True)
                 completed += 1
-            if archive.complete:
-                for name in completion_names(selected):
+            if archive.catalog_root:
+                for name in catalog_root_names(selected):
                     path = Path(root) / "metadata" / name
                     if name in archive.metadata_damage:
-                        write_json(path, archive.complete)
+                        write_json(path, archive.catalog_root)
             else:
-                print("Local groups repaired; no completion marker invented for an unproven full archive.")
+                print("Local groups repaired; no catalog-root marker invented for an unproven full archive.")
     except (ArchiveError, OSError):
         print(f"In-place repair stopped after {completed} groups; changes already made remain.", flush=True)
         raise

@@ -12,22 +12,22 @@ from .format import metadata_prefix
 from .limits import check_files, parity_plan
 
 UNCOMPRESSED_METADATA_SUFFIXES = (
-    "_metadata_complete.json", "_metadata_complete-copy.json",
+    "_metadata_catalog-root.json", "_metadata_catalog-root-spare.json",
     "_format.txt", "_recipient.pem",
 )
 
 
-def completion_names(archive_id):
-    return [f"archive-{archive_id}_metadata_complete.json",
-            f"archive-{archive_id}_metadata_complete-copy.json"]
+def catalog_root_names(archive_id):
+    return [f"archive-{archive_id}_metadata_catalog-root.json",
+            f"archive-{archive_id}_metadata_catalog-root-spare.json"]
 
 
 def json_bytes(value):
     return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
 
 
-def completion_digest(complete):
-    payload = {key: value for key, value in complete.items() if key != "marker_sha256"}
+def catalog_root_digest(root):
+    payload = {key: value for key, value in root.items() if key != "marker_sha256"}
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -84,7 +84,7 @@ class MetadataWriter:
     """One small central recovery set per data group, linked by SHA-256.
 
     Each protected receipt covers the preceding receipt and its PAR2 files.
-    Only the final link lives in the two small completion markers. Thus neither
+    Only the final link lives in the two small catalog-root markers. Thus neither
     a million groups nor their checksum list makes a giant bootstrap file.
     """
 
@@ -147,10 +147,10 @@ class MetadataWriter:
     def finish(self):
         marker = {"version": 1, "archive": self.archive_id, "groups": self.count,
                   "settings": vars(self.settings), "last": self.previous}
-        marker["marker_sha256"] = completion_digest(marker)
+        marker["marker_sha256"] = catalog_root_digest(marker)
         directory = self.archive / "metadata"
         directory.mkdir(exist_ok=True)
-        paths = [self.archive / ".tmp" / name for name in completion_names(self.archive_id)]
+        paths = [self.archive / ".tmp" / name for name in catalog_root_names(self.archive_id)]
         for path in paths:
             write_json(path, marker)
         check_files(paths, self.settings.max_file_bytes, self.settings.max_group_bytes)

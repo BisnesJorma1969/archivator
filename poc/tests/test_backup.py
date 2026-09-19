@@ -70,11 +70,11 @@ class BackupTests(ArchiveTest):
         self.assertTrue(manifests(self.archive))
         self.assertTrue(all(not manifest["members"] for manifest in manifests(self.archive)))
 
-    def test_failure_does_not_publish_completion_marker(self):
+    def test_failure_does_not_publish_catalog_root(self):
         with patch("poc.archivator_lib.backup.create_parity", side_effect=ArchiveError("simulated failure")):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.rglob("*_metadata_complete.json")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_catalog-root.json")))
         self.assertFalse((self.archive / ".tmp").exists())
 
     def test_compressor_failure_aborts_backup(self):
@@ -86,4 +86,4 @@ class BackupTests(ArchiveTest):
         with patch("poc.archivator_lib.external.executable", side_effect=lambda name: str(compressor) if name == "zstd" else real(name)):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.rglob("*_metadata_complete.json")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_catalog-root.json")))

@@ -68,7 +68,7 @@ usable group capacity for the destination medium.
 The file ceiling applies to **every final file**: plain or encoded payload, manifests,
 inventories, checksum receipts, bootstrap files, PAR2 indexes, and volumes.
 The group ceiling includes data, local metadata, and **all PAR2 overhead**.
-Central metadata recovery sets obey the same two ceilings. The two completion
+Central metadata recovery sets obey the same two ceilings. The two catalog-root
 copies form a separate small bootstrap set and are checked together.
 
 The implementation reserves compression expansion, measured CMS wrapper space,
@@ -248,12 +248,13 @@ For each group:
 
 The local manifest never hashes PAR2 generated from itself. Each central receipt
 also records the previous central receipt's stored SHA-256 and PAR2 hashes. The
-last link and group count go into two identical self-checksummed completion
-markers, published last. This bounded chain avoids one unbounded archive-wide
+last link, group count, and settings go into two identical self-checksummed
+**catalog-root markers**, one primary and one `-spare`, published last. These are
+small checksum-chain roots, not copies of the complete catalog. This bounded chain avoids one unbounded archive-wide
 checksum list or marker. Each central recovery set is independently bounded.
 
 The first central set additionally protects a small uncompressed format note and
-normalized public recipient certificate when encrypted. These and completion
+normalized public recipient certificate when encrypted. These and catalog-root
 markers are the explicit uncompressed roles. Inventories, manifests, and receipts
 use zstd when compression is enabled, regardless of size or compression ratio;
 otherwise they remain JSON/JSONL, with CMS wrapping source inventories if encrypted.
@@ -292,8 +293,8 @@ ARCHIVE/
       archive-<aid>_metadata_parity-<pid>_checksums.json[.zst]
       archive-<aid>_metadata_parity-<pid>.par2
       archive-<aid>_metadata_parity-<pid>.vol...par2
-    archive-<aid>_metadata_complete.json
-    archive-<aid>_metadata_complete-copy.json
+    archive-<aid>_metadata_catalog-root.json
+    archive-<aid>_metadata_catalog-root-spare.json
 ```
 
 Only populated shard directories are created. Many groups can share a shard.
@@ -322,7 +323,7 @@ rejected. Archive-file mtimes and enumeration order have no recovery significanc
   damaged/unknown inputs before scratch PAR2 repair; no CoW. Failed/cross-device
   hardlinks fall back to ordinary copies. Archives are never modified.
 
-A valid completion marker anchors the full catalog. Either marker copy suffices;
+A valid catalog-root marker anchors the full catalog. Either marker copy suffices;
 conflicting valid copies are rejected. A surviving local group can also be
 restored without the central directory/markers. Report that original backup
 completeness cannot be proved, and return 1 for that partial-catalog mode.
@@ -437,7 +438,7 @@ The following gaps are recognized; their production remedies are intentionally
    trusted channel. Its fingerprint inside unsigned archive metadata is not a
    trust anchor. Production needs an explicit trust/pinning policy, with long-term
    decryption remaining possible after a certificate expires.
-3. **Archive authenticity and context binding.** Metadata and completion markers
+3. **Archive authenticity and context binding.** Metadata and catalog-root markers
    are unsigned. SHA-256 and PAR2 detect/repair accidental damage, not malicious
    replacement. Chunk GCM tags do not authenticate the backup's author or bind
    external archive IDs, stream IDs, offsets, and catalogs. Anyone with the public

@@ -57,9 +57,9 @@ class SafetyTests(ArchiveTest):
         with self.assertRaises(IntegrityError):
             extract_tar(bundle_path, self.restored, [{"path": "file", "type": "file", "size": 0}])
 
-    def test_malformed_completion_marker_is_an_integrity_failure(self):
+    def test_malformed_catalog_root_is_an_integrity_failure(self):
         backup(self.source, self.archive, settings=SMALL)
-        next(self.archive.rglob("*_metadata_complete.json")).write_text('{"version": 1}')
+        next(self.archive.rglob("*_metadata_catalog-root.json")).write_text('{"version": 1}')
         self.assertEqual(verify(self.archive), 1)
 
     def test_precision_loss_is_reported_without_emulation(self):
@@ -83,7 +83,7 @@ class SafetyTests(ArchiveTest):
         entry = {"path": "file", "type": "file", "mode": 0o644, "mtime_ns": -500000000, "size": 0}
         self.assertEqual(tar_info(entry).pax_headers["mtime"], "-0.500000000")
 
-    def test_source_mutation_aborts_without_completion_marker(self):
+    def test_source_mutation_aborts_without_catalog_root(self):
         (self.source / "file").write_bytes(b"before")
         changed = False
 
@@ -97,4 +97,4 @@ class SafetyTests(ArchiveTest):
         with patch("poc.archivator_lib.backup.check_unchanged", side_effect=change_after_check):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.rglob("*_metadata_complete.json")))
+        self.assertFalse(list(self.archive.rglob("*_metadata_catalog-root.json")))

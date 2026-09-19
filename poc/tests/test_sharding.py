@@ -16,7 +16,7 @@ class ShardingTests(ArchiveTest):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         for path in self.archive.rglob("archive-*"):
-            if "_complete" in path.name:
+            if "_catalog-root" in path.name:
                 self.assertEqual(path.parent, self.archive / "metadata")
             else:
                 parity_id = path.name.split("_parity-")[1][:32]

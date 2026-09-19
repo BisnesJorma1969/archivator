@@ -3,7 +3,7 @@ import shutil
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import IntegrityError, read_json, sha256, write_json
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.metadata import completion_digest, completion_names
+from poc.archivator_lib.metadata import catalog_root_digest, catalog_root_names
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL
@@ -45,7 +45,7 @@ class MetadataTests(ArchiveTest):
 
     def test_either_marker_copy_supports_restore_and_repair(self):
         archive_id = self.make_archive()
-        for index, name in enumerate(completion_names(archive_id)):
+        for index, name in enumerate(catalog_root_names(archive_id)):
             next(self.archive.rglob(name)).unlink()
             before = snapshot(self.archive)
             self.assertEqual(verify(self.archive), 1)
@@ -56,10 +56,10 @@ class MetadataTests(ArchiveTest):
 
     def test_two_valid_but_conflicting_markers_are_not_guessed(self):
         archive_id = self.make_archive()
-        path = next(self.archive.rglob(completion_names(archive_id)[0]))
+        path = next(self.archive.rglob(catalog_root_names(archive_id)[0]))
         marker = read_json(path)
         marker["groups"] += 1
-        marker["marker_sha256"] = completion_digest(marker)
+        marker["marker_sha256"] = catalog_root_digest(marker)
         write_json(path, marker)
         with self.assertRaisesRegex(IntegrityError, "copies disagree"):
             restore(self.archive, self.restored)

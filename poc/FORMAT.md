@@ -19,7 +19,7 @@ Directories/symlinks alone need only inventory records, not payload chunks.
 
 The local group lives under `ARCHIVE/<pid[:2]>/`. Its identical metadata copies
 and separate central PAR2 live under `ARCHIVE/metadata/<pid[:2]>/`. Only populated
-shards are created; several groups can share one shard. Completion markers live
+shards are created; several groups can share one shard. Catalog-root markers live
 under `ARCHIVE/metadata/`. Optional `.zst` and `.cms` suffixes describe the enabled
 transforms. PAR2 files exist only when enabled; group IDs and the `parity-` name
 component are used regardless.
@@ -35,7 +35,7 @@ component are used regardless.
 | `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
 | `metadata_parity-<pid>_format.txt` | Small uncompressed format/settings note, in the first central set |
 | `metadata_parity-<pid>_recipient.pem` | Optional normalized public certificate, in the first central set |
-| `metadata_complete.json`, `metadata_complete-copy.json` | Identical uncompressed completion markers |
+| `metadata_catalog-root.json`, `metadata_catalog-root-spare.json` | Identical uncompressed catalog-root markers |
 
 **Inventories are metadata, not compressed file content.** Stream IDs inside
 the inventory match the payload chunk names. TAR entries list members; RAW entries
@@ -96,10 +96,11 @@ then write the central receipt with the finished data-PAR2 hashes. Central PAR2
 protects that receipt and the copies. No manifest hashes its own PAR2.
 
 Each receipt links backward to the preceding central receipt's SHA-256 and PAR2
-hashes. Completion markers hold only the last link, group count, and settings,
+hashes. Catalog-root markers hold only the last link, group count, and settings,
 so they do not grow with the archive's group count. `marker_sha256` hashes
 canonical ASCII JSON, sorted keys and compact separators, excluding that field.
-Markers are published last, are outside PAR2, and are not signed. Without PAR2,
+These files contain the checksum-chain root, not the full catalog. The `-spare`
+file is byte-identical to the primary. Markers are published last, are outside PAR2, and are not signed. Without PAR2,
 the copies, receipts, and checksum chain still exist; parity-hash maps are empty.
 
 ## Sizing and recovery capacity
@@ -164,7 +165,7 @@ Check stored SHA-256 values before decoding payload.
 For central metadata recovery, copy that set's files from `metadata/<pid[:2]>`
 into scratch and run the same PAR2 commands against its `metadata_parity-<pid>`
 prefix. Its protected receipt identifies the previous central set. Either valid
-completion marker supplies the final checksum root.
+catalog-root marker supplies the final checksum root.
 
 ### 2. Inspect source metadata
 

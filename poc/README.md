@@ -112,7 +112,7 @@ basenames are rejected. Verify checks all discovered archive IDs by default.
 Repair, restore, and scan require `--archive-id` when several archives are present.
 Archive-file mtimes and directory order are irrelevant.
 
-Either self-checksummed completion-marker copy anchors the central catalog.
+Either self-checksummed catalog-root copy anchors the central catalog.
 Conflicting valid copies are rejected. Backup cannot resume, and failed work is
 not marked complete. A failed restore can leave verified files or partial scratch
 output in its destination; retry into a fresh empty directory.

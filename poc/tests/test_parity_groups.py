@@ -22,7 +22,7 @@ class ParityGroupTests(ArchiveTest):
             totals = defaultdict(int)
             for path in archive.rglob("archive-*"):
                 self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes, path.name)
-                if "_complete" in path.name:
+                if "_catalog-root" in path.name:
                     group = "bootstrap"
                 else:
                     group = ("central" if "metadata" in path.relative_to(archive).parts else "local",
@@ -139,6 +139,6 @@ class ParityGroupTests(ArchiveTest):
         with patch.object(ZstdWriter, "finish", oversized):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
-        self.assertFalse(list(self.archive.rglob("*_complete.json")))
+        self.assertFalse(list(self.archive.rglob("*_catalog-root.json")))
         self.assertTrue(all(path.stat().st_size <= SMALL.max_file_bytes
                             for path in self.archive.rglob("*") if path.is_file()))

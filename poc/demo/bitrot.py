@@ -100,7 +100,7 @@ def sample_bytes(paths, budget, damage, rng):
 def file_category(path):
     """Filename hints for the report only; contents and format are not checked."""
     name = path.name
-    if name.endswith(("_metadata_complete.json", "_metadata_complete-copy.json")):
+    if name.endswith(("_metadata_catalog-root.json", "_metadata_catalog-root-spare.json")):
         return "bootstrap"
     if name.endswith(".par2"):
         return "metadata_parity" if "_metadata_parity-" in name else "data_parity"
@@ -282,7 +282,7 @@ def main(argv=None):
     parser.add_argument("--damage", choices=("mixed", *DAMAGE_TYPES), default="mixed",
                         help="Mixed faults or one specific pattern (default: mixed)")
     parser.add_argument("--include-bootstrap", action="store_true",
-                        help="Also damage both completion-marker copies; recovery fails if neither survives")
+                        help="Also damage both catalog-root copies; recovery fails if neither survives")
     parser.add_argument("--dry-run", action="store_true", help="Write a damage plan without changing archives")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
