@@ -33,7 +33,8 @@ class ArchiveFiles(dict):
 
 
 def group_metadata(name):
-    return bool(re.fullmatch(rf"archive-{ID}_parity-{ID}_(?:manifest\.json\.zst|metadata_[a-z0-9_.-]+)", name))
+    return bool(re.fullmatch(rf"archive-{ID}_parity-{ID}_metadata_index-"
+                             r"(?:chunks\.json\.zst|files\.jsonl\.zst(?:\.cms)?)", name))
 
 
 def discover(root):
@@ -220,7 +221,7 @@ def validate_manifest(manifest, archive_id, name, digest):
         raise IntegrityError("Invalid parity ID")
     prefix = parity_prefix(archive_id, parity_id)
     if (manifest["version"] != 1 or manifest["archive"] != archive_id
-            or name != prefix + "_manifest.json.zst" or manifest["compression"] != "zstd"):
+            or name != prefix + "_metadata_index-chunks.json.zst" or manifest["compression"] != "zstd"):
         raise IntegrityError("Inconsistent group manifest")
     settings = Settings(**manifest["settings"])
     if manifest["encryption"] not in ("none", "cms-aes-256-gcm"):
@@ -371,7 +372,7 @@ def load_central(archive, original, in_place):
                     raise IntegrityError("Local metadata recovery failed checksum validation")
                 (directory / name).unlink(missing_ok=True)
                 shutil.copyfile(path, directory / name)
-            manifest_name = group_prefix + "_manifest.json.zst"
+            manifest_name = group_prefix + "_metadata_index-chunks.json.zst"
             local_manifest = read_json(unpack_metadata(local / manifest_name, archive.metadata))
             local_manifest = validate_manifest(local_manifest, archive.id, manifest_name, hashes[manifest_name])
             local_hashes = protected_hashes(local_manifest)
@@ -391,7 +392,7 @@ def load_central(archive, original, in_place):
                 if len(copies) < 2 or any(not path.is_file() or path.is_symlink() or sha256(path) != hashes[name]
                                           for path in copies):
                     archive.metadata_damage.append(name)
-        name = group_prefix + "_manifest.json.zst"
+        name = group_prefix + "_metadata_index-chunks.json.zst"
         manifest = read_json(unpack_metadata(directory / name, archive.metadata))
         archive.manifests.append(validate_manifest(manifest, archive.id, name, hashes[name]))
         link = receipt["previous"]
@@ -430,7 +431,7 @@ def load_local(archive, original, in_place):
                 stage_existing(original, [name for name in names if not name.endswith(".par2")], directory)
             if check_parity(directory, prefix, repair=True) != 0:
                 raise IntegrityError(f"Cannot recover local metadata for {parity_id}")
-        name = prefix + "_manifest.json.zst"
+        name = prefix + "_metadata_index-chunks.json.zst"
         if not (directory / name).is_file():
             raise IntegrityError(f"No usable local manifest for {parity_id}; use filename-only scan")
         manifest = read_json(unpack_metadata(directory / name, archive.metadata))

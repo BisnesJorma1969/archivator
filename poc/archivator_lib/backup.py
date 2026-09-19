@@ -73,7 +73,7 @@ class ParityWriter:
 
     def source_name(self):
         prefix = parity_prefix(self.archive_id, self.parity_id)
-        return prefix + "_metadata_inventory.jsonl.zst" + (".cms" if self.certificate else "")
+        return prefix + "_metadata_index-files.jsonl.zst" + (".cms" if self.certificate else "")
 
     def manifest(self, members, source_digest):
         return {"version": 1, "archive": self.archive_id, "parity": self.parity_id,
@@ -91,7 +91,7 @@ class ParityWriter:
         lengths = {member["filename"]: member["stored_length"] for member in members}
         lengths[self.source_name()] = source_length
         prefix = parity_prefix(self.archive_id, self.parity_id)
-        lengths[prefix + "_manifest.json.zst"] = manifest_length
+        lengths[prefix + "_metadata_index-chunks.json.zst"] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
             return False
         try:
@@ -102,7 +102,7 @@ class ParityWriter:
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
             central = {self.source_name(): source_length,
-                       prefix + "_manifest.json.zst": manifest_length,
+                       prefix + "_metadata_index-chunks.json.zst": manifest_length,
                        metadata_prefix(self.archive_id, self.parity_id) + "_checksums.json.zst": stored_bound(receipt_size)}
             for path in self.catalog.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
@@ -173,7 +173,7 @@ class ParityWriter:
         check_files([self.staging / stored], self.settings.max_file_bytes, self.settings.max_group_bytes)
         os.replace(self.staging / stored, shard / stored)
         manifest = self.manifest(self.members, sha256(shard / stored))
-        manifest_name = prefix + "_manifest.json"
+        manifest_name = prefix + "_metadata_index-chunks.json"
         write_json(self.staging / manifest_name, manifest)
         manifest_name = store_metadata(self.staging / manifest_name, self.staging)
         check_files([self.staging / manifest_name], self.settings.max_file_bytes, self.settings.max_group_bytes)

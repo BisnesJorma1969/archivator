@@ -55,5 +55,5 @@ def catalog(archive, key=None):
 
 
 def manifests(archive):
-    unique = {path.name: path for path in archive.rglob("*_manifest.json.zst")}
+    unique = {path.name: path for path in archive.rglob("*_metadata_index-chunks.json.zst")}
     return [read_zstd_json(path) for path in unique.values()]

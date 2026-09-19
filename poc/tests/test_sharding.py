@@ -27,7 +27,7 @@ class ShardingTests(ArchiveTest):
     def test_flat_mixed_layout_and_missing_local_manifest(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        local = next(path for path in self.archive.rglob("*_manifest.json.zst")
+        local = next(path for path in self.archive.rglob("*_metadata_index-chunks.json.zst")
                      if "metadata" not in path.relative_to(self.archive).parts)
         local.unlink()
         buckets = [self.archive / "loose-a", self.archive / "loose-b"]
@@ -46,7 +46,7 @@ class ShardingTests(ArchiveTest):
 
     def test_symlink_recovery_directory_is_rejected(self):
         backup(self.source, self.archive, settings=SMALL)
-        local = next(path for path in self.archive.rglob("*_manifest.json.zst")
+        local = next(path for path in self.archive.rglob("*_metadata_index-chunks.json.zst")
                      if "metadata" not in path.relative_to(self.archive).parts)
         displaced = self.root / "displaced"
         local.parent.rename(displaced)

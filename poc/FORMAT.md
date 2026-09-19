@@ -24,8 +24,8 @@ under `ARCHIVE/metadata/`.
 | --- | --- |
 | `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar.zst[.cms]` | One complete, independently extractable TAR |
 | `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw.zst[.cms]` | Original file bytes: a whole file or a fragment |
-| `parity-<pid>_manifest.json.zst` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
-| `parity-<pid>_metadata_inventory.jsonl.zst[.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
+| `parity-<pid>_metadata_index-chunks.json.zst` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
+| `parity-<pid>_metadata_index-files.jsonl.zst[.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
 | `parity-<pid>.par2`, `parity-<pid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
 | `metadata_parity-<pid>_checksums.json.zst` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
 | `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
@@ -39,6 +39,11 @@ identify the original file and ancestors. Every data
 group has its own manifest and inventory, including groups carrying different
 pieces of one large direct stream. The `stream` term is used consistently for
 both types.
+
+`index-chunks` is the public technical index of stored chunks. `index-files`
+describes original paths and attributes for both RAW files and TAR members, so
+it is encrypted whenever the payload is encrypted. These are group-level roles,
+not separate indexes for RAW and TAR content.
 
 Generated names contain lowercase ASCII letters, digits, `_`, `-`, `.`, and
 PAR2's `+`. Chunk numbers restart at zero per group and are padded to at least
@@ -137,7 +142,7 @@ par2 repair "$base.par2"
 
 If the index is absent, give `par2` a surviving `.vol...par2` instead. Repeat for
 other groups needed by the desired direct-file stream. A TAR needs only its own
-group. Public manifests can be inspected with `zstd -dc "$base"_manifest.json.zst`.
+group. Public manifests can be inspected with `zstd -dc "$base"_metadata_index-chunks.json.zst`.
 Check stored SHA-256 values before decoding payload.
 
 For central metadata recovery, copy that set's files from `metadata/<pid[:2]>`

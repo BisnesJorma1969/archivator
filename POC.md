@@ -232,8 +232,8 @@ ARCHIVE/
   <pid[:2]>/
     archive-<aid>_parity-<pid>_chunk-...tar.zst[.cms]
     archive-<aid>_parity-<pid>_chunk-...raw.zst[.cms]
-    archive-<aid>_parity-<pid>_manifest.json.zst
-    archive-<aid>_parity-<pid>_metadata_inventory.jsonl.zst[.cms]
+    archive-<aid>_parity-<pid>_metadata_index-chunks.json.zst
+    archive-<aid>_parity-<pid>_metadata_index-files.jsonl.zst[.cms]
     archive-<aid>_parity-<pid>.par2
     archive-<aid>_parity-<pid>.vol...par2
   metadata/
