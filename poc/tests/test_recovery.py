@@ -28,7 +28,7 @@ class RecoveryTests(ArchiveTest):
     def test_in_place_data_repair_never_stages_copies_or_links(self):
         self.make_archive()
         flip(next(self.archive.rglob("*_chunk-*.zst")))
-        next(self.archive.rglob("*_metadata_group-*.vol*.par2")).unlink()
+        next(self.archive.rglob("*_datagroup-*_metadata.vol*.par2")).unlink()
         with patch("shutil.copyfile", side_effect=AssertionError("No data staging copies")), \
                 patch("os.link", side_effect=AssertionError("No repair hard links")):
             repair(self.archive)
@@ -67,10 +67,10 @@ class RecoveryTests(ArchiveTest):
 
     def test_damage_beyond_capacity_fails(self):
         self.make_archive()
-        group = next(item for item in manifests(self.archive) if item["members"])
-        for member in group["members"]:
+        datagroup = next(item for item in manifests(self.archive) if item["members"])
+        for member in datagroup["members"]:
             next(self.archive.rglob(member["filename"])).unlink()
-        for path in self.archive.rglob(f"*_group-{group['group']}*.par2"):
+        for path in self.archive.rglob(f"*_datagroup-{datagroup['datagroup']}*.par2"):
             path.unlink()
         self.assertEqual(verify(self.archive), 1)
         with self.assertRaises(IntegrityError):
@@ -88,7 +88,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()
-        volume = next(self.archive.rglob("*_metadata_group-*.vol*.par2"))
+        volume = next(self.archive.rglob("*_datagroup-*_metadata.vol*.par2"))
         flip(volume)
         self.assertEqual(verify(self.archive), 1)
         repair(self.archive)

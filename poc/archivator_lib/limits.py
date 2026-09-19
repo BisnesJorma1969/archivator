@@ -54,7 +54,7 @@ def parity_plan(members, slice_size, max_file_bytes, enabled=True, blocks=None):
     if blocks is None:
         blocks = recovery_blocks(lengths, slice_size)
     if slices > 32768 or blocks > 32768:
-        raise ArchiveError("PAR2 block capacity exceeded; close the group or increase slice size")
+        raise ArchiveError("PAR2 block capacity exceeded; close the datagroup or increase slice size")
     critical = 76 + 16 * len(members)
     for name, length in members.items():
         critical += 120 + ceil_div(len(name.encode("utf-8")), 4) * 4
@@ -81,7 +81,7 @@ def parity_plan(members, slice_size, max_file_bytes, enabled=True, blocks=None):
     return ParityPlan(blocks, volumes, total, max(index_size, volume_size(ceil_div(blocks, volumes))))
 
 
-def check_files(paths, max_file_bytes, max_group_bytes):
+def check_files(paths, max_file_bytes, max_datagroup_bytes):
     total = 0
     for path in paths:
         if not path.name.isascii() or len(path.name) > 255:
@@ -90,6 +90,6 @@ def check_files(paths, max_file_bytes, max_group_bytes):
         if size > max_file_bytes:
             raise ArchiveError(f"Output exceeds file limit: {path.name} ({size:,} > {max_file_bytes:,})")
         total += size
-    if total > max_group_bytes:
-        raise ArchiveError(f"Output group exceeds byte limit ({total:,} > {max_group_bytes:,})")
+    if total > max_datagroup_bytes:
+        raise ArchiveError(f"Output datagroup exceeds byte limit ({total:,} > {max_datagroup_bytes:,})")
     return total

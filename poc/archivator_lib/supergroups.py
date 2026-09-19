@@ -1,4 +1,4 @@
-"""Bounded, independent PAR2 sets protecting complete groups, not their PAR2 files."""
+"""Bounded, independent PAR2 sets protecting complete datagroups, not their PAR2 files."""
 
 import hashlib
 import json
@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .common import BUFFER_SIZE, ArchiveError, IntegrityError, read_json, scratch, sha256, write_json
 from .external import check_parity, create_parity
-from .format import (ID, Settings, archive_filename, group_prefix, metadata_prefix,
-                     new_id, spare_metadata_name, stored_path,
+from .format import (ID, Settings, archive_filename, datagroup_metadata, datagroup_prefix, metadata_prefix,
+                     new_id, primary_metadata_name, spare_metadata_name, stored_path,
                      supergroup_prefix)
 from .limits import ceil_div, check_files, parity_plan, stored_bound
 from .metadata import catalog_root_digest, store_metadata, unpack_metadata
@@ -20,7 +20,7 @@ from .progress import progress
 
 
 def index_name(archive_id, supergroup_id, compression):
-    return supergroup_prefix(archive_id, supergroup_id) + "_metadata_index-groups.json" + (".zst" if compression else "")
+    return supergroup_prefix(archive_id, supergroup_id) + "_metadata_index-datagroups.json" + (".zst" if compression else "")
 
 
 def arrange_parity(root, paths, settings):
@@ -29,11 +29,11 @@ def arrange_parity(root, paths, settings):
     result = []
     for path in sorted(paths, key=lambda item: item.name):
         size = path.stat().st_size
-        check_files([path], settings.max_file_bytes, settings.max_group_bytes)
-        if used + size > settings.max_group_bytes:
+        check_files([path], settings.max_file_bytes, settings.max_datagroup_bytes)
+        if used + size > settings.max_datagroup_bytes:
             part += 1
             used = 0
-        target = root / f"{part:04d}" / path.name
+        target = root / f"{part:04d}" / path.name.lower()
         target.parent.mkdir(parents=True, exist_ok=True)
         if path != target:
             os.replace(path, target)
@@ -48,52 +48,52 @@ class SupergroupWriter:
         self.archive_id = archive_id
         self.settings = settings
         self.id = new_id()
-        self.groups = []
+        self.datagroups = []
         self.previous = None
         self.count = 0
 
-    def add(self, group_id, paths, known_hashes):
+    def add(self, datagroup_id, paths, known_hashes):
         if not (self.settings.par2 and self.settings.supergroup_par2):
             return
         members = {}
         for path in paths:
             if path.suffix == ".par2":
-                raise ArchiveError("Supergroup inputs must not contain group PAR2")
+                raise ArchiveError("Supergroup inputs must not contain datagroup PAR2")
             digest = known_hashes.get(path.name)
             members[path.name] = {"size": path.stat().st_size, "sha256": digest or sha256(path)}
-        self.groups.append({"group": group_id, "members": members})
+        self.datagroups.append({"datagroup": datagroup_id, "members": members})
 
     def finish(self):
-        if not self.groups:
+        if not self.datagroups:
             self.id = new_id()
             return
         settings = self.settings
         name = index_name(self.archive_id, self.id, settings.compression)
         record = {"version": 1, "archive": self.archive_id, "supergroup": self.id,
-                  "settings": vars(settings), "groups": self.groups, "previous": self.previous}
+                  "settings": vars(settings), "datagroups": self.datagroups, "previous": self.previous}
         # Reserve the plan and self-checksum fields before choosing slice/volume
         # counts. PAR2's exact output is checked again after generation.
         size = len(json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 2048
         index_bound = stored_bound(size, compression=settings.compression)
-        if index_bound > settings.max_file_bytes or 2 * index_bound > settings.max_group_bytes:
-            raise ArchiveError("Supergroup index exceeds byte limits; reduce --supergroup-groups")
+        if index_bound > settings.max_file_bytes or 2 * index_bound > settings.max_datagroup_bytes:
+            raise ArchiveError("Supergroup index exceeds byte limits; reduce --supergroup-datagroups")
         lengths = {str(stored_path(self.root, filename).relative_to(self.root)): item["size"]
-                   for group in self.groups for filename, item in group["members"].items()}
+                   for datagroup in self.datagroups for filename, item in datagroup["members"].items()}
         lengths[str(stored_path(self.root, name).relative_to(self.root))] = index_bound
         slice_size = settings.slice_size
         while True:
-            group_blocks = [sum(ceil_div(item["size"], slice_size) for item in group["members"].values())
-                            for group in self.groups]
-            total_blocks = sum(group_blocks) + ceil_div(index_bound, slice_size)
+            datagroup_blocks = [sum(ceil_div(item["size"], slice_size) for item in datagroup["members"].values())
+                            for datagroup in self.datagroups]
+            total_blocks = sum(datagroup_blocks) + ceil_div(index_bound, slice_size)
             blocks = max(ceil_div(total_blocks, 5),
-                         ceil_div(max(group_blocks) * settings.supergroup_margin_percent, 100),
-                         max(group_blocks) + 1)
+                         ceil_div(max(datagroup_blocks) * settings.supergroup_margin_percent, 100),
+                         max(datagroup_blocks) + 1)
             if total_blocks <= 32768 and blocks <= 32768:
                 plan = parity_plan(lengths, slice_size, settings.max_file_bytes, blocks=blocks)
                 break
             slice_size *= 2
             if slice_size >= settings.max_file_bytes:
-                raise ArchiveError("Supergroup PAR2 capacity exceeds file limit; reduce --supergroup-groups")
+                raise ArchiveError("Supergroup PAR2 capacity exceeds file limit; reduce --supergroup-datagroups")
         record["par2"] = {"slice_size": slice_size, "blocks": blocks, "volumes": plan.volumes}
         record["marker_sha256"] = catalog_root_digest(record)
         target = stored_path(self.root, name)
@@ -106,19 +106,19 @@ class SupergroupWriter:
         spare = stored_path(self.root, spare_metadata_name(name))
         spare.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(target, spare)
-        check_files([target, spare], settings.max_file_bytes, settings.max_group_bytes)
-        print(f"Protecting supergroup {self.id}: {len(self.groups)} groups; "
+        check_files([target, spare], settings.max_file_bytes, settings.max_datagroup_bytes)
+        print(f"Protecting supergroup {self.id}: {len(self.datagroups)} datagroups; "
               f"{blocks:,} recovery blocks of {slice_size:,} bytes", flush=True)
         staging = self.root / ".tmp" / "supergroup-parity"
         staging.mkdir()
         prefix = supergroup_prefix(self.archive_id, self.id)
         paths = create_parity(self.root, prefix, list(lengths), slice_size, blocks, staging, plan.volumes)
-        paths = arrange_parity(self.root / self.id / "parity", paths, settings)
+        paths = arrange_parity(stored_path(self.root, prefix + ".par2").parent, paths, settings)
         staging.rmdir()
         self.previous = {"supergroup": self.id, "sha256": sha256(target),
                          "parity_hashes": {path.name: sha256(path) for path in paths}}
         self.count += 1
-        self.groups = []
+        self.datagroups = []
         self.id = new_id()
 
 
@@ -198,7 +198,7 @@ class SupergroupRecovery:
         self.cache.mkdir()
         self.in_place = in_place
         self.records = {}
-        self.by_group = {}
+        self.by_datagroup = {}
         self.links = {}
         self.damage = []
 
@@ -221,18 +221,18 @@ class SupergroupRecovery:
         settings = Settings(**record["settings"])
         if not settings.par2 or not settings.supergroup_par2:
             raise IntegrityError("Unexpected supergroup protection")
-        if not 1 <= len(record["groups"]) <= settings.supergroup_groups:
-            raise IntegrityError("Invalid supergroup group count")
-        groups = set()
+        if not 1 <= len(record["datagroups"]) <= settings.supergroup_datagroups:
+            raise IntegrityError("Invalid supergroup datagroup count")
+        datagroups = set()
         names = set()
-        for group in record["groups"]:
-            gid = group["group"]
-            if not isinstance(gid, str) or not re.fullmatch(ID, gid) or gid in groups:
-                raise IntegrityError("Invalid or duplicate group in supergroup")
-            groups.add(gid)
-            for name, item in group["members"].items():
+        for datagroup in record["datagroups"]:
+            gid = datagroup["datagroup"]
+            if not isinstance(gid, str) or not re.fullmatch(ID, gid) or gid in datagroups:
+                raise IntegrityError("Invalid or duplicate datagroup in supergroup")
+            datagroups.add(gid)
+            for name, item in datagroup["members"].items():
                 archive_filename(name, self.archive_id)
-                prefixes = (group_prefix(self.archive_id, supergroup_id, gid),
+                prefixes = (datagroup_prefix(self.archive_id, supergroup_id, gid),
                             metadata_prefix(self.archive_id, supergroup_id, gid))
                 if (not name.startswith(tuple(prefix + "_" for prefix in prefixes))
                         or name.endswith(".par2") or name in names
@@ -252,16 +252,20 @@ class SupergroupRecovery:
         pending = []
         if catalog_root and catalog_root["last_supergroup"]:
             pending.append(catalog_root["last_supergroup"])
-        pattern = re.compile(rf"archive-{self.archive_id}_supergroup-({ID})(?:_metadata_index-groups|\.)")
+        pattern = re.compile(rf"archive-{self.archive_id}_supergroup-({ID})(?:_metadata_index-datagroups|\.)")
         discovered = {match[1] for name in self.files if (match := pattern.match(name))}
         visited = set()
+        chain_seen = set()
         while pending or discovered - visited:
+            if not pending:
+                chain_seen.clear()
             link = pending.pop() if pending else {"supergroup": min(discovered - visited)}
             sid = link["supergroup"]
             if not isinstance(sid, str) or not re.fullmatch(ID, sid):
                 raise IntegrityError("Invalid supergroup chain link")
-            if sid in visited:
+            if sid in chain_seen:
                 raise IntegrityError("Supergroup chain contains a cycle or duplicate")
+            chain_seen.add(sid)
             visited.add(sid)
             self.links[sid] = link
             prefix = supergroup_prefix(self.archive_id, sid)
@@ -284,14 +288,17 @@ class SupergroupRecovery:
                     self.damage.append(prefix + " (index unavailable)")
                     print(f"Supergroup {sid}: index recovery unavailable: {error}", flush=True)
                     continue
+            # Filename-only discovery may find an earlier set before a later
+            # set links to it. Revalidate that link, but do not walk it twice.
+            if sid not in self.records:
+                for datagroup in record["datagroups"]:
+                    gid = datagroup["datagroup"]
+                    if gid in self.by_datagroup:
+                        raise IntegrityError("Datagroup belongs to more than one supergroup")
+                    self.by_datagroup[gid] = sid
+                if record["previous"] is not None:
+                    pending.append(record["previous"])
             self.records[sid] = record
-            for group in record["groups"]:
-                gid = group["group"]
-                if gid in self.by_group:
-                    raise IntegrityError("Group belongs to more than one supergroup")
-                self.by_group[gid] = sid
-            if record["previous"] is not None:
-                pending.append(record["previous"])
             primary = index_name(self.archive_id, sid, record["settings"]["compression"])
             digest = link.get("sha256") or sha256(self.files[primary])
             for name in (primary, spare_metadata_name(primary)):
@@ -312,7 +319,7 @@ class SupergroupRecovery:
             self.damage.append("incomplete supergroup catalog")
 
     def protected(self, record):
-        hashes = {name: item["sha256"] for group in record["groups"] for name, item in group["members"].items()}
+        hashes = {name: item["sha256"] for datagroup in record["datagroups"] for name, item in datagroup["members"].items()}
         name = index_name(self.archive_id, record["supergroup"], record["settings"]["compression"])
         hashes[name] = self.links[record["supergroup"]].get("sha256") or sha256(self.files[name])
         return hashes
@@ -329,16 +336,16 @@ class SupergroupRecovery:
                 shutil.copyfile(source, target)
             self.files[name] = target
 
-    def local_first(self, base, group_ids, supergroup_id):
-        for gid in group_ids:
-            for prefix in (group_prefix(self.archive_id, supergroup_id, gid),
+    def local_first(self, base, datagroup_ids, supergroup_id):
+        for gid in datagroup_ids:
+            for prefix in (datagroup_prefix(self.archive_id, supergroup_id, gid),
                            metadata_prefix(self.archive_id, supergroup_id, gid)):
                 directory = stored_path(base, prefix + ".par2").parent
                 if not directory.exists():
                     continue
                 status = check_parity(directory, prefix)
                 if status == 1:
-                    print(f"Repairing group {gid} before supergroup recovery", flush=True)
+                    print(f"Repairing datagroup {gid} before supergroup recovery", flush=True)
                     check_parity(directory, prefix, repair=True)
 
     @contextmanager
@@ -352,20 +359,20 @@ class SupergroupRecovery:
         moved = []
         try:
             for path in paths:
-                target = stored_path(self.root, path.name)
+                target = stored_path(self.root, path.name.lower())
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if path != target:
-                    if target.exists():
+                    if target.exists() and not path.samefile(target):
                         raise IntegrityError("Duplicate supergroup recovery volume")
                     path.rename(target)
                     moved.append((path, target))
-                self.files[path.name] = target
-            yield [self.files[path.name] for path in paths]
+                self.files[path.name.lower()] = target
+            yield [self.files[path.name.lower()] for path in paths]
         finally:
             for original, target in reversed(moved):
                 if target.exists():
                     target.rename(original)
-                    self.files[original.name] = original
+                    self.files[original.name.lower()] = original
 
     @contextmanager
     def workspace(self, sid, names, hashes=None):
@@ -388,10 +395,10 @@ class SupergroupRecovery:
                 yield self.root
             return
         prefix = supergroup_prefix(self.archive_id, sid)
-        # Include group/central PAR2 as well: fix locally recoverable failures
+        # Include datagroup/central PAR2 as well: fix locally recoverable failures
         # before charging any remaining damage against the outer capacity.
         extras = [name for name in self.files if name.startswith(prefix + "_") and name.endswith(".par2")]
-        extras.extend(path.name for path in self.parity_files(sid))
+        extras.extend(path.name.lower() for path in self.parity_files(sid))
         with scratch("supergroup-") as temporary:
             base = Path(temporary)
             stage_existing(self.files, list(dict.fromkeys([*names, *extras])), base,
@@ -423,13 +430,13 @@ class SupergroupRecovery:
                 if md5.hexdigest() == info["md5"]:
                     verified[name] = sha.hexdigest()
         with self.workspace(sid, names, verified) as base:
-            gids = {match[1] for name in names if (match := re.search(rf"_group-({ID})_", name))}
+            gids = {match[1] for name in names if (match := re.search(rf"_datagroup-({ID})_", name))}
             self.local_first(base, gids, sid)
             directory = stored_path(base, prefix + ".par2").parent
             if check_parity(directory, prefix, data_directory=base) == 1:
                 check_parity(directory, prefix, repair=True, data_directory=base)
             for name in names:
-                if "_metadata_index-groups.json" in name:
+                if "_metadata_index-datagroups.json" in name:
                     record = self.valid_index(stored_path(base, name), sid, digest)
                     self.save_metadata(base, names)
                     return record
@@ -446,7 +453,7 @@ class SupergroupRecovery:
             directories = {stored_path(base, name).parent for name in hashes}
             before = {directory: {Path(path.name) for path in directory.iterdir()}
                       if directory.is_dir() else set() for directory in directories}
-            self.local_first(base, [group["group"] for group in record["groups"]], sid)
+            self.local_first(base, [datagroup["datagroup"] for datagroup in record["datagroups"]], sid)
             damage = mismatches(base, hashes, archive_layout=True)
             if damage:
                 prefix = supergroup_prefix(self.archive_id, sid)
@@ -477,14 +484,17 @@ class SupergroupRecovery:
             except IntegrityError as error:
                 print(f"Supergroup metadata recovery incomplete: {error}", flush=True)
 
-    def restore_group(self, group_id, directory):
-        sid = self.by_group.get(group_id)
+    def restore_datagroup(self, datagroup_id, directory):
+        sid = self.by_datagroup.get(datagroup_id)
         if sid is None:
-            raise IntegrityError(f"No usable supergroup protects group {group_id}")
-        prefix = group_prefix(self.archive_id, sid, group_id)
+            raise IntegrityError(f"No usable supergroup protects datagroup {datagroup_id}")
+        prefix = datagroup_prefix(self.archive_id, sid, datagroup_id)
         with self.recover(sid) as base:
             for name, digest in self.protected(self.records[sid]).items():
-                if not name.startswith(prefix + "_") or "-spare.json" in name:
+                if not name.startswith(prefix + "_"):
+                    continue
+                if not ("_chunk-" in name or datagroup_metadata(name)
+                        and name == primary_metadata_name(name)):
                     continue
                 target = directory / name
                 if target.is_file() and sha256(target) == digest:
@@ -533,7 +543,7 @@ class SupergroupRecovery:
                             raise IntegrityError("Regenerated supergroup PAR2 differs from recorded checksums")
                     for path in paths:
                         path.unlink()
-                    paths = arrange_parity(self.root / sid / "parity", fresh, settings)
+                    paths = arrange_parity(stored_path(self.root, prefix + ".par2").parent, fresh, settings)
             else:
-                paths = arrange_parity(self.root / sid / "parity", paths, settings)
+                paths = arrange_parity(stored_path(self.root, prefix + ".par2").parent, paths, settings)
             self.files.update({path.name: path for path in paths})

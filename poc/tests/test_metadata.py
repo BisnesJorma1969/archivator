@@ -60,7 +60,7 @@ class MetadataTests(ArchiveTest):
         archive_id = self.make_archive()
         path = next(self.archive.rglob(catalog_root_names(archive_id)[0]))
         marker = read_json(path)
-        marker["groups"] += 1
+        marker["datagroups"] += 1
         marker["marker_sha256"] = catalog_root_digest(marker)
         write_json(path, marker)
         with self.assertRaisesRegex(IntegrityError, "copies disagree"):
@@ -108,7 +108,7 @@ class MetadataTests(ArchiveTest):
         self.assertEqual(sha256(receipt), digest)
         self.assertEqual(verify(self.archive), 0)
 
-    def test_independent_group_restores_without_central_metadata(self):
+    def test_independent_datagroup_restores_without_central_metadata(self):
         self.make_archive(True)
         shutil.rmtree(self.archive / "metadata")
         self.assertEqual(restore(self.archive, self.restored, key=self.key), 1)
@@ -124,7 +124,7 @@ class MetadataTests(ArchiveTest):
         self.assertEqual(compare(self.source, self.restored), 0)
         self.assertEqual(snapshot(self.archive), before)
 
-    def test_group_parity_rescues_metadata_when_both_copies_and_central_parity_are_lost(self):
+    def test_datagroup_parity_rescues_metadata_when_both_copies_and_central_parity_are_lost(self):
         self.make_archive()
         copies = list(self.archive.rglob("*_metadata_index-files*.zst"))
         for path in copies:
@@ -147,3 +147,64 @@ class MetadataTests(ArchiveTest):
         repair(self.archive)
         self.assertFalse(list(self.archive.rglob("*.1")))
         self.assertEqual(verify(self.archive), 0)
+
+    def test_all_bootstrap_inputs_are_small_and_recover_together(self):
+        from poc.archivator_lib.bootstrap import ROOT_SLICE_SIZE
+        archive_id = self.make_archive(True)
+        self.assertEqual(ROOT_SLICE_SIZE, 4096)
+        root = read_json(self.archive / catalog_root_names(archive_id)[0])
+        expected = {name: (self.archive / name).read_bytes()
+                    for name in [*catalog_root_names(archive_id), *root['bootstrap_files']]}
+        self.assertTrue(any(name.endswith('_format.txt') for name in expected))
+        self.assertTrue(any(name.endswith('_recipient.pem') for name in expected))
+        bootstrap = [path for path in self.archive.iterdir() if path.is_file()]
+        self.assertLess(sum(path.stat().st_size for path in bootstrap), 64 * 1024)
+        self.assertTrue(all(path.stat().st_size <= SMALL.max_file_bytes for path in bootstrap))
+        for name in expected:
+            (self.archive / name).unlink()
+        before = snapshot(self.archive)
+        self.assertEqual(verify(self.archive), 1)
+        self.assertEqual(restore(self.archive, self.restored, key=self.key), 0)
+        self.assertEqual(compare(self.source, self.restored), 0)
+        self.assertEqual(snapshot(self.archive), before)
+        repair(self.archive)
+        self.assertEqual(verify(self.archive), 0)
+        self.assertEqual({name: (self.archive / name).read_bytes() for name in expected}, expected)
+
+    def test_auxiliary_corruption_is_repaired_without_touching_read_only_inputs(self):
+        self.make_archive(True)
+        for path in self.archive.glob('*_metadata_*'):
+            if path.suffix in ('.txt', '.pem'):
+                path.write_bytes(b'corrupted public metadata')
+        before = snapshot(self.archive)
+        self.assertEqual(verify(self.archive), 1)
+        self.assertEqual(restore(self.archive, self.restored, key=self.key), 0)
+        self.assertEqual(snapshot(self.archive), before)
+        repair(self.archive)
+        self.assertEqual(verify(self.archive), 0)
+
+    def test_bootstrap_metadata_obeys_both_byte_caps_before_publication(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        from poc.archivator_lib.common import ArchiveError
+        from poc.archivator_lib.metadata import MetadataWriter
+        finish = MetadataWriter.finish
+        cases = (
+            ('file', SMALL, SMALL.max_file_bytes + 1),
+            ('media', replace(SMALL, max_datagroup_bytes=32768), 12000),
+        )
+        for label, settings, size in cases:
+            with self.subTest(limit=label):
+                archive = self.root / label
+
+                def oversized_bootstrap(writer):
+                    note = next(path for path in writer.bootstrap_files if path.suffix == '.txt')
+                    note.write_bytes(b'x' * size)
+                    finish(writer)
+
+                with patch.object(MetadataWriter, 'finish', oversized_bootstrap):
+                    with self.assertRaises(ArchiveError):
+                        backup(self.source, archive, settings=settings)
+                self.assertFalse(list(archive.glob('*_catalog-root*.json')))
+                self.assertTrue(all(path.stat().st_size <= settings.max_file_bytes
+                                    for path in archive.rglob('*') if path.is_file()))

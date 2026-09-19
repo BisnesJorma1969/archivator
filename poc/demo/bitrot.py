@@ -99,16 +99,16 @@ def sample_bytes(paths, budget, damage, rng):
 
 def file_category(path):
     """Filename hints for the report only; contents and format are not checked."""
-    name = path.name
+    name = path.name.lower()
     if name.endswith(("_metadata_catalog-root.json", "_metadata_catalog-root-spare.json")):
         return "bootstrap"
     if name.endswith(".par2"):
         if "_metadata_catalog-root" in name:
             return "bootstrap_parity"
-        if "_metadata_group-" in name:
+        if "_datagroup-" in name and "_metadata." in name:
             return "metadata_parity"
-        if "_group-" in name:
-            return "group_parity"
+        if "_datagroup-" in name:
+            return "datagroup_parity"
         return "supergroup_parity" if "_supergroup-" in name else "parity"
     if "_chunk-" in name:
         return "data"

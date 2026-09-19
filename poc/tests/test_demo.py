@@ -45,7 +45,7 @@ class DemoTests(ArchiveTest):
         report = bitrot([self.archive], percent=1, report_path=self.root / "damage.json", damage="bitflip")
         self.assertEqual(report["status"], "applied")
         self.assertEqual({group["category"] for group in report["groups"]},
-                         {"data", "group_parity", "metadata", "metadata_parity", "bootstrap_parity"})
+                         {"data", "datagroup_parity", "metadata", "metadata_parity", "bootstrap_parity"})
         changed_names = set()
         for group in report["groups"]:
             for change in group["changes"]:

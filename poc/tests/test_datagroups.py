@@ -8,10 +8,10 @@ from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
 
 
-class GroupTests(ArchiveTest):
+class DatagroupTests(ArchiveTest):
     def test_defaults_are_exact_byte_limits(self):
         self.assertEqual(Settings().max_file_bytes, 268435455)
-        self.assertEqual(Settings().max_group_bytes, 15032385536)
+        self.assertEqual(Settings().max_datagroup_bytes, 15032385536)
 
     def test_incompressible_encrypted_and_plain_outputs_obey_every_limit(self):
         key, certificate = self.certificate()
@@ -22,15 +22,15 @@ class GroupTests(ArchiveTest):
             totals = defaultdict(int)
             for path in archive.rglob("archive-*"):
                 self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes, path.name)
-                if "_catalog-root" in path.name:
-                    group = "bootstrap"
+                if path.parent == archive:
+                    datagroup = "bootstrap"
                 else:
-                    group = ("central" if "metadata" in path.relative_to(archive).parts else "local",
-                             path.parent.name, path.name.split("_group-")[-1][:24])
-                totals[group] += path.stat().st_size
-            self.assertTrue(all(size <= SMALL.max_group_bytes for size in totals.values()), totals)
+                    datagroup = ("central" if "metadata" in path.relative_to(archive).parts else "local",
+                             path.parent.name, path.name.split("_datagroup-")[-1][:20])
+                totals[datagroup] += path.stat().st_size
+            self.assertTrue(all(size <= SMALL.max_datagroup_bytes for size in totals.values()), totals)
             chunks = list(archive.rglob("*_chunk-*"))
-            self.assertGreater(len({parse_chunk(path.name)["group"] for path in chunks}), 1)
+            self.assertGreater(len({parse_chunk(path.name)["datagroup"] for path in chunks}), 1)
             restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
             self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
 
@@ -52,13 +52,13 @@ class GroupTests(ArchiveTest):
                 elif members[0]["offset"] > 0:
                     self.assertEqual(manifest["members"][0]["stream"], sid)
             for sid in ids:
-                by_stream[sid].add(manifest["group"])
+                by_stream[sid].add(manifest["datagroup"])
         for stream in descriptions.values():
             if stream["type"] == "tar":
                 self.assertEqual(len(by_stream[stream["stream"]]), 1)
-        self.assertTrue(any(len(groups) > 1 for groups in by_stream.values()))
-        self.assertTrue(any(len({member["stream"] for member in group["members"]}) > 1
-                            for group in manifests(self.archive)))
+        self.assertTrue(any(len(datagroups) > 1 for datagroups in by_stream.values()))
+        self.assertTrue(any(len({member["stream"] for member in datagroup["members"]}) > 1
+                            for datagroup in manifests(self.archive)))
 
     def test_tar_continues_across_directories_and_singleton_falls_back(self):
         for name in ("one", "two"):
@@ -114,10 +114,10 @@ class GroupTests(ArchiveTest):
         import shutil
         (self.source / "large").write_bytes(self.data(300000))
         backup(self.source, self.archive, settings=SMALL)
-        group = next(item for item in manifests(self.archive) if item["members"])
+        datagroup = next(item for item in manifests(self.archive) if item["members"])
         isolated = self.root / "isolated"
         isolated.mkdir()
-        for path in (self.archive / group["supergroup"] / group["group"][:2]).glob(f"*_group-{group['group']}*"):
+        for path in (self.archive / "data" / datagroup["supergroup"][:2] / datagroup["supergroup"] / datagroup["datagroup"]).glob(f"*_datagroup-{datagroup['datagroup']}*"):
             shutil.copyfile(path, isolated / path.name)
         self.assertEqual(restore(isolated, self.restored), 1)
         self.assertFalse((self.restored / "large").exists())

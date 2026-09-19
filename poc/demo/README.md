@@ -27,7 +27,7 @@ assumptions, not measured office-population statistics:
 | `.txt` | 7% | 16 KiB | 1–512 KiB | Repeated text |
 
 The three `.bak` files receive 75% of the SQL byte budget; nine `.trn` files
-receive 25%. Sizes vary within each group. Payloads mix 35–65% fresh random bytes
+receive 25%. Sizes vary within each size range. Payloads mix 35–65% fresh random bytes
 with repeated record-like bytes. Default `.bak` files exceed the PoC's derived
 direct-file threshold (slightly below 256 MiB by default) and span multiple chunks.
 
@@ -111,7 +111,7 @@ metadata, including their compressed `.zst` and encrypted `.zst.cms` representat
 still count toward the total backup size. If the requested budget exceeds eligible
 bytes, it is capped and the actual percentage is reported. Add `--include-bootstrap`
 to include both copies; bootstrap can use an intact marker or its PAR2. Local
-groups and filename-only recovery do not require those markers. High percentages can also exhaust
+datagroups and filename-only recovery do not require those markers. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 
 There is no archive-format parsing or integrity precheck. Arbitrary regular files,

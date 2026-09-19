@@ -11,12 +11,12 @@ from pathlib import Path
 from .common import ArchiveError, BUFFER_SIZE, IntegrityError, scratch
 from .external import ZstdWriter, check_parity, executable, run
 from .filesystem import empty_destination, relative_path
-from .format import CHUNK_NAME, ID, parse_chunk, group_prefix
+from .format import CHUNK_NAME, ID, parse_chunk, datagroup_prefix
 from .progress import progress
 from .recovery import discover, select, stage_existing
 
 DATA_PARITY_NAME = re.compile(
-    rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})_group-(?P<group>{ID})"
+    rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})_datagroup-(?P<datagroup>{ID})"
     r"(?:\.vol[0-9]+\+[0-9]+)?\.par2")
 SUPER_PARITY_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})"
@@ -25,7 +25,7 @@ SUPER_PARITY_NAME = re.compile(
 
 def index_names(names, archive_id):
     """Validate portable basenames and derive all coordinates from them."""
-    groups = {}
+    datagroups = {}
     chunks = {}
     supergroups = {}
     for name in names:
@@ -53,11 +53,11 @@ def index_names(names, archive_id):
             entry = match.groupdict()
         if entry["archive"] != archive_id:
             raise IntegrityError("Scan index mixes archive IDs")
-        group = groups.setdefault(entry["group"], [])
-        if name in group:
+        datagroup = datagroups.setdefault(entry["datagroup"], [])
+        if name in datagroup:
             raise IntegrityError(f"Duplicate scan index filename: {name}")
-        group.append(name)
-    return groups, chunks, supergroups
+        datagroup.append(name)
+    return datagroups, chunks, supergroups
 
 
 def stream_problem(chunks):
@@ -98,7 +98,7 @@ def scan(root, output, archive_id=None):
             print(f"Ignoring unrecognized chunk filename: {name!r}", flush=True)
     if not names:
         raise IntegrityError("No recognizable data chunks or data PAR2 files found")
-    groups, chunks, supergroups = index_names(names, selected)
+    datagroups, chunks, supergroups = index_names(names, selected)
     streams = {}
     for chunk in chunks.values():
         streams.setdefault(chunk["stream"], []).append(chunk)
@@ -123,7 +123,7 @@ def scan(root, output, archive_id=None):
         raise
     finally:
         writer.close()
-    print(f"Scan complete: {len(chunks):,} chunks, {len(groups):,} groups, "
+    print(f"Scan complete: {len(chunks):,} chunks, {len(datagroups):,} datagroups, "
           f"{len(supergroups):,} supergroup PAR2 sets; index: {output}")
     print("Filename-only index: original large-file paths, hashes, and final stream lengths are unknown.")
     print("Missing tail chunks or entirely missing streams cannot always be detected.")
@@ -147,18 +147,18 @@ def read_index(path):
             raise IntegrityError("Invalid archive ID in scan index")
         if not isinstance(index["files"], list) or not index["files"]:
             raise IntegrityError("Scan index must list data chunks or data PAR2 files")
-        groups, chunks, supergroups = index_names(index["files"], index["archive"])
-        return index["archive"], groups, chunks, supergroups
+        datagroups, chunks, supergroups = index_names(index["files"], index["archive"])
+        return index["archive"], datagroups, chunks, supergroups
     except (KeyError, TypeError, ValueError) as error:
         raise IntegrityError(f"Malformed scan index: {error}") from error
 
 
-def recover_scanned_set(files, names, directory, archive_id, group_id):
+def recover_scanned_set(files, names, directory, archive_id, datagroup_id):
     # Verify read-only links first. Without manifests, a repair-needed set has
     # no trusted per-file hashes, so copy its data before allowing PAR2 writes.
     stage_existing(files, names, directory, writable=False)
     supergroup_id = (CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0]))["supergroup"]
-    prefix = group_prefix(archive_id, supergroup_id, group_id)
+    prefix = datagroup_prefix(archive_id, supergroup_id, datagroup_id)
     status = check_parity(directory, prefix) if any(name.endswith(".par2") for name in names) else 4
     if status == 1:
         data_names = [name for name in names if CHUNK_NAME.fullmatch(name)]
@@ -168,10 +168,10 @@ def recover_scanned_set(files, names, directory, archive_id, group_id):
         try:
             status = check_parity(directory, prefix, repair=True)
         except IntegrityError as error:
-            print(f"PAR2 could not finish set {group_id}: {error}", flush=True)
+            print(f"PAR2 could not finish set {datagroup_id}: {error}", flush=True)
             status = 2
     if status:
-        print(f"Set {group_id}: no usable full-set PAR2 verification; checking surviving chunks individually.",
+        print(f"Set {datagroup_id}: no usable full-set PAR2 verification; checking surviving chunks individually.",
               flush=True)
     return status == 0
 
@@ -213,8 +213,8 @@ def publish_stream(path, target, stream, kind):
         shutil.copyfileobj(source, output, BUFFER_SIZE)
 
 
-def scanned_groups(files, selected, groups, supergroups, cache):
-    """Yield one bounded supergroup workspace at a time, or its surviving groups."""
+def scanned_datagroups(files, selected, datagroups, supergroups, cache):
+    """Yield one bounded supergroup workspace at a time, or its surviving datagroups."""
     from .recovery import ArchiveFiles
     from .supergroups import SupergroupRecovery, par2_members
 
@@ -224,7 +224,7 @@ def scanned_groups(files, selected, groups, supergroups, cache):
     outer = SupergroupRecovery(selected, available, cache)
     outer.load(None)
     by_supergroup = {}
-    for gid, names in groups.items():
+    for gid, names in datagroups.items():
         match = CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0])
         by_supergroup.setdefault(match["supergroup"], {})[gid] = list(names)
     for sid in supergroups:
@@ -239,7 +239,7 @@ def scanned_groups(files, selected, groups, supergroups, cache):
                 names = []
         for name in names:
             if match := CHUNK_NAME.fullmatch(name):
-                members = local.setdefault(match["group"], [])
+                members = local.setdefault(match["datagroup"], [])
                 if name not in members:
                     members.append(name)
     for sid, local in sorted(by_supergroup.items()):
@@ -250,7 +250,7 @@ def scanned_groups(files, selected, groups, supergroups, cache):
                 try:
                     base = stack.enter_context(outer.recover(sid))
                 except IntegrityError as error:
-                    print(f"{error}; recovering surviving groups individually.", flush=True)
+                    print(f"{error}; recovering surviving datagroups individually.", flush=True)
                 else:
                     view = dict(files)
                     for path in base.rglob("archive-*"):
@@ -264,8 +264,8 @@ def scanned_groups(files, selected, groups, supergroups, cache):
 def restore_scanned(root, target, index_path, archive_id, key, certificate):
     from .restore import unpack_chunk
 
-    selected, groups, known, supergroups = read_index(index_path)
-    if archive_id is not None and archive_id != selected:
+    selected, datagroups, known, supergroups = read_index(index_path)
+    if archive_id is not None and archive_id.lower() != selected:
         raise ArchiveError("Selected archive ID does not match scan index")
     archives = discover(root)
     if selected not in archives:
@@ -282,22 +282,22 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
     with scratch("scan-streams-") as temporary:
         decoded = Path(temporary)
         usable = {}
-        for number, (group_id, names, view, outer_verified) in enumerate(
-                scanned_groups(files, selected, groups, supergroups, decoded), 1):
-            print(f"Recovering scanned group {number}: {group_id}", flush=True)
+        for number, (datagroup_id, names, view, outer_verified) in enumerate(
+                scanned_datagroups(files, selected, datagroups, supergroups, decoded), 1):
+            print(f"Recovering scanned datagroup {number}: {datagroup_id}", flush=True)
             with scratch("scan-set-") as set_temporary:
                 directory = Path(set_temporary)
                 if outer_verified:
                     stage_existing(view, names, directory, writable=False)
                     verified = True
                 else:
-                    verified = recover_scanned_set(view, names, directory, selected, group_id)
+                    verified = recover_scanned_set(view, names, directory, selected, datagroup_id)
                 recovered = []
                 for path in sorted(directory.iterdir()):
                     if not CHUNK_NAME.fullmatch(path.name):
                         continue
                     chunk = parse_chunk(path.name)
-                    if chunk["archive"] != selected or chunk["group"] != group_id:
+                    if chunk["archive"] != selected or chunk["datagroup"] != datagroup_id:
                         raise IntegrityError("PAR2 recovered a chunk belonging to a different set")
                     if chunk["length"] <= 0:
                         raise IntegrityError("PAR2 recovered a chunk with an invalid declared length")
@@ -305,7 +305,7 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                     known[path.name] = chunk
                     recovered.append(chunk)
                 if (not recovered and not verified) or (not verified and any(name.endswith(".par2") for name in names)):
-                    unresolved_sets.append(group_id)
+                    unresolved_sets.append(datagroup_id)
                 for chunk in recovered:
                     if chunk["encrypted"] and not key:
                         raise ArchiveError("Encrypted chunks recovered by PAR2 require --decrypt-key")

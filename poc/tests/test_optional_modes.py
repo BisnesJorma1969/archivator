@@ -65,11 +65,11 @@ class OptionalModeTests(ArchiveTest):
                         if encryption:
                             self.assertNotIn(b"private-notes.txt", path.read_bytes())
                             self.assertNotIn(b"private-large.bin", path.read_bytes())
-                    for group_id in {parse_chunk(path.name)["group"] for path in chunks}:
-                        supergroup_id = next(parse_chunk(path.name)["supergroup"] for path in chunks if parse_chunk(path.name)["group"] == group_id)
-                        for directory in (archive / supergroup_id / group_id[:2], archive / "metadata" / supergroup_id / group_id[:2]):
-                            group = [path for path in directory.iterdir() if group_id in path.name]
-                            self.assertLessEqual(sum(path.stat().st_size for path in group), settings.max_group_bytes)
+                    for datagroup_id in {parse_chunk(path.name)["datagroup"] for path in chunks}:
+                        supergroup_id = next(parse_chunk(path.name)["supergroup"] for path in chunks if parse_chunk(path.name)["datagroup"] == datagroup_id)
+                        for directory in (archive / "data" / supergroup_id[:2] / supergroup_id / datagroup_id, archive / "metadata" / supergroup_id[:2] / supergroup_id / datagroup_id):
+                            datagroup = [path for path in directory.iterdir() if datagroup_id in path.name]
+                            self.assertLessEqual(sum(path.stat().st_size for path in datagroup), settings.max_datagroup_bytes)
                     self.assertEqual(verify(archive), 0)
                     before = snapshot(archive)
                     self.assertEqual(restore(archive, target, key=key if encryption else None), 0)
@@ -115,7 +115,7 @@ class OptionalModeTests(ArchiveTest):
             self.assertEqual((self.restored / "note1").read_text(), "one")
             self.assertEqual(snapshot(self.archive), before)
 
-    def test_no_parity_recovers_metadata_copy_and_supports_local_group(self):
+    def test_no_parity_recovers_metadata_copy_and_supports_local_datagroup(self):
         (self.source / "note").write_text("one")
         settings = replace(SMALL, compression=False, par2=False)
         with self.optional_tools(False, False, False):

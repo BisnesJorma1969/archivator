@@ -20,7 +20,7 @@ class IndependentChunkTests(ArchiveTest):
     def test_names_distinguish_complete_tar_from_raw_and_reject_wrong_offsets(self):
         for encrypted in (False, True):
             for kind in ("raw", "tar"):
-                name = chunk_name("a" * 24, "b" * 24, 12, "c" * 24, 0, 10240, encrypted, kind, supergroup="d" * 24)
+                name = chunk_name("a" * 20, "b" * 20, 12, "c" * 20, 0, 10240, encrypted, kind, supergroup="d" * 20)
                 parsed = parse_chunk(name)
                 self.assertEqual(parsed["kind"], kind)
                 self.assertEqual(parsed["length"], 10240)
@@ -31,15 +31,15 @@ class IndependentChunkTests(ArchiveTest):
                 with self.assertRaises(IntegrityError):
                     parse_chunk(wrong)
 
-    def test_each_tar_is_independently_readable_and_compressed_units_share_group(self):
+    def test_each_tar_is_independently_readable_and_compressed_units_share_datagroup(self):
         for number in range(24):
             (self.source / f"document-{number:02}").write_bytes(bytes([number]) * 20000)
         backup(self.source, self.archive, settings=SMALL)
-        groups = [group for group in manifests(self.archive) if group["members"]]
-        self.assertEqual(len(groups), 1)
+        datagroups = [datagroup for datagroup in manifests(self.archive) if datagroup["members"]]
+        self.assertEqual(len(datagroups), 1)
         chunks = list(self.archive.rglob("*.tar.zst"))
         self.assertGreaterEqual(len(chunks), 8)
-        self.assertGreater(sum(parse_chunk(path.name)["length"] for path in chunks), SMALL.max_group_bytes)
+        self.assertGreater(sum(parse_chunk(path.name)["length"] for path in chunks), SMALL.max_datagroup_bytes)
         found = set()
         for chunk in chunks:
             data = subprocess.run([executable("zstd"), "-qdc", str(chunk)],
@@ -58,7 +58,7 @@ class IndependentChunkTests(ArchiveTest):
         self.assertEqual(restore(self.archive, self.restored), 0)
         self.assertEqual(compare(self.source, self.restored), 0)
 
-    def test_encrypted_tar_overhead_and_pax_names_fit_file_and_group_limits(self):
+    def test_encrypted_tar_overhead_and_pax_names_fit_file_and_datagroup_limits(self):
         key, certificate = self.certificate()
         for number in range(12):
             (self.source / (f"{number:02}-" + "é" * 80)).write_bytes(self.data(27000, number))
@@ -76,10 +76,11 @@ class IndependentChunkTests(ArchiveTest):
             compressed.unlink()
         for path in self.archive.rglob("archive-*"):
             self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes)
-        for group in manifests(self.archive):
-            prefix = f"archive-{group['archive']}_supergroup-{group['supergroup']}_group-{group['group']}"
-            size = sum(path.stat().st_size for path in (self.archive / group["supergroup"] / group["group"][:2]).glob(prefix + "*"))
-            self.assertLessEqual(size, SMALL.max_group_bytes)
+        for datagroup in manifests(self.archive):
+            prefix = f"archive-{datagroup['archive']}_supergroup-{datagroup['supergroup']}_datagroup-{datagroup['datagroup']}"
+            size = sum(path.stat().st_size for path in (self.archive / "data" / datagroup["supergroup"][:2] / datagroup["supergroup"] / datagroup["datagroup"]).glob(prefix + "*"))
+            self.assertGreater(size, 0)
+            self.assertLessEqual(size, SMALL.max_datagroup_bytes)
         self.assertEqual(restore(self.archive, self.restored, key=key), 0)
         self.assertEqual(compare(self.source, self.restored), 0)
 
@@ -95,21 +96,21 @@ class IndependentChunkTests(ArchiveTest):
                   if parse_chunk(path.name)["stream"] == split["stream"]]
         self.assertEqual(max(chunk["length"] for chunk in chunks), input_limit(SMALL.max_file_bytes))
         small_ids = {stream["stream"] for stream in catalog(self.archive) if stream["path"] in ("one", "two")}
-        whole = next(group for group in manifests(self.archive)
-                     if small_ids <= {member["stream"] for member in group["members"]})
+        whole = next(datagroup for datagroup in manifests(self.archive)
+                     if small_ids <= {member["stream"] for member in datagroup["members"]})
         self.assertEqual(len([member for member in whole["members"] if member["stream"] in small_ids]), 2)
         args = parser().parse_args(["backup", "source", "archive", "--large-file-bytes", "4096"])
         self.assertEqual(args.large_file_bytes, 4096)
         with self.assertRaises(ArchiveError):
             Settings(large_file_bytes=0)
 
-    def test_singleton_shares_group_with_tar_but_is_stored_as_raw(self):
+    def test_singleton_shares_datagroup_with_tar_but_is_stored_as_raw(self):
         for number in range(3):
             (self.source / str(number)).write_bytes(self.data(20000, number))
         backup(self.source, self.archive, settings=SMALL)
-        groups = [group for group in manifests(self.archive) if group["members"]]
-        self.assertEqual(len(groups), 1)
-        self.assertEqual({member["kind"] for member in groups[0]["members"]}, {"raw", "tar"})
+        datagroups = [datagroup for datagroup in manifests(self.archive) if datagroup["members"]]
+        self.assertEqual(len(datagroups), 1)
+        self.assertEqual({member["kind"] for member in datagroups[0]["members"]}, {"raw", "tar"})
         self.assertEqual(restore(self.archive, self.restored), 0)
         self.assertEqual(compare(self.source, self.restored), 0)
 

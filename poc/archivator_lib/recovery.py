@@ -1,4 +1,4 @@
-"""Validate protected catalogs, repair groups, and discover independent local sets."""
+"""Validate protected catalogs, repair datagroups, and discover independent local sets."""
 
 import os
 import re
@@ -10,8 +10,8 @@ from pathlib import Path
 from .common import ArchiveError, IntegrityError, read_json, read_jsonl, scratch, sha256, write_json
 from .external import check_parity, create_parity
 from .filesystem import relative_path
-from .format import (ARCHIVE_NAME, ID, Settings, archive_filename, group_metadata, metadata_prefix,
-                     group_prefix, parse_chunk, primary_metadata_name, spare_metadata_name, stored_path,
+from .format import (ARCHIVE_NAME, ID, Settings, archive_filename, datagroup_metadata, metadata_prefix,
+                     datagroup_prefix, parse_chunk, primary_metadata_name, spare_metadata_name, stored_path,
                      supergroup_prefix)
 from .limits import parity_plan
 from .metadata import ConflictingRoots, catalog_root_digest, catalog_root_names, unpack_metadata
@@ -26,6 +26,7 @@ class ArchiveFiles(dict):
         self.root = Path(root)
 
     def add(self, name, path):
+        name = name.lower()
         if name in self:
             raise IntegrityError(f"Duplicate archive filename in hierarchy: {name}")
         self[name] = path
@@ -38,9 +39,9 @@ def discover(root):
     archives = {}
     for directory, subdirectories, names in os.walk(root, followlinks=False):
         progress.update(f"Discovering archives: {len(archives)} IDs")
-        subdirectories[:] = sorted(name for name in subdirectories if name != ".tmp")
+        subdirectories[:] = sorted(name for name in subdirectories if name.lower() != ".tmp")
         for name in sorted(names):
-            match = ARCHIVE_NAME.match(name)
+            match = ARCHIVE_NAME.match(name.lower())
             if match:
                 files = archives.setdefault(match[1], ArchiveFiles(root))
                 files.add(name, Path(directory) / name)
@@ -65,6 +66,7 @@ class Archive:
     supergroups: object = None
 def select(archives, archive_id, allow_all=False):
     if archive_id:
+        archive_id = archive_id.lower()
         if archive_id not in archives:
             raise ArchiveError(f"Archive ID not found: {archive_id}")
         return [archive_id]
@@ -167,12 +169,21 @@ def read_catalog_root(archive_id, files):
             marker = read_json(path)
             if (marker["version"] != 1 or marker["archive"] != archive_id
                     or marker["marker_sha256"] != catalog_root_digest(marker)
-                    or not isinstance(marker["groups"], int) or marker["groups"] < 1):
+                    or not isinstance(marker["datagroups"], int) or marker["datagroups"] < 1):
                 raise IntegrityError("Invalid marker")
             settings = Settings(**marker["settings"])
+            from .bootstrap import auxiliary_names
+            required, optional = auxiliary_names(archive_id)
+            auxiliary = marker["bootstrap_files"]
+            if not isinstance(auxiliary, dict) or set(auxiliary) not in ({required}, {required, optional}):
+                raise IntegrityError("Invalid bootstrap auxiliary file list")
+            for item in auxiliary.values():
+                if (not isinstance(item["size"], int) or not 0 < item["size"] <= settings.max_file_bytes
+                        or not valid_digest(item["sha256"])):
+                    raise IntegrityError("Invalid bootstrap auxiliary checksum or size")
             validate_link(marker["last"], archive_id, settings.par2)
             count, link = marker["supergroups"], marker["last_supergroup"]
-            if (not isinstance(count, int) or not 0 <= count <= marker["groups"]
+            if (not isinstance(count, int) or not 0 <= count <= marker["datagroups"]
                     or (count == 0) != (link is None)
                     or bool(count) != (settings.par2 and settings.supergroup_par2)):
                 raise IntegrityError("Invalid supergroup catalog root")
@@ -191,10 +202,10 @@ def read_catalog_root(archive_id, files):
 
 
 def validate_link(link, archive_id, par2):
-    if (not re.fullmatch(ID, link["group"]) or not re.fullmatch(ID, link["supergroup"])
+    if (not re.fullmatch(ID, link["datagroup"]) or not re.fullmatch(ID, link["supergroup"])
             or not valid_digest(link["receipt_sha256"])):
         raise IntegrityError("Invalid metadata chain link")
-    validate_parity_hashes(link["parity_hashes"], metadata_prefix(archive_id, link["supergroup"], link["group"]), par2)
+    validate_parity_hashes(link["parity_hashes"], metadata_prefix(archive_id, link["supergroup"], link["datagroup"]), par2)
 
 
 def validate_parity_hashes(hashes, prefix, enabled):
@@ -211,7 +222,7 @@ def validate_parity_hashes(hashes, prefix, enabled):
 
 def healthy_copy(files, name, digest=None):
     names = [name]
-    if group_metadata(name):
+    if datagroup_metadata(name):
         primary = primary_metadata_name(name)
         names.append(spare_metadata_name(name) if name == primary else primary)
     for candidate in names:
@@ -229,16 +240,16 @@ def protected_hashes(manifest):
 
 
 def validate_manifest(manifest, archive_id, name, digest):
-    group_id = manifest["group"]
-    if not re.fullmatch(ID, group_id):
-        raise IntegrityError("Invalid group ID")
-    prefix = group_prefix(archive_id, manifest["supergroup"], group_id)
+    datagroup_id = manifest["datagroup"]
+    if not re.fullmatch(ID, datagroup_id):
+        raise IntegrityError("Invalid datagroup ID")
+    prefix = datagroup_prefix(archive_id, manifest["supergroup"], datagroup_id)
     settings = Settings(**manifest["settings"])
     suffix = ".zst" if settings.compression else ""
     compression = "zstd" if settings.compression else "none"
     if (manifest["version"] != 1 or manifest["archive"] != archive_id
             or name != prefix + "_metadata_index-chunks.json" + suffix or manifest["compression"] != compression):
-        raise IntegrityError("Inconsistent group manifest")
+        raise IntegrityError("Inconsistent datagroup manifest")
     if manifest["encryption"] not in ("none", "cms-aes-256-gcm"):
         raise IntegrityError("Unsupported encryption")
     encrypted = manifest["encryption"] != "none"
@@ -249,7 +260,7 @@ def validate_manifest(manifest, archive_id, name, digest):
         raise IntegrityError("Invalid source metadata checksum")
     streams = {}
     for number, member in enumerate(manifest["members"]):
-        expected = {"archive": archive_id, "group": group_id, "supergroup": manifest["supergroup"], "chunk": number,
+        expected = {"archive": archive_id, "datagroup": datagroup_id, "supergroup": manifest["supergroup"], "chunk": number,
                     "stream": member["stream"], "offset": member["offset"],
                     "length": member["length"], "encrypted": encrypted, "kind": member["kind"],
                     "compressed": settings.compression}
@@ -264,7 +275,7 @@ def validate_manifest(manifest, archive_id, name, digest):
         previous = streams.get(member["stream"])
         if previous is not None and (member["kind"] != "raw" or previous["kind"] != "raw"
                                      or member["offset"] != previous["offset"] + previous["length"]):
-            raise IntegrityError("Non-contiguous RAW chunks or repeated TAR stream within a group")
+            raise IntegrityError("Non-contiguous RAW chunks or repeated TAR stream within a datagroup")
         streams[member["stream"]] = member
     manifest.update(_name=name, _sha256=digest)
     return manifest
@@ -302,27 +313,28 @@ def load_central(archive, original, in_place):
     link = archive.catalog_root["last"]
     settings = Settings(**archive.catalog_root["settings"])
     seen = set()
-    for number in range(archive.catalog_root["groups"]):
+    for number in range(archive.catalog_root["datagroups"]):
         if link is None:
             raise IntegrityError("Metadata chain ended early")
         validate_link(link, archive.id, settings.par2)
-        group_id = link["group"]
-        if group_id in seen:
+        datagroup_id = link["datagroup"]
+        if datagroup_id in seen:
             raise IntegrityError("Metadata chain contains a cycle")
-        seen.add(group_id)
-        prefix = metadata_prefix(archive.id, link["supergroup"], group_id)
-        local_prefix = group_prefix(archive.id, link["supergroup"], group_id)
+        seen.add(datagroup_id)
+        prefix = metadata_prefix(archive.id, link["supergroup"], datagroup_id)
+        local_prefix = datagroup_prefix(archive.id, link["supergroup"], datagroup_id)
         suffix = ".zst" if settings.compression else ""
         receipt_name = prefix + "_checksums.json" + suffix
-        print(f"Checking metadata set {number + 1}/{archive.catalog_root['groups']}: {group_id}", flush=True)
+        print(f"Checking metadata set {number + 1}/{archive.catalog_root['datagroups']}: {datagroup_id}", flush=True)
         if in_place:
             directory = stored_path(original.root, receipt_name).parent
             directory.mkdir(parents=True, exist_ok=True)
         else:
-            directory = archive.metadata / f"central-{group_id}"
-            names = {name for name in original if name.startswith(prefix)}
+            directory = archive.metadata / f"central-{datagroup_id}"
+            names = {name for name in original if name.startswith(prefix)
+                     and not (datagroup_metadata(name) and name == primary_metadata_name(name))}
             names.update(spare_metadata_name(name) for name in original
-                         if name.startswith(local_prefix + "_") and group_metadata(name))
+                         if name.startswith(local_prefix + "_") and datagroup_metadata(name))
             expected = {receipt_name: link["receipt_sha256"]}
             receipt_copy = healthy_copy(original, receipt_name, link["receipt_sha256"])
             if receipt_copy:
@@ -349,14 +361,13 @@ def load_central(archive, original, in_place):
                 raise IntegrityError("Recovered metadata receipt checksum mismatch")
             remove_repair_backups(directory, expected_receipt, before)
         receipt = read_json(unpack_metadata(receipt_path, archive.metadata))
-        if receipt["version"] != 1 or receipt["archive"] != archive.id or receipt["group"] != group_id:
+        if receipt["version"] != 1 or receipt["archive"] != archive.id or receipt["datagroup"] != datagroup_id:
             raise IntegrityError("Invalid metadata receipt")
         hashes = dict(expected_receipt)
         for name, record in receipt["members"].items():
             archive_filename(name, archive.id)
-            if not (group_metadata(name) and name.startswith(local_prefix + "_")
-                    and name == spare_metadata_name(name)
-                    or name in (prefix + "_format.txt", prefix + "_recipient.pem")):
+            if not (datagroup_metadata(name) and name.startswith(local_prefix + "_")
+                    and name == spare_metadata_name(name)):
                 raise IntegrityError("Invalid central metadata member")
             if not valid_digest(record["sha256"]) or not 0 < record["size"] <= settings.max_file_bytes:
                 raise IntegrityError("Invalid metadata checksum or size")
@@ -374,18 +385,19 @@ def load_central(archive, original, in_place):
                                                          link["parity_hashes"], in_place)
         except IntegrityError:
             missing = mismatches(directory, hashes)
-            if not settings.par2 or not missing or any(not group_metadata(name) for name in missing):
+            if not settings.par2 or not missing or any(not datagroup_metadata(name) for name in missing):
                 raise
             # The local data set protects the same metadata bytes. It remains
             # useful when the central copy and its own parity were both lost.
-            local = stored_path(original.root, local_prefix + "_metadata_index-chunks.json" + suffix).parent if in_place else archive.metadata / f"rescue-{group_id}"
+            local = stored_path(original.root, local_prefix + "_metadata_index-chunks.json" + suffix).parent if in_place else archive.metadata / f"rescue-{datagroup_id}"
             if not in_place:
                 names = [name for name in original if name.startswith(local_prefix)
-                         and name == primary_metadata_name(name)]
+                         and stored_path(original.root, name).parent ==
+                         stored_path(original.root, local_prefix + ".par2").parent]
                 stage_existing(original, names, local)
             local_previous = {path.relative_to(local) for path in local.rglob("*")}
             if check_parity(local, local_prefix) != 1 or check_parity(local, local_prefix, repair=True) != 0:
-                raise IntegrityError("Neither local nor central PAR2 can recover group metadata")
+                raise IntegrityError("Neither local nor central PAR2 can recover datagroup metadata")
             for name in missing:
                 path = local / primary_metadata_name(name)
                 if not path.is_file() or sha256(path) != hashes[name]:
@@ -404,11 +416,11 @@ def load_central(archive, original, in_place):
         remove_repair_backups(directory, hashes, receipt_previous)
         archive.metadata_damage.extend(receipt_damage + original_damage + damage + parity_damage)
         archive.checksums.update(hashes)
-        validate_parity_hashes(receipt["group_parity"], local_prefix, settings.par2)
-        archive.checksums.update(receipt["group_parity"])
+        validate_parity_hashes(receipt["datagroup_parity"], local_prefix, settings.par2)
+        archive.checksums.update(receipt["datagroup_parity"])
         for name in receipt["members"]:
             archive.files[name] = directory / name
-            if group_metadata(name):
+            if datagroup_metadata(name):
                 primary = primary_metadata_name(name)
                 # Payload manifests and local PAR2 keep referencing primary names.
                 archive.files[primary] = directory / name
@@ -421,43 +433,47 @@ def load_central(archive, original, in_place):
         manifest = read_json(unpack_metadata(directory / spare, archive.metadata))
         manifest = validate_manifest(manifest, archive.id, name, hashes[spare])
         if manifest["settings"] != archive.catalog_root["settings"]:
-            raise IntegrityError("Group settings disagree with catalog-root marker")
+            raise IntegrityError("Datagroup settings disagree with catalog-root marker")
         archive.manifests.append(manifest)
         link = receipt["previous"]
     if link is not None:
-        raise IntegrityError("Metadata chain exceeds the catalog-root marker's group count")
+        raise IntegrityError("Metadata chain exceeds the catalog-root marker's datagroup count")
     archive.manifests.reverse()
 
 
 def load_local(archive, original, in_place):
-    """A surviving group can explain itself without the archive-wide catalog."""
-    groups = {}
+    """A surviving datagroup can explain itself without the archive-wide catalog."""
+    datagroups = {}
     selected = dict(original)
     for name, path in original.items():
-        match = re.match(rf"archive-{archive.id}_supergroup-({ID})_group-({ID})(?:_|\.)", name)
+        match = re.match(rf"archive-{archive.id}_supergroup-({ID})_datagroup-({ID})(?:_|\.)", name)
         if match:
+            prefix = datagroup_prefix(archive.id, match[1], match[2])
+            if not (datagroup_metadata(name) or name.startswith(prefix + "_chunk-")
+                    or name.startswith(prefix + ".") and name.endswith(".par2")):
+                continue
             # A spare is the same stored content, but local PAR2 expects the
             # primary basename. Only metadata aliases are copied when needed.
-            primary = primary_metadata_name(name) if group_metadata(name) else name
+            primary = primary_metadata_name(name) if datagroup_metadata(name) else name
             selected.setdefault(primary, path)
-            groups.setdefault((match[1], match[2]), set()).add(primary)
-    if not groups:
-        raise IntegrityError("No local recovery groups found")
-    print("Archive-wide metadata is unavailable; recovering independent local groups. "
+            datagroups.setdefault((match[1], match[2]), set()).add(primary)
+    if not datagroups:
+        raise IntegrityError("No local recovery datagroups found")
+    print("Archive-wide metadata is unavailable; recovering independent local datagroups. "
           "Original backup completeness cannot be proved.", flush=True)
     archive.metadata_damage.append("archive-wide catalog unavailable")
-    for (supergroup_id, group_id), names in sorted(groups.items()):
+    for (supergroup_id, datagroup_id), names in sorted(datagroups.items()):
         try:
             names = sorted(names)
-            prefix = group_prefix(archive.id, supergroup_id, group_id)
+            prefix = datagroup_prefix(archive.id, supergroup_id, datagroup_id)
             if in_place:
                 directory = stored_path(original.root, prefix + "_metadata_index-chunks.json").parent
                 directory.mkdir(parents=True, exist_ok=True)
                 for name in names:
-                    if group_metadata(name) and not (directory / name).exists():
+                    if datagroup_metadata(name) and not (directory / name).exists():
                         shutil.copyfile(selected[name], directory / name)
             else:
-                directory = archive.metadata / f"local-{group_id}"
+                directory = archive.metadata / f"local-{datagroup_id}"
                 stage_existing(selected, names, directory, writable=False)
             has_parity = any(name.endswith(".par2") for name in names)
             status = check_parity(directory, prefix) if has_parity else 4
@@ -470,7 +486,7 @@ def load_local(archive, original, in_place):
                             (directory / name).unlink(missing_ok=True)
                     stage_existing(selected, [name for name in names if not name.endswith(".par2")], directory)
                 if check_parity(directory, prefix, repair=True) != 0:
-                    raise IntegrityError(f"Cannot recover local metadata for {group_id}")
+                    raise IntegrityError(f"Cannot recover local metadata for {datagroup_id}")
             manifests = [path for path in directory.glob(prefix + "_metadata_index-chunks.json*")
                          if path.name in (prefix + "_metadata_index-chunks.json",
                                           prefix + "_metadata_index-chunks.json.zst")]
@@ -478,7 +494,7 @@ def load_local(archive, original, in_place):
                 raise IntegrityError("Ambiguous local manifests")
             name = manifests[0].name if manifests else ""
             if not name:
-                raise IntegrityError(f"No usable local manifest for {group_id}; use filename-only scan")
+                raise IntegrityError(f"No usable local manifest for {datagroup_id}; use filename-only scan")
             manifest = read_json(unpack_metadata(directory / name, archive.metadata))
             manifest = validate_manifest(manifest, archive.id, name, sha256(directory / name))
             archive.manifests.append(manifest)
@@ -489,10 +505,10 @@ def load_local(archive, original, in_place):
                 if path.is_file() and not path.name.endswith(".par2"):
                     archive.files[path.name] = path
         except (ArchiveError, OSError, ValueError, TypeError, KeyError) as error:
-            archive.metadata_damage.append(f"group {group_id}: metadata unavailable")
-            print(f"Skipping group {group_id}: {error}", flush=True)
+            archive.metadata_damage.append(f"datagroup {datagroup_id}: metadata unavailable")
+            print(f"Skipping datagroup {datagroup_id}: {error}", flush=True)
     if not archive.manifests:
-        raise IntegrityError("No usable local group metadata; use filename-only scan")
+        raise IntegrityError("No usable local datagroup metadata; use filename-only scan")
 
 
 def load_sources(archive, key, certificate):
@@ -505,33 +521,33 @@ def load_sources(archive, key, certificate):
         if sha256(path) != manifest["source_sha256"]:
             raise IntegrityError("Source metadata checksum mismatch")
         records = read_jsonl(unpack_metadata(path, archive.metadata, key, certificate))
-        group_streams = {}
+        datagroup_streams = {}
         for stream in records[0]["streams"]:
             stream_id = stream["stream"]
             if (not re.fullmatch(ID, stream_id) or stream["type"] not in ("tar", "file")
-                    or stream_id in group_streams):
+                    or stream_id in datagroup_streams):
                 raise IntegrityError("Invalid or duplicate source stream")
             if not isinstance(stream["size"], int) or stream["size"] < 0:
                 raise IntegrityError("Invalid source size")
-            group_streams[stream_id] = stream
-        inventories = {stream_id: [] for stream_id in group_streams}
+            datagroup_streams[stream_id] = stream
+        inventories = {stream_id: [] for stream_id in datagroup_streams}
         for record in records[1:]:
             stream_id, entry = record["stream"], record["entry"]
             if stream_id is not None:
-                if stream_id not in group_streams:
+                if stream_id not in datagroup_streams:
                     raise IntegrityError("Inventory refers to an unknown stream")
                 inventories[stream_id].append(entry)
-            stream = group_streams.get(stream_id)
-            # The final group adds the full hash of a split RAW file.
+            stream = datagroup_streams.get(stream_id)
+            # The final datagroup adds the full hash of a split RAW file.
             if stream and stream["type"] == "file" and entry["path"] == stream["path"]:
                 continue
             old = entries.setdefault(entry["path"], entry)
             if old != entry:
                 raise IntegrityError(f"Conflicting source metadata: {entry['path']!r}")
         for member in manifest["members"]:
-            if member["stream"] not in group_streams:
+            if member["stream"] not in datagroup_streams:
                 raise IntegrityError("Source stream and chunk IDs disagree")
-        for stream_id, stream in group_streams.items():
+        for stream_id, stream in datagroup_streams.items():
             members = [member for member in manifest["members"] if member["stream"] == stream_id]
             kind = "tar" if stream["type"] == "tar" else "raw"
             if any(member["kind"] != kind for member in members):
@@ -549,9 +565,9 @@ def load_sources(archive, key, certificate):
                 end = members[-1]["offset"] + members[-1]["length"]
                 partial = members[0]["offset"] != 0 or end != stream["size"]
                 if partial and manifest["members"][0]["stream"] != stream_id:
-                    raise IntegrityError("A spanning RAW file must start in an empty group")
-                if end < stream["size"] and len(group_streams) != 1:
-                    raise IntegrityError("An intermediate RAW group must not contain other streams")
+                    raise IntegrityError("A spanning RAW file must start in an empty datagroup")
+                if end < stream["size"] and len(datagroup_streams) != 1:
+                    raise IntegrityError("An intermediate RAW datagroup must not contain other streams")
             old = streams.get(stream_id)
             if old and any(old.get(field) != stream.get(field) for field in ("type", "size", "path")):
                 raise IntegrityError("Conflicting stream descriptions")
@@ -559,7 +575,7 @@ def load_sources(archive, key, certificate):
                 streams[stream_id] = stream
             if stream["type"] == "tar":
                 if old is not None:
-                    raise IntegrityError("TAR stream occurs in multiple groups")
+                    raise IntegrityError("TAR stream occurs in multiple datagroups")
                 stream["inventory"] = inventories[stream_id]
     for stream in streams.values():
         if stream["type"] == "file":
@@ -588,7 +604,7 @@ def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
             except IntegrityError as error:
                 if in_place:
                     raise
-                print(f"Catalog root unavailable: {error}; trying independent groups.", flush=True)
+                print(f"Catalog root unavailable: {error}; trying independent datagroups.", flush=True)
                 catalog_root, marker_damage = None, ["catalog root unrecoverable"]
             archive = Archive(archive_id, dict(files), catalog_root, Path(temporary))
             archive.metadata_damage.extend(marker_damage)
@@ -602,7 +618,7 @@ def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
                     load_local(archive, files, in_place)
             except IntegrityError:
                 # Local recovery has already had its chance. An entire missing
-                # group (including its metadata) may require the outer layer.
+                # datagroup (including its metadata) may require the outer layer.
                 archive.supergroups.recover_metadata()
                 effective = ArchiveFiles(files.root)
                 effective.update(archive.supergroups.files)
@@ -625,12 +641,12 @@ def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
             modes = {(manifest["encryption"], manifest["compression"], manifest["settings"]["par2"])
                      for manifest in archive.manifests}
             if len(modes) != 1:
-                raise IntegrityError("Groups disagree about compression, encryption, or PAR2")
+                raise IntegrityError("Datagroups disagree about compression, encryption, or PAR2")
             encryption, compression, par2 = modes.pop()
             archive.format = {"encryption": encryption, "compression": compression, "par2": par2}
             for manifest in archive.manifests:
-                prefix = group_prefix(archive_id, manifest["supergroup"], manifest["group"])
-                archive.candidates[manifest["group"]] = list(protected_hashes(manifest)) + [
+                prefix = datagroup_prefix(archive_id, manifest["supergroup"], manifest["datagroup"])
+                archive.candidates[manifest["datagroup"]] = list(protected_hashes(manifest)) + [
                     name for name in files if name.startswith(prefix + ".") and name.endswith(".par2")]
             load_sources(archive, key, certificate)
         except (KeyError, TypeError, ValueError, AttributeError) as error:
@@ -641,12 +657,12 @@ def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
 
 
 def stage_set(archive, manifest, directory, writable=True):
-    names = archive.candidates[manifest["group"]]
+    names = archive.candidates[manifest["datagroup"]]
     stage_existing(archive.files, names, directory, protected_hashes(manifest), writable)
 
 
 def inspect_set(archive, manifest, directory):
-    prefix = group_prefix(archive.id, manifest["supergroup"], manifest["group"])
+    prefix = datagroup_prefix(archive.id, manifest["supergroup"], manifest["datagroup"])
     hashes = protected_hashes(manifest)
     damage = mismatches(directory, hashes)
     parity_hashes = {name: digest for name, digest in archive.checksums.items()
@@ -661,7 +677,7 @@ def inspect_set(archive, manifest, directory):
 
 
 def recover_set(archive, manifest, directory, replenish=False):
-    prefix = group_prefix(archive.id, manifest["supergroup"], manifest["group"])
+    prefix = datagroup_prefix(archive.id, manifest["supergroup"], manifest["datagroup"])
     parity_hashes = {name: digest for name, digest in archive.checksums.items()
                      if name.startswith(prefix + ".") and name.endswith(".par2")}
     hashes = protected_hashes(manifest)
@@ -670,9 +686,9 @@ def recover_set(archive, manifest, directory, replenish=False):
     try:
         return repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish)
     except IntegrityError:
-        if not damaged or manifest["group"] not in archive.supergroups.by_group:
+        if not damaged or manifest["datagroup"] not in archive.supergroups.by_datagroup:
             raise
-        archive.supergroups.restore_group(manifest["group"], directory)
+        archive.supergroups.restore_datagroup(manifest["datagroup"], directory)
         _, parity_damage = repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish)
         return damaged, parity_damage
 
@@ -693,9 +709,9 @@ def verify(root, archive_id=None):
                         directory = Path(temporary)
                         stage_set(archive, manifest, directory, writable=False)
                         data_damage, parity_damage, status = inspect_set(archive, manifest, directory)
-                        if data_damage and status != 1 and manifest["group"] in archive.supergroups.by_group:
+                        if data_damage and status != 1 and manifest["datagroup"] in archive.supergroups.by_datagroup:
                             try:
-                                archive.supergroups.restore_group(manifest["group"], directory)
+                                archive.supergroups.restore_datagroup(manifest["datagroup"], directory)
                                 status = 1
                             except IntegrityError:
                                 pass
@@ -703,7 +719,7 @@ def verify(root, archive_id=None):
                         damaged = True
                         recoverable = not data_damage or status == 1
                         unrecoverable |= not recoverable
-                        print(f"{manifest['group']}: {'repairable' if recoverable else 'unrecoverable'}; "
+                        print(f"{manifest['datagroup']}: {'repairable' if recoverable else 'unrecoverable'}; "
                               f"{len(data_damage)} members, {len(parity_damage)} PAR2 files damaged/missing")
                 label = "unrecoverable" if unrecoverable else "damage detected; repairable sets checked" if damaged else "intact"
                 print(f"{selected}: {label}")
@@ -723,14 +739,14 @@ def prepare_in_place(root, archive_id, files):
         target = stored_path(base, name)
         # Outer recovery files may span numbered media directories. Their own
         # repair step lays them out with the recorded byte limits, using renames.
-        if "_supergroup-" in name and "_group-" not in name and name.endswith(".par2"):
+        if "_supergroup-" in name and "_datagroup-" not in name and name.endswith(".par2"):
             target = path
         if path.is_symlink() or not path.is_file():
             raise IntegrityError(f"Archive member is not a regular file: {path}")
         if path.stat().st_dev != device:
             raise ArchiveError("In-place repair requires one filesystem")
         destinations = [target]
-        if group_metadata(name):
+        if datagroup_metadata(name):
             destinations.append(stored_path(base, primary_metadata_name(name)))
         for destination in destinations:
             for parent in [destination.parent, *destination.parent.parents]:
@@ -742,7 +758,7 @@ def prepare_in_place(root, archive_id, files):
     for source, target in moves:
         if source != target:
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
+            if target.exists() and not source.samefile(target):
                 raise IntegrityError(f"Recovery destination already exists: {target}")
             source.rename(target)
 
@@ -757,13 +773,13 @@ def repair(root, archive_id=None):
         with open_archive(selected, files, in_place=True) as archive:
             archive.supergroups.repair_all()
             for index, manifest in enumerate(archive.manifests, 1):
-                print(f"Repairing group {index}/{len(archive.manifests)} in place", flush=True)
+                print(f"Repairing datagroup {index}/{len(archive.manifests)} in place", flush=True)
                 directory = stored_path(root, manifest["_name"]).parent
                 directory.mkdir(parents=True, exist_ok=True)
                 # Restore the intentionally duplicated metadata from a surviving
                 # catalog copy if needed. Data/PAR2 are never staged or copied.
                 for name, digest in protected_hashes(manifest).items():
-                    if not group_metadata(name):
+                    if not datagroup_metadata(name):
                         continue
                     path = directory / name
                     if not path.is_file() or sha256(path) != digest:
@@ -777,8 +793,8 @@ def repair(root, archive_id=None):
                 from .bootstrap import repair_root
                 repair_root(selected, files, archive.catalog_root)
             else:
-                print("Local groups repaired; no catalog-root marker invented for an unproven full archive.")
+                print("Local datagroups repaired; no catalog-root marker invented for an unproven full archive.")
     except (ArchiveError, OSError):
-        print(f"In-place repair stopped after {completed} groups; changes already made remain.", flush=True)
+        print(f"In-place repair stopped after {completed} datagroups; changes already made remain.", flush=True)
         raise
-    print(f"{selected}: repair complete ({completed} groups)")
+    print(f"{selected}: repair complete ({completed} datagroups)")

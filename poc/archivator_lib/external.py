@@ -161,7 +161,7 @@ def check_parity(directory, prefix, repair=False, data_directory=None, parity_fi
         return 2
     index = next((path for path in files if path.name == prefix + ".par2"), files[0])
     operation = "repair" if repair else "verify"
-    role = "metadata" if "_metadata" in prefix else "group" if "_group-" in prefix else "supergroup"
+    role = "metadata" if "_metadata" in prefix else "datagroup" if "_datagroup-" in prefix else "supergroup"
     progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
     data_directory = data_directory or directory
     arguments = [executable("par2"), operation, "-q", "-t1", "-T1",

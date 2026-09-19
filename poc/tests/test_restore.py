@@ -32,7 +32,7 @@ class RestoreTests(ArchiveTest):
                                     input=data, capture_output=True, check=True).stdout
         hashes = Hashes()
         hashes.update(data)
-        name = chunk_name("a" * 24, "b" * 24, 0, "c" * 24, 0, len(data), False, supergroup="d" * 24)
+        name = chunk_name("a" * 20, "b" * 20, 0, "c" * 20, 0, len(data), False, supergroup="d" * 20)
         member = {"filename": name, "length": len(data),
                   "plaintext_sha256": hashes.values()["sha256"],
                   "plaintext_sha512": hashes.values()["sha512"]}

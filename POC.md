@@ -22,7 +22,7 @@ Compression, encryption and PAR2 are independently optional, in all eight
 combinations. Defaults: zstd and PAR2 enabled, encryption disabled. Backup uses
 `--compression` / `--no-compression`, `--par2` / `--no-par2`, and
 `--encrypt-cert CERT.pem` / `--no-encryption` (omitting the certificate also disables
-it). Compression controls payload and metadata; PAR2 controls group, supergroup, central metadata, and catalog-root
+it). Compression controls payload and metadata; PAR2 controls datagroup, supergroup, central metadata, and catalog-root
 protection. `--no-supergroup-par2` disables only the outer layer. Readers discover modes from filenames and validated metadata.
 Only enabled features require their external executables.
 
@@ -36,20 +36,20 @@ Implementation is under `poc/`; generated data and scratch use ignored
 | Archive | A complete backup, identified by an archive ID |
 | Stream | Plaintext bytes of one original file or one ordinary POSIX/PAX TAR |
 | Chunk | One complete TAR or a range of RAW file bytes, optionally compressed and/or encrypted |
-| Group | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and optional PAR2 |
-| Supergroup | A bounded set of groups, with separate cross-group PAR2 when enabled |
-| Group parity | PAR2 over one group's stored chunks and primary metadata |
-| Supergroup parity | PAR2 over several groups' stored data and metadata, excluding every group/central PAR2 file |
+| Datagroup | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and optional PAR2 |
+| Supergroup | A bounded set of datagroups, with separate cross-datagroup PAR2 when enabled |
+| Datagroup parity | PAR2 over one datagroup's stored chunks and primary metadata |
+| Supergroup parity | PAR2 over several datagroups' stored data and metadata, excluding every datagroup/central PAR2 file |
 | Central metadata set | Identical metadata copies and their checksum receipt, optionally protected by separate PAR2 |
 
-Archive, supergroup, group, and stream IDs are random 96-bit identifiers, not
-content hashes. Each is 24 lowercase hexadecimal digits. Central metadata PAR2
-**reuses its data group's ID**; no extra random metadata or shard IDs are generated.
+Archive, supergroup, datagroup, and stream IDs are random 96-bit identifiers, not
+content hashes. Each is 20 lowercase base32 characters (`a-z`, `2-7`, without padding). Central metadata PAR2
+**reuses its datagroup's ID**; no extra random metadata or shard IDs are generated.
 
 A TAR is exactly one chunk. Several complete TARs and whole RAW files may share
-one data group, including RAW files made of several chunks. A RAW file that cannot
-fit an empty group starts fresh and spans as many groups as needed. Its final
-group can accept subsequent whole files/TARs. A group describing a fragment is independently
+one datagroup, including RAW files made of several chunks. A RAW file that cannot
+fit an empty datagroup starts fresh and spans as many datagroups as needed. Its final
+datagroup can accept subsequent whole files/TARs. A datagroup describing a fragment is independently
 interpretable and repairable, but cannot reproduce absent fragments.
 
 ## 3. Hard byte limits
@@ -57,39 +57,41 @@ interpretable and repairable, but cannot reproduce absent fragments.
 | Setting / backup option | Default |
 | --- | ---: |
 | `max_file_bytes` / `--max-file-bytes` | 268435455 (256 MiB − 1 byte) |
-| `max_group_bytes` / `--max-group-bytes` | 15032385536 (14 GiB) |
+| `max_datagroup_bytes` / `--max-datagroup-bytes` | 15032385536 (14 GiB) |
 | `large_file_bytes` / `--large-file-bytes` | Automatic: the derived safe input ceiling |
-| `waiting_groups` / `--waiting-groups` | 4, in addition to one active group |
-| `group_close_percent` / `--group-close-percent` | 95, applied when the next whole unit does not fit |
-| `supergroup_groups` / `--supergroup-groups` | 5 |
+| `waiting_datagroups` / `--waiting-datagroups` | 4, in addition to one active datagroup |
+| `datagroup_close_percent` / `--datagroup-close-percent` | 95, applied when the next whole unit does not fit |
+| `supergroup_datagroups` / `--supergroup-datagroups` | 5 |
 | `supergroup_margin_percent` / `--supergroup-margin-percent` | 110 |
 | `supergroup_par2` / `--[no-]supergroup-par2` | Enabled when PAR2 is enabled |
-| Internal PAR2 `slice_size` | 1048576 (1 MiB) |
+| Internal data/central PAR2 `slice_size` | 1048576 (1 MiB) |
+| Bootstrap PAR2 slice size | 4096 (4 KiB) |
 
 These are exact byte counts. The program does not interpret media marketing
 capacities, estimate formatting overhead, or subtract filesystem space. For a
 FAT32 file ceiling, specify **4294967295** bytes. The user supplies a suitable
-usable group capacity for the destination medium.
+usable datagroup capacity for the destination medium.
 
 The file ceiling applies to **every final file**: plain or encoded payload, manifests,
 inventories, checksum receipts, bootstrap files, PAR2 indexes, and volumes.
-The group ceiling includes data, local metadata, and **all PAR2 overhead**.
+The datagroup ceiling includes data, local metadata, and **all PAR2 overhead**.
 Central metadata recovery sets obey the same two ceilings. The two catalog-root
-copies and their PAR2 form a separate small bootstrap set and are checked together.
+copies, format note, optional public certificate and their PAR2 form a separate
+small bootstrap set and are checked together.
 Supergroup recovery files are packed without padding into numbered parity-media
-directories; each directory obeys `max_group_bytes`. Its two index copies are
+directories; each directory obeys `max_datagroup_bytes`. Its two index copies are
 checked together as another metadata set. Every individual file obeys the file cap.
 
 The implementation reserves compression expansion, measured CMS wrapper space,
 PAR2 packet headers and repeated critical packets, and metadata before admitting
 input. Disabled features reserve no transform or PAR2 overhead. It checks actual output lengths before publishing. Limits are ceilings,
-not targets: groups may close early, and compressed files need not have equal
+not targets: datagroups may close early, and compressed files need not have equal
 sizes. Impossible combinations of limits fail explicitly rather than producing
 an oversized completed archive.
 
 The derived input chunk ceiling allows for incompressible zstd output and the
-recipient's CMS wrapper. It also leaves room for a small group by limiting the
-stored chunk allowance to at most one quarter of the group budget. No padding or
+recipient's CMS wrapper. It also leaves room for a small datagroup by limiting the
+stored chunk allowance to at most one quarter of the datagroup budget. No padding or
 alignment is added between compression frames, CMS, and PAR2 slices.
 
 The large-file threshold is a routing policy, not a chunk-size limit. It can be
@@ -104,9 +106,9 @@ current directory. There is no full-source pre-scan, global size sort, or second
 whole-tree validation pass. Supported inputs are directories, regular files,
 and symbolic links, using `lstat` without following links. Reject special files.
 
-Keep the active directory lists, current TAR inventory and bounded open-group
-inventories in memory, not the entire source tree or payload bytes. Write group
-catalogs as groups close. Observable source
+Keep the active directory lists, current TAR inventory and bounded open-datagroup
+inventories in memory, not the entire source tree or payload bytes. Write datagroup
+catalogs as datagroups close. Observable source
 changes abort backup; ordinary stat checks are not a snapshot guarantee.
 
 Files at least as large as the effective large-file threshold go directly to
@@ -124,7 +126,7 @@ workers.
 A TAR must have at least two regular files. A singleton takes the direct-file
 path before TAR bytes are written; directories and symlinks do not count as its
 companion. Empty files, directories, symlinks, and the root `.` are retained.
-Metadata-only entries may accompany data or form their own group; they need no
+Metadata-only entries may accompany data or form their own datagroup; they need no
 artificial TAR or data chunk.
 
 Never split an original large file into custom TAR members. TARs remain ordinary
@@ -166,53 +168,53 @@ decompression, and remove output on authentication failure. Backup staging is
 `0700`; staged plaintext and decryption output are `0600`. Cleanup is not
 secure erasure. Production limitations remain in section 13.
 
-## 6. Group sizing and parity
+## 6. Datagroup sizing and parity
 
 Placement uses **actual stored chunk sizes**, with conservative
 metadata/PAR2 reservations. A whole RAW file, however many chunks it contains,
-stays in one group whenever it fits an empty group. It is never split across
-groups merely because the current group already contains other data.
+stays in one datagroup whenever it fits an empty datagroup. It is never split across
+datagroups merely because the current datagroup already contains other data.
 
-The queue has **one active group and at most four waiting groups** by default:
+The queue has **one active datagroup and at most four waiting datagroups** by default:
 
-1. Try each waiting group, oldest first, then the active group. Add a complete
+1. Try each waiting datagroup, oldest first, then the active datagroup. Add a complete
    RAW file or complete TAR only if the whole unit fits.
-2. When a unit does not fit a group, close that group if its budget is at least
-   **95%** of the group limit. A smaller group may remain waiting.
-3. If a new group would exceed the waiting limit, close the fullest candidate;
+2. When a unit does not fit a datagroup, close that datagroup if its budget is at least
+   **95%** of the datagroup limit. A smaller datagroup may remain waiting.
+3. If a new datagroup would exceed the waiting limit, close the fullest candidate;
    equal budgets close the oldest. There is no age counter or timeout.
-4. If a RAW file exceeds an empty group's budget, start it in a fresh group.
-   Close intermediate groups as they fill. Its last group stays active and may
+4. If a RAW file exceeds an empty datagroup's budget, start it in a fresh datagroup.
+   Close intermediate datagroups as they fill. Its last datagroup stays active and may
    accept subsequent whole RAW files/TARs under the same queue rules.
-5. Close every remaining group at the end of backup. Closed groups are never
-   reopened, moved between groups, or given regenerated parity just to improve fill.
+5. Close every remaining datagroup at the end of backup. Closed datagroups are never
+   reopened, moved between datagroups, or given regenerated parity just to improve fill.
 
-`--waiting-groups` accepts zero or more. `--group-close-percent` accepts 1–100;
+`--waiting-datagroups` accepts zero or more. `--datagroup-close-percent` accepts 1–100;
 100 avoids early percentage-based closure. The percentage is **not a fill cap**:
-an already 95%-full group still accepts a whole unit that fits. Fill is measured
+an already 95%-full datagroup still accepts a whole unit that fits. Fill is measured
 using stored payload plus reserved metadata and PAR2, not plaintext input size.
-No artificial zero padding is written to fill chunks or groups.
+No artificial zero padding is written to fill chunks or datagroups.
 
 While deciding placement, completed chunks of the current RAW file wait in
-private staging until EOF or until they exceed one empty group's budget. At
-most one group-sized candidate plus one crossing chunk needs buffering; payload
+private staging until EOF or until they exceed one empty datagroup's budget. At
+most one datagroup-sized candidate plus one crossing chunk needs buffering; payload
 stays on disk. The file is read/compressed/encrypted once, and buffered chunks
 are renamed into their selected shard, not copied or recompressed. After a file
-is known to span groups, subsequent chunks are placed as they finish.
+is known to span datagroups, subsequent chunks are placed as they finish.
 
-Waiting groups retain their already stored data and bounded inventories; their
-final metadata and PAR2 are produced only on closure. More waiting groups trade
+Waiting datagroups retain their already stored data and bounded inventories; their
+final metadata and PAR2 are produced only on closure. More waiting datagroups trade
 additional metadata memory and delayed protection for potentially better fill.
-Group closure order need not follow input order: IDs and RAW offsets determine
+Datagroup closure order need not follow input order: IDs and RAW offsets determine
 reconstruction, and the central checksum chain follows closure order.
 
 TAR collection uses a conservative plaintext bound so each complete TAR fits
 one file; it does not try to fill a compressed chunk to its byte ceiling.
-Metadata reservations and PAR2 limits may still close groups early. No arbitrary
+Metadata reservations and PAR2 limits may still close datagroups early. No arbitrary
 chunk-count or filename-width limit is used. PAR2's own 32768 source/recovery-block limits
 also constrain admission when PAR2 is enabled; slice sizes are positive multiples of four.
 
-With PAR2 disabled, groups retain both metadata copies and all checksums, but
+With PAR2 disabled, datagroups retain both metadata copies and all checksums, but
 contain no PAR2 files and have no parity reservation or PAR2 block-capacity limit.
 Checksum receipts carry empty parity-hash maps. Missing/corrupt payloads cannot
 be reconstructed; repair may still recover an intentional metadata duplicate
@@ -230,9 +232,9 @@ recovery_blocks = max(
 ```
 
 This gives a normal 20% recovery target, at least 125% of the largest stored
-member, and an extra slice after rounding. Short/final groups may significantly
+member, and an extra slice after rounding. Short/final datagroups may significantly
 exceed 20%; calculate from **actual protected bytes**, never the nominal maximum
-group capacity. Do not pad with fake data or rebalance completed groups.
+datagroup capacity. Do not pad with fake data or rebalance completed datagroups.
 
 Use one PAR2 index and enough uniform recovery volumes to fit the file ceiling;
 neither four volumes nor a particular volume byte size is required. Budget
@@ -248,50 +250,51 @@ metadata must also survive. An index can be replaced by a surviving volume.
 
 ### Supergroup protection and bounded work
 
-A supergroup contains at most `supergroup_groups` groups (default 5). All active
-and waiting groups belong to that same supergroup. Before creating a group beyond
-that limit, close every waiting/active group and finish the supergroup. No tails
+A supergroup contains at most `supergroup_datagroups` datagroups (default 5). All active
+and waiting datagroups belong to that same supergroup. Before creating a datagroup beyond
+that limit, close every waiting/active datagroup and finish the supergroup. No tails
 are collected across supergroup boundaries. No padding is added.
 
-Finish each group's primary metadata, group PAR2, and central metadata set first.
-Then finish the supergroup's public `index-groups` and generate its PAR2 directly
+Finish each datagroup's primary metadata, datagroup PAR2, and central metadata set first.
+Then finish the supergroup's public `index-datagroups` and generate its PAR2 directly
 from the stored inputs, without input copies or hardlinks. Protected inputs are
-chunks, both group-index copies, central checksum receipts and first-set format/
-certificate metadata, plus the supergroup index. **No group or central `.par2`
+chunks, both datagroup-index copies and central checksum receipts, plus the
+supergroup index. The archive-wide format note and public certificate belong to
+the separate root bootstrap set. **No datagroup or central `.par2`
 file is protected by supergroup PAR2.** They can be regenerated from repaired inputs.
 The supergroup index gets an identical `-spare` copy under central `metadata/`.
-It contains generated archive names, hashes, sizes and group membership, not source
+It contains generated archive names, hashes, sizes and datagroup membership, not source
 paths; encrypted source inventories stay encrypted throughout parity processing.
 
 For the outer slice size, sum `ceil(stored_file_bytes / slice_size)` separately
-for every protected file in each group. Recovery blocks are the maximum of:
+for every protected file in each datagroup. Recovery blocks are the maximum of:
 
 - 20% of total source blocks (including the reserved supergroup-index size);
-- `supergroup_margin_percent` (default 110%) of the largest group's block count;
-- one block more than that largest group.
+- `supergroup_margin_percent` (default 110%) of the largest datagroup's block count;
+- one block more than that largest datagroup.
 
 Round upward. Increase the outer slice size by doubling when necessary to remain
 within PAR2's 32768-block capacity; record the actual size, block count and volume
 count in the index. All metadata/packet overhead and file/media limits still apply.
-The final short supergroup uses only its actual members, never the maximum group
-capacity. A one-group tail consequently has roughly another full data copy's worth
-of outer parity, not five groups' worth. An index that cannot fit the file limit
-fails explicitly; reduce the configured supergroup group count.
+The final short supergroup uses only its actual members, never the maximum datagroup
+capacity. A one-datagroup tail consequently has roughly another full data copy's worth
+of outer parity, not five datagroups' worth. An index that cannot fit the file limit
+fails explicitly; reduce the configured supergroup datagroup count.
 
 Indexes form their own backward SHA-256 chain, including the preceding set's
 PAR2 hashes. The catalog-root stores both chains' last links and counts. Missing
 supergroup-index copies can be reconstructed from standard PAR2 file-description
 packets and par2cmdline; no custom erasure coding is implemented.
 
-Recovery first fixes locally recoverable groups, then charges remaining damage
+Recovery first fixes locally recoverable datagroups, then charges remaining damage
 against their supergroup. The layers' recovery-block counts are **not additive**.
-Supergroup failure does not discard unrelated intact groups or complete streams.
+Supergroup failure does not discard unrelated intact datagroups or complete streams.
 Verify reports redundancy loss even if all payloads remain usable. Explicit repair
-regenerates group, central, supergroup and root PAR2 from verified inputs as needed.
+regenerates datagroup, central, supergroup and root PAR2 from verified inputs as needed.
 
 Backup's outer protection window and a recovery workspace are bounded by one
 supergroup. Already published local output remains the archive, not a staging copy.
-Restore retains only the selected group's repaired payload when leaving an outer
+Restore retains only the selected datagroup's repaired payload when leaving an outer
 workspace; metadata can stay cached. Cloud upload/eviction is not implemented.
 The current RAW restore still assembles an entire original stream in scratch;
 filename-only restore also retains decoded streams. Streaming destination writes
@@ -299,42 +302,45 @@ and bounded catalog pagination remain necessary before production-scale restores
 
 ## 7. Metadata order, copies, and completeness
 
-For each group:
+For each datagroup:
 
 1. Finish independent stored chunks.
-2. Write the group's streams/source inventory; compress and/or encrypt as requested.
-3. Write the public group manifest, optionally compressing it, referencing stored inventory and
+2. Write the datagroup's streams/source inventory; compress and/or encrypt as requested.
+3. Write the public datagroup manifest, optionally compressing it, referencing stored inventory and
    chunk SHA-256 values. It carries settings and plaintext chunk checksums.
-4. When enabled, generate group PAR2 over **chunks + stored inventory + stored manifest**.
+4. When enabled, generate datagroup PAR2 over **chunks + stored inventory + stored manifest**.
 5. Make byte-identical inventory/manifest copies under `metadata/`, adding
    `-spare` before `.json`/`.jsonl` in their filenames.
 6. Write a central checksum receipt (compressed when enabled) covering these
-   copies and any finished group PAR2 files; add central PAR2 when enabled.
+   copies and any finished datagroup PAR2 files; add central PAR2 when enabled.
 
 The local manifest never hashes PAR2 generated from itself. Each central receipt
 also records the previous central receipt's stored SHA-256 and PAR2 hashes. The
-last link, group count, and settings go into two identical self-checksummed
+last link, datagroup count, and settings go into two identical self-checksummed
 **catalog-root markers**, one primary and one `-spare`, published last. These are
 small checksum-chain roots, not copies of the complete catalog. This bounded chain avoids one unbounded archive-wide
 checksum list or marker. Each central recovery set is independently bounded.
-The two catalog-root copies also have their own PAR2 set, sized for all source
-blocks in both copies plus one extra block; this allows losing both copies.
-Bootstrap PAR2 is generated before publishing the roots and needs no settings
-or readable root copy to reconstruct them.
+The two catalog-root copies, a small format note and the normalized public
+recipient certificate (when encrypted) live at the archive root. They share one
+bootstrap PAR2 set using **4096-byte slices**, sized for every protected input's
+rounded block count plus one extra block. All bootstrap inputs may therefore be
+lost together while sufficient parity survives. Bootstrap PAR2 is generated
+before publishing the roots; PAR2 needs no readable root/settings to recover them.
+The root's `bootstrap_files` map records the auxiliary files' stored sizes and
+SHA-256 values. Neither the private key nor original source paths occur here.
 
-The first central set additionally protects a small uncompressed format note and
-normalized public recipient certificate when encrypted. These and catalog-root
-markers are the explicit uncompressed roles. Inventories, manifests, and receipts
-use zstd when compression is enabled, regardless of size or compression ratio;
-otherwise they remain JSON/JSONL, with CMS wrapping source inventories if encrypted.
+Catalog roots, format text and the PEM certificate are the explicit uncompressed
+metadata roles. Inventories, manifests, supergroup indexes and receipts use zstd
+when compression is enabled, regardless of size or compression ratio. Otherwise
+they remain JSON/JSONL. CMS wraps source-name inventories when encryption is enabled.
 
 The inventory's first JSONL record is `{"streams": [...]}`, describing all streams
-in the group. Subsequent records are `{"stream": "<id>", "entry": {...}}`, linking
+in the datagroup. Subsequent records are `{"stream": "<id>", "entry": {...}}`, linking
 original filesystem entries and required ancestors to their stream. For TARs these
 are the TAR members. For RAW streams they identify the original file and its
 ancestors. Metadata-only entries use a null stream ID. Repeated ancestor descriptions
-must agree. Direct-stream groups carry the full source size from the start;
-whole-file hashes become available in the final group. Earlier groups still
+must agree. Direct-stream datagroups carry the full source size from the start;
+whole-file hashes become available in the final datagroup. Earlier datagroups still
 have independent plaintext/stored chunk hashes.
 
 Record CRC32 (ZIP-compatible), MD5, SHA-1, SHA-256, and SHA-512 while reading
@@ -349,48 +355,60 @@ See [FORMAT.md](poc/FORMAT.md) for the complete filename table.
 
 ```text
 ARCHIVE/
-  <sgid>/
-    <gid[:2]>/
-      archive-<aid>_supergroup-<sgid>_group-<gid>_chunk-...tar[.zst][.cms]
-      archive-<aid>_supergroup-<sgid>_group-<gid>_chunk-...raw[.zst][.cms]
-      archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-chunks.json[.zst]
-      archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-files.jsonl[.zst][.cms]
-      archive-<aid>_supergroup-<sgid>_group-<gid>*.par2
+  archive-<aid>_metadata_catalog-root.json
+  archive-<aid>_metadata_catalog-root-spare.json
+  archive-<aid>_metadata_catalog-root*.par2
+  archive-<aid>_metadata_format.txt
+  archive-<aid>_metadata_recipient.pem                 # when encrypted
+  data/<sgid[:2]>/<sgid>/
+    <gid>/                                           # one complete datagroup
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_chunk-...tar[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_chunk-...raw[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_metadata_index-chunks.json[.zst]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_metadata_index-files.jsonl[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>*.par2
     metadata/
-      archive-<aid>_supergroup-<sgid>_metadata_index-groups.json[.zst]
+      archive-<aid>_supergroup-<sgid>_metadata_index-datagroups.json[.zst]
     parity/<media-number>/
       archive-<aid>_supergroup-<sgid>*.par2
-  metadata/
-    <sgid>/
-      archive-<aid>_supergroup-<sgid>_metadata_index-groups-spare.json[.zst]
-      <gid[:2]>/
-        archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-*-spare.json*[.zst][.cms]
-        archive-<aid>_supergroup-<sgid>_metadata_group-<gid>_checksums.json[.zst]
-        archive-<aid>_supergroup-<sgid>_metadata_group-<gid>*.par2
-    archive-<aid>_metadata_catalog-root.json
-    archive-<aid>_metadata_catalog-root-spare.json
-    archive-<aid>_metadata_catalog-root*.par2
+  metadata/<sgid[:2]>/<sgid>/
+    archive-<aid>_supergroup-<sgid>_metadata_index-datagroups-spare.json[.zst]
+    <gid>/
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_metadata_index-*-spare.json*[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_metadata_checksums.json[.zst]
+      archive-<aid>_supergroup-<sgid>_datagroup-<gid>_metadata*.par2
 ```
 
-Only populated shard directories are created. Many groups can share a shard.
-PAR2 files in this layout exist only when enabled. Group IDs and the `group-`
-name component remain in use without PAR2. Each supergroup has its own top-level
-directory, named with its existing ID. Group/central PAR2 stores basenames relative
-to its shard; supergroup PAR2 stores canonical paths relative to ARCHIVE. Chunk numbers are local to a group,
-zero-padded to **at least** four digits, without a four-digit maximum. Offsets
-and lengths are plaintext byte coordinates, not compressed/encrypted coordinates.
-Only RAW filenames have offsets; both formats have lengths.
+Only populated directories are created. Shards reuse the first two characters
+of the supergroup ID in both trees; every datagroup has its own full-ID directory.
+The two trees are collections, not single media units. Each datagroup directory,
+each central metadata set, the root bootstrap set, each numbered parity-media
+directory and the supergroup index pair obey their respective complete byte
+budgets, including every metadata/PAR2 byte. No metadata file is exempt from the
+individual file limit. Oversized indivisible metadata fails explicitly before
+publication; it is not silently allowed to exceed a cap.
 
-Readers discover files recursively in flat, nested, or mixed layouts. Group indexes
-have distinct primary and `-spare` basenames with identical bytes. Use recorded
-checksums to select good bytes and report missing/damaged redundancy. Every
-basename is unique, so the entire archive can be flattened without collisions.
-Duplicate basenames are rejected. Generated paths use ASCII only, at most 255
-bytes per component and 240 characters relative to ARCHIVE. This includes all
-supergroup/shard directories and permits copying ARCHIVE contents to a FAT32 or
-exFAT volume root with conventional Windows path limits, as well as ext3/ext4.
-An arbitrarily deep external destination prefix is not part of this guarantee. Local PAR2 protects primary names; central
-PAR2 protects spare names, and recovery maps copies to the required names. Archive-file mtimes and enumeration order have no recovery significance.
+Names always order identities first: archive, supergroup, datagroup (when present),
+then role. `metadata` therefore always follows the complete identity prefix.
+PAR2 files exist only when enabled. IDs and directories remain without PAR2.
+Datagroup/central PAR2 stores local basenames; supergroup PAR2 stores canonical
+paths relative to ARCHIVE. Chunk numbers restart per datagroup and are padded to
+at least four digits, without a four-digit maximum. Only RAW filenames carry
+offsets; both RAW and TAR names record plaintext lengths.
+
+Discovery accepts flat, nested and mixed layouts, including names/directories
+whose ASCII letter case changed during transport. Generated names remain
+lowercase. Two archive basenames differing only by case are rejected as ambiguous;
+source filenames inside inventories/TARs keep their exact original case.
+Verify/restore never rename inputs; explicit repair normalizes recovered paths.
+Primary/spare indexes have distinct basenames and identical bytes, so flattening
+needs no renaming. Recorded checksums select healthy copies.
+
+Generated components are at most 255 ASCII bytes and archive-relative paths at
+most 256 characters. The latter is a portability policy, not a FAT32/ext3 limit:
+adding `X:\` and the terminating NUL fits conventional Windows MAX_PATH=260 when
+archive contents are copied to a volume root. Arbitrarily deep external prefixes
+are outside this guarantee. Archive-file mtimes and discovery order do not matter.
 
 ## 9. Verify, repair, and restore
 
@@ -411,11 +429,11 @@ PAR2 protects spare names, and recovery maps copies to the required names. Archi
 A valid catalog-root marker anchors the full catalog. Either marker copy suffices;
 if both are damaged/missing, bootstrap PAR2 restores them before reading settings.
 Even with bootstrap PAR2,
-conflicting valid copies are rejected. A surviving local group can also be
+conflicting valid copies are rejected. A surviving local datagroup can also be
 restored without the central directory/markers. Report that original backup
 completeness cannot be proved, and return 1 for that partial-catalog mode.
 Streams with detected gaps are skipped entirely; never fabricate holes or
-publish a fragment as a complete file. If a group cannot be fully repaired, restore
+publish a fragment as a complete file. If a datagroup cannot be fully repaired, restore
 still checks its surviving chunks against stored hashes and restores complete
 healthy streams. A lost TAR does not prevent restoring its healthy siblings.
 Skipped streams produce exit 1; a partial RAW file is never published.
@@ -435,7 +453,7 @@ Compare checks paths, types, file SHA-256, sizes, symlinks, POSIX modes and mtim
 ## 10. Filename-only scan
 
 `scan` reads names and file types only, never archive contents, checksums, or PAR2
-packets. It writes a separate `.json` or `.json.zst` index of surviving chunk/group-PAR2 names.
+packets. It writes a separate `.json` or `.json.zst` index of surviving chunk/datagroup-PAR2 names.
 Restore with `--scan-index` uses those coordinates and available PAR2, checks
 CMS/zstd/declared lengths, and skips streams with detected gaps or bad chunks.
 
@@ -457,7 +475,7 @@ warnings, and comparison differences retain actionable filenames.
 
 Tests use small explicit settings and real zstd/OpenSSL/PAR2. All eight feature
 combinations are covered, including dependency-free operation when all are disabled. They cover hard
-limits, singleton fallback, cross-directory TARs, independent groups, ciphertext
+limits, singleton fallback, cross-directory TARs, independent datagroups, ciphertext
 metadata copies, catalog loss, corruption/repair, read-only restore, unsafe paths,
 and recovery with ordinary tools. No demo generation is needed to run the core
 regression fixtures.
@@ -536,7 +554,7 @@ The following gaps are recognized; their production remedies are intentionally
    explicit rollback policy.
 4. **Metadata confidentiality policy.** Source paths and inventories are encrypted
    when payload is encrypted. Technical IDs, sizes, layout, stored checksums,
-   and group relationships remain public. Production must assess this remaining
+   and datagroup relationships remain public. Production must assess this remaining
    information leakage against its threat model.
 5. **Plaintext on disk.** Staging/scratch permissions restrict access to the running
    user, but cleanup is not secure erasure. Crashes, snapshots, filesystem journals,
