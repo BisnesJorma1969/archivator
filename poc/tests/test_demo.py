@@ -41,7 +41,7 @@ class DemoTests(ArchiveTest):
     def test_bitrot_byte_budget_matches_changed_bytes_then_restores(self):
         (self.source / "file").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        before = {path.name: path.read_bytes() for path in self.archive.rglob("archive-*")}
+        before = {str(path): path.read_bytes() for path in self.archive.rglob("archive-*")}
         report = bitrot([self.archive], percent=1, report_path=self.root / "damage.json", damage="bitflip")
         self.assertEqual(report["status"], "applied")
         self.assertEqual({group["category"] for group in report["groups"]},
@@ -52,11 +52,11 @@ class DemoTests(ArchiveTest):
                 changed_names.add(change["filename"])
                 self.assertEqual(change["xor_mask"].bit_count(), 1)
                 start, length = change["offset"], change["length"]
-                original = before[change["filename"]][start:start + length]
+                original = before[change["path"]][start:start + length]
                 expected = bytes(value ^ change["xor_mask"] for value in original)
                 self.assertEqual(Path(change["path"]).read_bytes()[start:start + length], expected)
         budget = round(sum(map(len, before.values())) / 100)
-        changed_bytes = sum(sum(left != right for left, right in zip(data, next(self.archive.rglob(name)).read_bytes()))
+        changed_bytes = sum(sum(left != right for left, right in zip(data, Path(name).read_bytes()))
                             for name, data in before.items())
         self.assertEqual(changed_bytes, budget)
         self.assertEqual(report["archives"][0]["affected_bytes"], budget)

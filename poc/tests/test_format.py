@@ -3,13 +3,12 @@ import io
 import zipfile
 
 from poc.archivator_lib.common import Hashes, IntegrityError
-from poc.archivator_lib.format import Settings, chunk_name, new_id, parse_chunk, recovery_blocks
+from poc.archivator_lib.format import Settings, chunk_name, new_id, parse_chunk
+from poc.archivator_lib.limits import recovery_blocks
 
 
 class FormatTests(unittest.TestCase):
     def test_chunk_numbers_can_grow_beyond_four_digits(self):
-        settings = Settings(parity_max_members=10001)
-        self.assertEqual(settings.parity_max_members, 10001)
         archive, parity, stream = new_id(), new_id(), new_id()
         for number in (0, 9999, 10000, 1234567):
             with self.subTest(number=number):
@@ -38,6 +37,6 @@ class FormatTests(unittest.TestCase):
             self.assertEqual(hashes.values()["crc32"], f"{archive.getinfo('sample.txt').CRC:08x}")
 
     def test_redundancy_accounts_for_short_sets_and_block_rounding(self):
-        self.assertEqual(recovery_blocks([1], 1024), 4)
+        self.assertEqual(recovery_blocks([1], 1024), 2)
         self.assertEqual(recovery_blocks([3175], 1024), 5)
         self.assertEqual(recovery_blocks([10240] * 8, 1024), 16)

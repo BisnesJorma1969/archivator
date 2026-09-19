@@ -12,21 +12,20 @@ from poc.archivator_lib.compare import compare
 from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
-from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl
+from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl, catalog, manifests
 from poc.tests.test_recovery import flip, snapshot
 
 
 class AcceptanceTests(ArchiveTest):
     def test_thousands_of_small_files_in_multiple_tar_streams(self):
         # Entry count, rather than data size, forces multiple bundles here.
-        settings = replace(SMALL, chunk_size=65536, tar_entries=400, tar_size=1024 * 1024,
-                           slice_size=4096)
+        settings = SMALL
         for index in range(2001):
             (self.source / f"tiny-{index:04d}").write_bytes(f"file {index}\n".encode())
         backup(self.source, self.archive, settings=settings)
-        streams = read_zstd_jsonl(next(self.archive.rglob("*_metadata_streams.jsonl.zst")))
+        streams = catalog(self.archive)
         self.assertGreater(len(streams), 1)
-        self.assertTrue(all(stream["type"] == "tar" and stream["entry_count"] <= 400 for stream in streams))
+        self.assertTrue(all(stream["type"] == "tar" and sum(entry["type"] == "file" for entry in stream["inventory"]) >= 2 for stream in streams))
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
         for original in self.source.iterdir():
@@ -40,8 +39,7 @@ class AcceptanceTests(ArchiveTest):
                 target = self.root / f"restored-{encrypted}"
                 (self.source / "large").write_bytes(self.data(160000))
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                manifest = next(read_zstd_json(path) for path in archive.rglob("*_parity-*_manifest.json.zst")
-                                if read_zstd_json(path)["member_count"] == 8)
+                manifest = next(item for item in manifests(archive) if item["members"])
                 # Damage one data slice and lose a whole recovery volume. The
                 # other three volumes retain more than enough recovery blocks.
                 flip(next(archive.rglob(manifest["members"][0]["filename"])))
@@ -78,8 +76,7 @@ class AcceptanceTests(ArchiveTest):
         (other_source / "second").write_bytes(b"second")
         other_archive = self.root / "other-archive"
         backup(other_source, other_archive, settings=SMALL)
-        for path in other_archive.rglob("archive-*"):
-            shutil.copyfile(path, self.archive / path.name)
+        shutil.copytree(other_archive, self.archive / "other")
         restore(self.archive, self.restored, archive_id=first_id)
         self.assertEqual(compare(self.source, self.restored), 0)
         self.assertFalse((self.restored / "second").exists())
@@ -98,13 +95,13 @@ class AcceptanceTests(ArchiveTest):
         original = self.data(80000)
         (self.source / "large").write_bytes(original)
         backup(self.source, self.archive, certificate, SMALL)
-        catalog = next(self.archive.rglob("*_metadata_streams.jsonl.zst"))
-        streams = [json.loads(line) for line in run([executable("zstd"), "-dc", str(catalog)]).splitlines()]
+        streams = catalog(self.archive, key)
         stream = next(entry for entry in streams if entry["type"] == "file")
         manual = self.root / "manual"
         manual.mkdir()
         for path in self.archive.rglob("archive-*"):
-            shutil.copyfile(path, manual / path.name)
+            if not (manual / path.name).exists():
+                shutil.copyfile(path, manual / path.name)
         chunks = list(manual.glob(f"*_stream-{stream['stream']}_*.cms"))
         missing = chunks[0]
         missing.unlink()

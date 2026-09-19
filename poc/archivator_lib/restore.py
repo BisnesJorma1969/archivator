@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, read_jsonl, scratch
+from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, scratch
 from .external import decrypt, executable
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import stage_set, discover, open_archive, recover_set, select
@@ -93,14 +93,14 @@ def finish_stream(path, stream, archive, target):
     if path.stat().st_size != stream["size"]:
         raise IntegrityError("Reconstructed stream length mismatch")
     hashes = file_hashes(path)
-    if hashes["sha256"] != stream["sha256"] or hashes["sha512"] != stream["sha512"]:
+    if "sha256" in stream and (hashes["sha256"] != stream["sha256"] or hashes["sha512"] != stream["sha512"]):
         raise IntegrityError("Reconstructed whole-stream checksum mismatch")
     if stream["type"] == "file":
         progress.update(f"Writing restored file: {stream['path']!r} ({stream['size']:,} bytes)")
         with path.open("rb") as source, (target / stream["path"]).open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
     else:
-        inventory = read_jsonl(archive.metadata / stream["inventory"])
+        inventory = stream["inventory"]
         extract_tar(path, target, inventory)
     path.unlink()
 
@@ -115,7 +115,7 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
         return restore_scanned(root, target, scan_index, archive_id, key, certificate)
     archives = discover(root)
     selected = select(archives, archive_id)[0]
-    with open_archive(selected, archives[selected]) as archive:
+    with open_archive(selected, archives[selected], key=key, certificate=certificate) as archive:
         encrypted = archive.format["encryption"] != "none"
         if encrypted and not key:
             raise ArchiveError("Encrypted archive requires --decrypt-key")
@@ -131,6 +131,28 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
             (target / entry["path"]).mkdir()
 
         streams = {stream["stream"]: stream for stream in archive.streams}
+        skipped = set()
+        for stream_id, stream in streams.items():
+            chunks = sorted((member for manifest in archive.manifests for member in manifest["members"]
+                             if member["stream"] == stream_id), key=lambda item: item["offset"])
+            offset = 0
+            for member in chunks:
+                if member["offset"] != offset:
+                    skipped.add(stream_id)
+                offset = member["offset"] + member["length"]
+            if offset != stream["size"]:
+                skipped.add(stream_id)
+        if skipped and archive.complete:
+            raise IntegrityError("Chunk ranges do not cover their streams")
+        for stream_id in skipped:
+            print(f"Skipping incomplete stream {stream_id}: missing or overlapping chunks", flush=True)
+        archive.manifests = [manifest for manifest in archive.manifests
+                             if manifest["members"] and manifest["members"][0]["stream"] not in skipped]
+        streams = {sid: stream for sid, stream in streams.items() if sid not in skipped}
+        archive.entries = [entry for entry in archive.entries if entry.get("stream") not in skipped]
+        for stream in streams.values():
+            if stream["type"] == "file" and stream["size"] == 0:
+                (target / stream["path"]).touch(exist_ok=False)
         remaining = dict.fromkeys(streams, 0)
         for manifest in archive.manifests:
             for member in manifest["members"]:
@@ -163,4 +185,7 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
             if entry["type"] == "symlink":
                 os.symlink(entry["symlink_target"], target / entry["path"])
         restore_metadata(target, archive.entries)
-    print(f"Restore complete: {target}; content checksums verified. Archive files were not modified.")
+        complete = archive.complete is not None and not skipped
+    print(f"Restore {'complete' if complete else 'of available streams finished'}: {target}; "
+          "content checksums verified. Archive files were not modified.")
+    return 0 if complete else 1

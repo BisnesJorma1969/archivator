@@ -10,9 +10,7 @@ from poc.archivator_lib.common import WORK_DIR
 from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.format import Settings
 
-SMALL = Settings(chunk_size=16384, large_file_size=32768, tar_size=16384,
-                 tar_entries=100, parity_min_members=8, parity_max_members=64, slice_size=1024)
-
+SMALL = Settings(max_file_bytes=65535, max_group_bytes=262144, slice_size=1024)
 
 def read_zstd_json(path):
     return json.loads(run([executable("zstd"), "-qdc", str(path)]))
@@ -46,3 +44,16 @@ class ArchiveTest(unittest.TestCase):
              "-keyout", str(key), "-out", str(certificate), "-subj", "/CN=PoC test",
              "-days", "1"])
         return key, certificate
+
+
+def catalog(archive, key=None):
+    from poc.archivator_lib.recovery import discover, open_archive
+    files = discover(archive)
+    archive_id = next(iter(files))
+    with open_archive(archive_id, files[archive_id], key=key) as opened:
+        return opened.streams
+
+
+def manifests(archive):
+    unique = {path.name: path for path in archive.rglob("*_manifest.json.zst")}
+    return [read_zstd_json(path) for path in unique.values()]

@@ -8,9 +8,10 @@ from poc.archivator_lib.cli import main
 from poc.archivator_lib.common import IntegrityError
 from poc.archivator_lib.external import ZstdWriter
 from poc.archivator_lib.format import chunk_name, parse_chunk
+from poc.archivator_lib.limits import input_limit
 from poc.archivator_lib.restore import restore
 from poc.archivator_lib.scan import scan
-from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl
+from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl, catalog
 from poc.tests.test_recovery import snapshot
 
 
@@ -47,6 +48,7 @@ class ScanTests(ArchiveTest):
     def test_restore_without_any_metadata_in_mixed_layout_and_both_encryption_modes(self):
         key, certificate = self.certificate()
         (self.source / "document.txt").write_text("recover this document")
+        (self.source / "second.txt").write_text("a TAR companion")
         content = self.data(80000)
         (self.source / "large.bin").write_bytes(content)
         for encrypted in (False, True):
@@ -54,7 +56,7 @@ class ScanTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"target-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                streams = read_zstd_jsonl(next(archive.rglob("*_streams.jsonl.zst")))
+                streams = catalog(archive, key if encrypted else None)
                 direct = next(item for item in streams if item["type"] == "file")
                 bundle = next(item for item in streams if item["type"] == "tar")
                 self.remove_metadata(archive)
@@ -77,10 +79,11 @@ class ScanTests(ArchiveTest):
 
     def test_unrecoverable_gap_skips_entire_stream_but_restores_other_streams(self):
         (self.source / "small.txt").write_text("surviving file")
-        (self.source / "large").write_bytes(self.data(80000))
+        (self.source / "second.txt").write_text("TAR companion")
+        (self.source / "large").write_bytes(self.data(200000))
         backup(self.source, self.archive, settings=SMALL)
         chunks = list(self.archive.rglob("*_chunk-*.zst"))
-        missing = next(path for path in chunks if parse_chunk(path.name)["offset"] == SMALL.chunk_size)
+        missing = next(path for path in chunks if parse_chunk(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
         skipped_id = parse_chunk(missing.name)["stream"]
         missing.unlink()
         self.remove_metadata(self.archive)
@@ -96,7 +99,7 @@ class ScanTests(ArchiveTest):
         (self.source / "large").write_bytes(self.data(80000))
         backup(self.source, self.archive, settings=SMALL)
         missing = next(path for path in self.archive.rglob("*_chunk-*.zst")
-                       if parse_chunk(path.name)["offset"] == SMALL.chunk_size)
+                       if parse_chunk(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
         stream = parse_chunk(missing.name)["stream"]
         missing.unlink()
         self.remove_metadata(self.archive)
@@ -108,7 +111,8 @@ class ScanTests(ArchiveTest):
         self.assertEqual(snapshot(self.archive), before)
 
     def test_surviving_parity_can_recover_all_missing_chunk_names(self):
-        (self.source / "document.txt").write_text("small enough for parity-only recovery")
+        content = self.data(12000)
+        (self.source / "document.txt").write_bytes(content)
         backup(self.source, self.archive, settings=SMALL)
         self.remove_metadata(self.archive)
         for path in self.archive.rglob("*_chunk-*.zst"):
@@ -116,8 +120,7 @@ class ScanTests(ArchiveTest):
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 0)
-        self.assertEqual(next(self.restored.rglob("document.txt")).read_text(),
-                         "small enough for parity-only recovery")
+        self.assertEqual(next(self.restored.glob("*.bin")).read_bytes(), content)
 
     def test_missing_after_scan_and_bad_encryption_key_never_publish_partial_streams(self):
         (self.source / "large").write_bytes(self.data(80000))

@@ -19,21 +19,15 @@ CHUNK_NAME = re.compile(
 
 @dataclass(frozen=True)
 class Settings:
-    chunk_size: int = 256 * 1024 * 1024
-    large_file_size: int = 256 * 1024 * 1024
-    tar_size: int = 1024 * 1024 * 1024
-    tar_entries: int = 100000
-    parity_min_members: int = 8
-    parity_max_members: int = 64
+    max_file_bytes: int = 256 * 1024 * 1024 - 1
+    max_group_bytes: int = 14 * 1024 * 1024 * 1024
     slice_size: int = 1024 * 1024
 
     def __post_init__(self):
-        if any(value <= 0 for value in vars(self).values()):
-            raise ArchiveError("All internal size settings must be positive")
+        if any(not isinstance(value, int) or value <= 0 for value in vars(self).values()):
+            raise ArchiveError("All byte limits must be positive integers")
         if self.slice_size % 4:
             raise ArchiveError("PAR2 slice size must be a multiple of four")
-        if self.parity_min_members > self.parity_max_members:
-            raise ArchiveError("Minimum parity members must not exceed the maximum")
 
 
 def new_id():
@@ -64,26 +58,20 @@ def parity_prefix(archive, parity):
 
 
 def stored_path(root, name):
-    """Keep archive metadata at the root and data-set files in their shard."""
-    if "_metadata_" in name or "_metadata." in name:
-        return Path(root) / name
-    else:
-        match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
-        if not match:
-            raise IntegrityError(f"Cannot identify parity set for archive file: {name!r}")
-        parity = match[1]
-    return Path(root) / parity[:2] / name
+    """Canonical destinations; discovery also accepts flat or mixed layouts."""
+    root = Path(root)
+    match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
+    if match:
+        return root / match[1][:2] / name
+    match = re.match(rf"archive-{ID}_metadata_parity-({ID})(?:_|\.)", name)
+    if match:
+        return root / "metadata" / match[1][:2] / name
+    return root / "metadata" / name
 
 
-def recovery_blocks(lengths, slice_size):
-    total = sum(lengths)
-    largest = max(lengths)
-    # Integer ceilings avoid rounding down at large sizes. Four blocks allow
-    # four volumes even for tiny sets; one extra block covers additional damage.
-    twenty_percent = (total + 5 * slice_size - 1) // (5 * slice_size)
-    largest_plus_quarter = (5 * largest + 4 * slice_size - 1) // (4 * slice_size)
-    largest_blocks = (largest + slice_size - 1) // slice_size
-    return max(4, twenty_percent, largest_plus_quarter, largest_blocks + 1)
+def metadata_prefix(archive, parity):
+    # Reuse the data group's ID; metadata protection needs no new random ID.
+    return f"archive-{archive}_metadata_parity-{parity}"
 
 
 def archive_filename(name, archive):

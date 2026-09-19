@@ -137,7 +137,7 @@ def normalize_certificate(source, target):
     return result.strip().split("=", 1)[1].replace(":", "").lower()
 
 
-def create_parity(directory, prefix, members, slice_size, blocks, output_directory=None):
+def create_parity(directory, prefix, members, slice_size, blocks, output_directory=None, volumes=1):
     if blocks > 32768:
         raise ArchiveError("PAR2 recovery block limit exceeded; increase the internal slice size")
     output_directory = output_directory or directory
@@ -145,11 +145,11 @@ def create_parity(directory, prefix, members, slice_size, blocks, output_directo
     # Explicit source base keeps stored member names relative to the archive,
     # even when the recovery files are generated in a separate staging directory.
     run([executable("par2"), "create", "-q", "-t1", "-T1", f"-s{slice_size}",
-         f"-c{blocks}", "-u", "-n4", f"-B{directory.resolve()}", "--", str(index), *members], cwd=directory,
+         f"-c{blocks}", "-u", f"-n{volumes}", f"-B{directory.resolve()}", "--", str(index), *members], cwd=directory,
         activity=f"PAR2: creating {blocks:,} recovery blocks for {len(members):,} files")
     files = sorted(output_directory.glob(prefix + "*.par2"))
-    if len(files) != 5:
-        raise ArchiveError("PAR2 did not produce one index and four recovery volumes")
+    if len(files) != volumes + 1:
+        raise ArchiveError("PAR2 did not produce the requested index and recovery volumes")
     if check_parity(output_directory, prefix, data_directory=directory) != 0:
         raise IntegrityError("New PAR2 set failed verification")
     return files

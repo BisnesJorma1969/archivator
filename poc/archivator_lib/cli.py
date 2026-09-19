@@ -15,6 +15,10 @@ def parser():
     backup.add_argument("source", type=Path)
     backup.add_argument("archive", type=Path)
     backup.add_argument("--encrypt-cert", type=Path)
+    backup.add_argument("--max-file-bytes", type=int, default=256 * 1024 * 1024 - 1,
+                        help="Hard maximum for each stored file (default: 268435455)")
+    backup.add_argument("--max-group-bytes", type=int, default=14 * 1024 * 1024 * 1024,
+                        help="Hard total per group, including metadata/PAR2 (default: 15032385536)")
     for name in ("verify", "repair", "restore"):
         command = commands.add_parser(name)
         command.add_argument("archive", type=Path)
@@ -42,7 +46,9 @@ def main(argv=None):
             if args.command == "backup":
                 from .backup import backup
                 print(f"Backing up {args.source} to {args.archive}", flush=True)
-                archive = backup(args.source, args.archive, args.encrypt_cert)
+                from .format import Settings
+                settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes)
+                archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0
             if args.command == "verify":

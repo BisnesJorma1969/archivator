@@ -218,7 +218,7 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                     chunk["filename"] = path.name
                     known[path.name] = chunk
                     recovered.append(chunk)
-                if not recovered or (not verified and any(name.endswith(".par2") for name in names)):
+                if (not recovered and not verified) or (not verified and any(name.endswith(".par2") for name in names)):
                     unresolved_sets.append(parity_id)
                 for chunk in recovered:
                     if chunk["encrypted"] and not key:

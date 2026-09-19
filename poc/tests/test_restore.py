@@ -139,6 +139,7 @@ class RestoreTests(ArchiveTest):
         self.assertEqual(compare(self.source, self.restored), 0)
 
     def test_unrecoverable_damage_never_succeeds(self):
+        (self.source / "lost").write_bytes(self.data(80000))
         backup(self.source, self.archive, settings=SMALL)
         for path in list(self.archive.rglob("*_chunk-*.zst")) + list(self.archive.rglob("*.par2")):
             path.unlink()

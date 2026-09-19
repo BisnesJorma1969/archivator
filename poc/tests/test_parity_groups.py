@@ -1,60 +1,135 @@
-import hashlib
+from collections import defaultdict
 
-from poc.archivator_lib.backup import ParityWriter, backup
-from poc.archivator_lib.common import read_json
+from poc.archivator_lib.backup import backup
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.format import new_id
+from poc.archivator_lib.format import Settings, parse_chunk
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
-from poc.tests.support import ArchiveTest, SMALL, read_zstd_json
+from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
 
 
 class ParityGroupTests(ArchiveTest):
-    def test_group_boundaries_use_stored_sizes_and_member_limits(self):
-        cases = (
-            ("short", [1000] * 7, False),
-            ("balanced", [1000] * 8, True),
-            ("small-tails", [10000] + [1] * 7 + [10000] * 6, True),
-            ("capped", [10000] + [1] * 63, True),
-        )
-        for label, lengths, closes_automatically in cases:
-            with self.subTest(label=label):
-                archive = self.root / label
-                archive.mkdir()
-                (archive / ".tmp").mkdir()
-                writer = ParityWriter(archive, new_id(), SMALL)
-                stream = new_id()
-                for index, length in enumerate(lengths):
-                    # ParityWriter receives already transformed bytes. The
-                    # plaintext length is fixed to catch grouping by input size.
-                    data = self.data(length, seed=index)
-                    path = writer.staging / "chunk.zst"
-                    path.write_bytes(data)
-                    hashes = {"sha256": hashlib.sha256(data).hexdigest(),
-                              "sha512": hashlib.sha512(data).hexdigest()}
-                    writer.add(path, stream, index * SMALL.chunk_size,
-                               SMALL.chunk_size, hashes, encrypted=False)
-                    expected_sets = int(closes_automatically and index == len(lengths) - 1)
-                    self.assertEqual(len(writer.manifests), expected_sets)
-                writer.finish_set()
-                self.assertEqual(len(writer.manifests), 1)
-                manifest = read_json(next(archive.rglob("*_manifest.json")))
-                self.assertEqual(manifest["member_count"], len(lengths))
-                self.assertEqual([member["stored_length"] for member in manifest["members"]], lengths)
+    def test_defaults_are_exact_byte_limits(self):
+        self.assertEqual(Settings().max_file_bytes, 268435455)
+        self.assertEqual(Settings().max_group_bytes, 15032385536)
 
-    def test_64_member_set_and_short_tail_repair_and_restore(self):
-        # One incompressible chunk followed by many tiny compressed chunks
-        # reaches the cap without satisfying the stored-size balance target.
-        contents = self.data(SMALL.chunk_size) + bytes(SMALL.chunk_size * 63)
-        (self.source / "large").write_bytes(contents)
+    def test_incompressible_encrypted_and_plain_outputs_obey_every_limit(self):
+        key, certificate = self.certificate()
+        (self.source / "large").write_bytes(self.data(500000))
+        for encrypted in (False, True):
+            archive = self.root / str(encrypted)
+            backup(self.source, archive, certificate if encrypted else None, SMALL)
+            totals = defaultdict(int)
+            for path in archive.rglob("archive-*"):
+                self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes, path.name)
+                if "_complete" in path.name:
+                    group = "bootstrap"
+                else:
+                    group = ("central" if "metadata" in path.relative_to(archive).parts else "local",
+                             path.parent.name, path.name.split("_parity-")[-1][:32])
+                totals[group] += path.stat().st_size
+            self.assertTrue(all(size <= SMALL.max_group_bytes for size in totals.values()), totals)
+            chunks = list(archive.rglob("*_chunk-*"))
+            self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
+            restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
+            self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
+
+    def test_no_group_mixes_streams_and_tars_never_span_groups(self):
+        (self.source / "large-a").write_bytes(self.data(300000))
+        (self.source / "large-b").write_bytes(self.data(300000, 2))
+        for number in range(120):
+            (self.source / f"small-{number}").write_bytes(self.data(1000, number))
         backup(self.source, self.archive, settings=SMALL)
-        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_manifest.json.zst")]
-        self.assertEqual(sorted(manifest["member_count"] for manifest in manifests), [1, 64])
-        capped = next(manifest for manifest in manifests if manifest["member_count"] == 64)
-        largest = max(capped["members"], key=lambda member: member["stored_length"])
-        next(self.archive.rglob(largest["filename"])).unlink()
+        by_stream = defaultdict(set)
+        for manifest in manifests(self.archive):
+            ids = {member["stream"] for member in manifest["members"]}
+            self.assertLessEqual(len(ids), 1)
+            for sid in ids:
+                by_stream[sid].add(manifest["parity"])
+        for stream in catalog(self.archive):
+            if stream["type"] == "tar":
+                self.assertEqual(len(by_stream[stream["stream"]]), 1)
+        self.assertTrue(any(len(groups) > 1 for groups in by_stream.values()))
+
+    def test_tar_continues_across_directories_and_singleton_falls_back(self):
+        for name in ("one", "two"):
+            (self.source / name).mkdir()
+            (self.source / name / "document").write_text(name)
+        backup(self.source, self.archive, settings=SMALL)
+        streams = catalog(self.archive)
+        self.assertEqual([stream["type"] for stream in streams], ["tar"])
+        paths = {entry["path"] for entry in streams[0]["inventory"]}
+        self.assertIn("one/document", paths)
+        self.assertIn("two/document", paths)
+        restore(self.archive, self.restored)
+        self.assertEqual(compare(self.source, self.restored), 0)
+
+    def test_largest_chunk_loss_can_be_repaired(self):
+        (self.source / "large").write_bytes(self.data(200000))
+        backup(self.source, self.archive, settings=SMALL)
+        max(self.archive.rglob("*_chunk-*"), key=lambda path: path.stat().st_size).unlink()
         self.assertEqual(verify(self.archive), 1)
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
+
+    def test_lookahead_can_use_a_companion_more_than_eight_names_ahead(self):
+        for number in range(16):
+            (self.source / f"a-{number:02}").write_bytes(self.data(30000, number))
+        (self.source / "z-small").write_text("fits in a small gap")
+        backup(self.source, self.archive, settings=SMALL)
+        first = next(stream for stream in catalog(self.archive) if stream["type"] == "tar")
+        paths = {entry["path"] for entry in first["inventory"]}
+        self.assertIn("z-small", paths)
+        self.assertNotIn("a-15", paths)
+
+    def test_large_file_is_read_before_scanning_a_later_directory(self):
+        import os
+        from unittest.mock import patch
+        (self.source / "a-large").write_bytes(self.data(160000))
+        later = self.source / "later"
+        later.mkdir()
+        (later / "small").write_text("later")
+        actual_scandir = os.scandir
+
+        def inspect(path):
+            if str(path) == str(later):
+                self.assertTrue(list(self.archive.rglob("*_chunk-*")))
+            return actual_scandir(path)
+
+        with patch("poc.archivator_lib.filesystem.os.scandir", side_effect=inspect):
+            backup(self.source, self.archive, settings=SMALL)
+
+    def test_an_isolated_large_file_fragment_is_not_published_as_a_file(self):
+        import shutil
+        (self.source / "large").write_bytes(self.data(300000))
+        backup(self.source, self.archive, settings=SMALL)
+        group = next(item for item in manifests(self.archive) if item["members"])
+        isolated = self.root / "isolated"
+        isolated.mkdir()
+        for path in (self.archive / group["parity"][:2]).glob(f"*_parity-{group['parity']}*"):
+            shutil.copyfile(path, isolated / path.name)
+        self.assertEqual(restore(isolated, self.restored), 1)
+        self.assertFalse((self.restored / "large").exists())
+
+    def test_oversized_transformation_is_not_published(self):
+        from unittest.mock import patch
+        from poc.archivator_lib.common import ArchiveError
+        from poc.archivator_lib.external import ZstdWriter
+        (self.source / "file").write_text("input")
+        finish = ZstdWriter.finish
+
+        def oversized(writer):
+            finish(writer)
+            # The actual output descriptor has closed; append via its known
+            # staging name to model an unexpected compressor-size regression.
+            with (self.archive / ".tmp" / "chunk.zst").open("ab") as output:
+                output.write(bytes(SMALL.max_file_bytes + 1))
+
+        with patch.object(ZstdWriter, "finish", oversized):
+            with self.assertRaises(ArchiveError):
+                backup(self.source, self.archive, settings=SMALL)
+        self.assertFalse(list(self.archive.rglob("*_complete.json")))
+        self.assertTrue(all(path.stat().st_size <= SMALL.max_file_bytes
+                            for path in self.archive.rglob("*") if path.is_file()))

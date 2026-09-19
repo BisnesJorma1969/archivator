@@ -65,6 +65,43 @@ def scan(root):
     return entries
 
 
+
+def directory_batches(root):
+    """Visit one directory at a time, without materializing the source tree."""
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise ArchiveError(f"Source must be a directory, not a symlink: {root}")
+
+    def describe(path, parents):
+        info = path.lstat()
+        entry = {"path": path.relative_to(root).as_posix(),
+                 "mode": stat.S_IMODE(info.st_mode), "mtime_ns": info.st_mtime_ns,
+                 "_identity": identity(info), "_parents": parents}
+        if stat.S_ISDIR(info.st_mode):
+            entry["type"] = "directory"
+        elif stat.S_ISREG(info.st_mode):
+            entry.update(type="file", size=info.st_size)
+        elif stat.S_ISLNK(info.st_mode):
+            entry.update(type="symlink", symlink_target=os.readlink(path))
+        else:
+            raise ArchiveError(f"Unsupported source entry: {entry['path']!r}")
+        return entry
+
+    def visit(path, parents):
+        directory = describe(path, parents)
+        ancestors = parents + [public_entry(directory)]
+        with os.scandir(path) as children:
+            names = sorted(child.name for child in children)
+        entries = [describe(path / name, ancestors) for name in names]
+        progress.update(f"Scanning directory {directory['path']!r}: {len(entries):,} entries")
+        yield directory, entries
+        for entry in entries:
+            if entry["type"] == "directory":
+                yield from visit(root / entry["path"], ancestors)
+        check_unchanged(path, directory)
+
+    yield from visit(root, [])
+
 def check_unchanged(path, entry):
     if identity(path.lstat()) != entry["_identity"]:
         raise ArchiveError(f"Source changed during backup: {entry['path']!r}")

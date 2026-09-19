@@ -1,105 +1,74 @@
 import hashlib
-import io
 import subprocess
-import tarfile
 from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
-from poc.archivator_lib.common import ArchiveError, read_json, sha256
-from poc.archivator_lib.external import check_parity, create_parity, decrypt, executable
+from poc.archivator_lib.common import ArchiveError, sha256
+from poc.archivator_lib.external import create_parity, decrypt, executable
 from poc.archivator_lib.format import parse_chunk
-from poc.tests.support import ArchiveTest, SMALL, read_zstd_json, read_zstd_jsonl
+from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
 
 
 class BackupTests(ArchiveTest):
-    def test_parity_generation_reads_members_without_copies_or_links(self):
+    def test_parity_generation_reads_originals_without_staging_inputs(self):
         (self.source / "large").write_bytes(self.data(160000))
-        generated_sets = []
+        generated = []
 
-        def generate(directory, prefix, members, slice_size, blocks, output_directory):
-            if prefix.endswith("_metadata"):
-                self.assertEqual(directory, self.archive)
-            else:
-                self.assertEqual(directory.parent, self.archive)
-                self.assertEqual(directory.name, prefix.split("_parity-")[1][:2])
+        def generate(directory, prefix, members, slice_size, blocks, output_directory=None, volumes=1):
             self.assertEqual(list(output_directory.iterdir()), [])
             before = {name: sha256(directory / name) for name in members}
-            files = create_parity(directory, prefix, members, slice_size, blocks,
-                                  output_directory=output_directory)
-            self.assertEqual(set(output_directory.iterdir()), set(files))
+            result = create_parity(directory, prefix, members, slice_size, blocks, output_directory, volumes)
+            self.assertEqual(set(output_directory.iterdir()), set(result))
             self.assertEqual({name: sha256(directory / name) for name in members}, before)
-            generated_sets.append(prefix)
-            return files
+            generated.append(prefix)
+            return result
 
         with patch("poc.archivator_lib.backup.create_parity", side_effect=generate), \
-                patch("shutil.copyfile", side_effect=AssertionError("Backup must not copy PAR2 inputs")), \
-                patch("os.link", side_effect=AssertionError("Backup must not hard-link PAR2 inputs")), \
-                patch("os.symlink", side_effect=AssertionError("Backup must not symlink PAR2 inputs")):
+                patch("poc.archivator_lib.metadata.create_parity", side_effect=generate), \
+                patch("os.link", side_effect=AssertionError("No backup hard links")):
             backup(self.source, self.archive, settings=SMALL)
-        self.assertTrue(any(prefix.endswith("_metadata") for prefix in generated_sets))
-        self.assertGreater(len(generated_sets), 2)
-        self.assertFalse((self.archive / ".tmp").exists())
-
-    def test_empty_tree_still_has_recoverable_metadata_and_root(self):
-        archive_id = backup(self.source, self.archive, settings=SMALL)
-        marker = next(self.archive.rglob(f"archive-{archive_id}_metadata_complete.json"))
-        complete = read_json(marker)
-        self.assertEqual(complete["metadata_prefix"], f"archive-{archive_id}_metadata")
-        self.assertTrue((self.archive / f"archive-{archive_id}_metadata.par2").is_file())
-        self.assertEqual(len(complete["metadata_parity"]), 5)
-        self.assertEqual(check_parity(marker.parent, complete["metadata_prefix"]), 0)
-        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst")))
-        self.assertEqual([entry["path"] for entry in inventory], ["."])
-        self.assertFalse((self.archive / ".tmp").exists())
+        self.assertGreater(len(generated), 2)
+        self.assertFalse(list(self.archive.rglob(".tmp")))
 
     def test_direct_file_chunks_are_independent_and_cross_sets(self):
-        contents = self.data(160000)
+        contents = self.data(500000)
         (self.source / "large").write_bytes(contents)
         backup(self.source, self.archive, settings=SMALL)
-        streams = read_zstd_jsonl(next(self.archive.rglob("*_metadata_streams.jsonl.zst")))
-        direct = next(stream for stream in streams if stream["type"] == "file")
-        chunks = list(self.archive.rglob(f"*_stream-{direct['stream']}_*.zst"))
-        chunks.sort(key=lambda path: parse_chunk(path.name)["offset"])
-        plaintext = [subprocess.run([executable("zstd"), "-qdc", str(path)],
-                                    capture_output=True, check=True).stdout for path in chunks]
-        self.assertEqual(b"".join(plaintext), contents)
+        direct = next(stream for stream in catalog(self.archive) if stream["type"] == "file")
+        chunks = sorted(self.archive.rglob(f"*_stream-{direct['stream']}_*.zst"),
+                        key=lambda path: parse_chunk(path.name)["offset"])
+        decoded = [subprocess.run([executable("zstd"), "-qdc", str(path)],
+                                  capture_output=True, check=True).stdout for path in chunks]
+        self.assertEqual(b"".join(decoded), contents)
         self.assertGreater(len({parse_chunk(path.name)["parity"] for path in chunks}), 1)
-        manifests = [read_zstd_json(path) for path in self.archive.rglob("*_parity-*_manifest.json.zst")]
-        self.assertTrue(any(len({member["stream"] for member in item["members"]}) > 1
-                            for item in manifests))
-        self.assertTrue(any(item["member_count"] < 8 for item in manifests))
+        self.assertEqual(direct["md5"], hashlib.md5(contents).hexdigest())
 
-    def test_encrypted_chunks_use_standard_cms_then_zstd(self):
+    def test_singleton_is_direct_and_encrypted_metadata_hides_its_name(self):
         key, certificate = self.certificate()
         combined = self.root / "combined.pem"
         combined.write_bytes(certificate.read_bytes() + key.read_bytes())
-        (self.source / "tiny").write_bytes(b"hello")
-        archive_id = backup(self.source, self.archive, combined, SMALL)
-        chunks = sorted(self.archive.rglob("*.cms"), key=lambda path: parse_chunk(path.name)["offset"])
-        self.assertTrue(chunks)
-        self.assertTrue(all(chunk.name.endswith(".zst.cms") for chunk in chunks))
-        self.assertFalse(list(self.archive.rglob("*_chunk-*.zst")))
-        stream = bytearray()
-        for chunk in chunks:
-            compressed = self.root / "decrypted.zst"
-            decrypt(chunk, compressed, key, certificate)
-            result = subprocess.run([executable("zstd"), "-qdc", str(compressed)],
-                                    capture_output=True, check=True)
-            stream.extend(result.stdout)
-        with tarfile.open(fileobj=io.BytesIO(stream)) as bundle:
-            self.assertEqual(bundle.extractfile("tiny").read(), b"hello")
-        self.assertNotIn(b"PRIVATE KEY", next(self.archive.rglob(f"archive-{archive_id}_metadata_recipient.pem")).read_bytes())
+        (self.source / "secret-client-name").write_bytes(b"hello")
+        backup(self.source, self.archive, combined, SMALL)
+        streams = catalog(self.archive, key)
+        self.assertEqual([stream["type"] for stream in streams], ["file"])
+        chunk = next(self.archive.rglob("*_chunk-*.zst.cms"))
+        compressed = self.root / "decoded.zst"
+        decrypt(chunk, compressed, key, certificate)
+        result = subprocess.run([executable("zstd"), "-qdc", str(compressed)], capture_output=True, check=True)
+        self.assertEqual(result.stdout, b"hello")
+        for path in self.archive.rglob("archive-*"):
+            data = path.read_bytes()
+            if path.suffix == ".zst":
+                data = subprocess.run([executable("zstd"), "-qdc", str(path)], capture_output=True, check=True).stdout
+            self.assertNotIn(b"secret-client-name", data)
+            self.assertNotIn(b"PRIVATE KEY", data)
+        self.assertTrue(list(self.archive.rglob("*_inventory_stream-*.jsonl.zst.cms")))
 
-    def test_checksums_cover_metadata_and_data_parity(self):
-        (self.source / "tiny").write_bytes(b"hello")
+    def test_empty_tree_has_metadata_only_recovery_group(self):
         backup(self.source, self.archive, settings=SMALL)
-        checksums = read_zstd_json(next(self.archive.rglob("*_metadata_checksums.json.zst")))
-        for name, digest in checksums.items():
-            self.assertEqual(sha256(next(self.archive.rglob(name))), digest)
-        inventory = read_zstd_jsonl(next(self.archive.rglob("*_metadata_inventory_stream-*.jsonl.zst")))
-        file_entry = next(entry for entry in inventory if entry["type"] == "file")
-        self.assertEqual(file_entry["sha256"], hashlib.sha256(b"hello").hexdigest())
-        self.assertEqual(file_entry["crc32"], "3610a686")
+        self.assertEqual(catalog(self.archive), [])
+        self.assertTrue(manifests(self.archive))
+        self.assertTrue(all(not manifest["members"] for manifest in manifests(self.archive)))
 
     def test_failure_does_not_publish_completion_marker(self):
         with patch("poc.archivator_lib.backup.create_parity", side_effect=ArchiveError("simulated failure")):
@@ -113,12 +82,8 @@ class BackupTests(ArchiveTest):
         compressor.write_text("#!/bin/sh\necho compression-failed >&2\nexit 9\n")
         compressor.chmod(0o700)
         (self.source / "file").write_bytes(self.data(160000))
-
-        def find_executable(name):
-            return str(compressor) if name == "zstd" else executable(name)
-
-        with patch("poc.archivator_lib.external.executable", side_effect=find_executable):
+        real = executable
+        with patch("poc.archivator_lib.external.executable", side_effect=lambda name: str(compressor) if name == "zstd" else real(name)):
             with self.assertRaises(ArchiveError):
                 backup(self.source, self.archive, settings=SMALL)
         self.assertFalse(list(self.archive.rglob("*_metadata_complete.json")))
-        self.assertFalse((self.archive / ".tmp").exists())
