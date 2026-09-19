@@ -19,7 +19,7 @@ class ShardingTests(ArchiveTest):
             if "_catalog-root" in path.name:
                 self.assertEqual(path.parent, self.archive / "metadata")
             else:
-                group_id = path.name.split("_group-")[1][:32]
+                group_id = path.name.split("_group-")[1][:24]
                 self.assertEqual(path.parent.name, group_id[:2])
         self.assertFalse(list(self.archive.rglob(".tmp")))
         self.assertTrue(all(any(path.iterdir()) for path in self.archive.rglob("*") if path.is_dir()))
@@ -58,9 +58,10 @@ class ShardingTests(ArchiveTest):
 
     def test_existing_id_prefix_is_reused_without_extra_shard_ids(self):
         (self.source / "large").write_bytes(self.data(160000))
-        ids = (f"ab{number:030x}" for number in range(1000))
+        ids = (f"ab{number:022x}" for number in range(1000))
         with patch("poc.archivator_lib.format.secrets.token_hex", side_effect=lambda size: next(ids)):
             backup(self.source, self.archive, settings=SMALL)
-        self.assertEqual({path.name for path in self.archive.iterdir()}, {"ab", "metadata"})
-        self.assertTrue((self.archive / "metadata" / "ab").is_dir())
+        supergroup = parse_chunk(next(self.archive.rglob("*_chunk-*")).name)["supergroup"]
+        self.assertEqual({path.name for path in self.archive.iterdir()}, {supergroup, "metadata"})
+        self.assertTrue((self.archive / "metadata" / supergroup / "ab").is_dir())
         self.assertEqual(verify(self.archive), 0)

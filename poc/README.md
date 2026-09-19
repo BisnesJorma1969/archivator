@@ -7,7 +7,7 @@ backup/damage/restore walkthrough. Python uses only the standard library.
 
 | Command | Purpose |
 | --- | --- |
-| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem | --no-encryption] [--[no-]compression] [--[no-]par2] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES] [--waiting-groups COUNT] [--group-close-percent PERCENT]` | Create a backup in an absent/empty directory |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem | --no-encryption] [--[no-]compression] [--[no-]par2] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES] [--waiting-groups COUNT] [--group-close-percent PERCENT] [--[no-]supergroup-par2] [--supergroup-groups COUNT] [--supergroup-margin-percent PERCENT]` | Create a backup in an absent/empty directory |
 | `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
 | `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
 | `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json[.zst]]` | Restore into an absent/empty directory; archive remains unchanged |
@@ -20,7 +20,7 @@ Compression, encryption, and PAR2 are independent:
 | --- | --- | --- | --- |
 | zstd (payload and metadata) | `--compression` | `--no-compression` | Enabled |
 | CMS (payload and source-name inventory) | `--encrypt-cert CERT.pem` | `--no-encryption`, or omit certificate | Disabled |
-| PAR2 (data and central metadata) | `--par2` | `--no-par2` | Enabled |
+| PAR2 (groups, supergroups, central metadata and roots) | `--par2` | `--no-par2` | Enabled |
 
 All eight combinations work. Verify, repair, and restore read these choices from
 the archive; no matching switches are needed. Only enabled features require their
@@ -47,6 +47,15 @@ reaching the threshold. Waiting groups are tried oldest-first; when slots run
 out, the fullest is closed (oldest on a tie). There is no age counter or artificial
 zero padding. Full [placement rules](../POC.md#6-group-sizing-and-parity) include
 metadata/PAR2 reservations and bounded on-disk buffering of the current RAW file.
+
+`--supergroup-groups` defaults to **5**. Active and waiting groups stay inside
+that one supergroup; all close before moving to the next. `--supergroup-margin-percent`
+defaults to **110**, expressing recovery blocks relative to the largest protected
+group; a 20%-of-total floor and one-extra-block minimum also apply.
+`--no-supergroup-par2` disables only cross-group protection. `--no-par2` disables
+all PAR2, including bootstrap protection. Supergroup recovery volumes occupy
+numbered parity-media directories, each within `--max-group-bytes`.
+See [two-layer protection](../POC.md#supergroup-protection-and-bounded-work).
 
 Payload names end in `.tar[.zst][.cms]` or `.raw[.zst][.cms]`; source-name metadata
 uses `.jsonl[.zst][.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
@@ -95,7 +104,8 @@ prove the original backup is complete. A large file's fragment is independently
 repairable, not a complete file. No zero-filled holes or fabricated completion
 markers are produced.
 
-If PAR2 cannot repair a whole group, restore still recovers complete streams from
+If group PAR2 cannot repair a group, restore tries its supergroup after fixing
+locally recoverable damage in the other groups. If that also fails, restore still recovers complete streams from
 its individually verified surviving chunks. Missing/damaged streams are skipped,
 and restore returns 1. Losing one TAR does not discard the group's other TARs.
 
@@ -106,7 +116,7 @@ No copy-on-write cloning is used. Neither operation changes archive files.
 
 Explicit repair operates in place. Data and PAR2 files are never copied or
 hardlinked into repair staging. Restoring one intentional metadata duplicate
-from the other can copy its verified bytes. Scattered inputs are normalized by
+from the other can copy its verified bytes. Scattered inputs and outer parity volumes are normalized by
 same-filesystem renames; an unavailable cross-filesystem rename is not silently
 replaced with a copy. Earlier repairs remain if a later group fails.
 
@@ -117,7 +127,8 @@ Checksums select usable primary/spare bytes regardless of directory placement. V
 Repair, restore, and scan require `--archive-id` when several archives are present.
 Archive-file mtimes and directory order are irrelevant.
 
-Either self-checksummed catalog-root copy anchors the central catalog.
+Either self-checksummed catalog-root copy anchors both checksum chains. Their
+independent PAR2 can reconstruct both copies when neither survives.
 Conflicting valid copies are rejected. Backup cannot resume, and failed work is
 not marked complete. A failed restore can leave verified files or partial scratch
 output in its destination; retry into a fresh empty directory.
@@ -125,7 +136,7 @@ output in its destination; retry into a fresh empty directory.
 ## Filename-only recovery
 
 If even local metadata is unavailable, scan surviving chunk and group-PAR2 names.
-This reads no archive contents, hashes, or PAR2 packets and never changes the
+Scan reads no archive contents, hashes, or PAR2 packets and never changes the
 archive. The separate index must not already exist. Choose `.json` for an uncompressed
 index requiring no zstd executable, or `.json.zst` for a compressed one.
 
@@ -138,7 +149,7 @@ index requiring no zstd executable, or `.json.zst` for a compressed one.
 For encrypted data, add `--decrypt-key poc/work/recipient-key.pem` to restore.
 The index selects its archive ID; optional `--archive-id` must agree.
 
-Restore tries available PAR2 in scratch, including recovery of filenames missing
+Restore tries available group/supergroup PAR2 in scratch, including recovery of filenames missing
 when scanned. It checks declared plaintext lengths and any zstd frames or CMS tags present.
 Plain chunks without PAR2 have no content integrity check in filename-only recovery.
 Streams with detected gaps, overlaps, unreadable chunks, or malformed declared
@@ -175,6 +186,7 @@ rejected. Paths may be under `poc/work/`, but must not contain `poc/work/` itsel
 - `backup.py`, `filesystem.py`: directory-local selection, TAR/direct streams, and publication.
 - `limits.py`, `format.py`: byte budgets, PAR2 sizing, filenames and settings.
 - `external.py`: zstd, CMS and PAR2 subprocesses.
+- `supergroups.py`, `bootstrap.py`: bounded cross-group recovery and catalog-root PAR2.
 - `metadata.py`, `recovery.py`: metadata copies/checksum chain, validation and repair.
 - `restore.py`, `scan.py`, `compare.py`: reconstruction, fallback recovery and comparison.
 - `cli.py`, `progress.py`, `common.py`: command handling and shared small helpers.

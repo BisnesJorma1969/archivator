@@ -6,15 +6,19 @@ import os
 import shutil
 from pathlib import Path
 
-from .common import ArchiveError, sha256, write_json
+from .common import ArchiveError, IntegrityError, sha256, write_json
 from .external import decrypt, encrypt, executable, run, create_parity
-from .format import metadata_prefix, spare_metadata_name
+from .format import metadata_prefix, spare_metadata_name, stored_path
 from .limits import check_files, parity_plan
 
 UNCOMPRESSED_METADATA_SUFFIXES = (
     "_metadata_catalog-root.json", "_metadata_catalog-root-spare.json",
     "_format.txt", "_recipient.pem",
 )
+
+
+class ConflictingRoots(IntegrityError):
+    """Two self-consistent roots cannot be resolved by an unsigned PAR2 set."""
 
 
 def catalog_root_names(archive_id):
@@ -95,10 +99,12 @@ class MetadataWriter:
         self.previous = None
         self.count = 0
         self.extra = []
+        from .supergroups import SupergroupWriter
+        self.supergroups = SupergroupWriter(archive, archive_id, settings)
 
-    def add(self, group_id, metadata, group_parity):
-        prefix = metadata_prefix(self.archive_id, group_id)
-        destination = self.archive / "metadata" / group_id[:2]
+    def add(self, supergroup_id, group_id, metadata, group_parity):
+        prefix = metadata_prefix(self.archive_id, supergroup_id, group_id)
+        destination = stored_path(self.archive, prefix + "_checksums.json").parent
         destination.mkdir(parents=True, exist_ok=True)
         members = {}
         check_files([*metadata, *self.extra], self.settings.max_file_bytes, self.settings.max_group_bytes)
@@ -114,7 +120,7 @@ class MetadataWriter:
             shutil.copyfile(path, target)
             members[name] = {"sha256": sha256(path), "size": path.stat().st_size}
         receipt = {
-            "version": 1, "archive": self.archive_id, "group": group_id,
+            "version": 1, "archive": self.archive_id, "group": group_id, "supergroup": supergroup_id,
             "previous": self.previous, "members": members,
             "group_parity": group_parity,
         }
@@ -141,14 +147,16 @@ class MetadataWriter:
             hashes[path.name] = sha256(path)
             os.replace(path, destination / path.name)
         staging.rmdir()
-        self.previous = {"group": group_id, "receipt_sha256": sha256(destination / name),
+        self.previous = {"group": group_id, "supergroup": supergroup_id, "receipt_sha256": sha256(destination / name),
                          "parity_hashes": hashes}
         self.count += 1
         self.extra = []
+        return [destination / name for name in lengths]
 
     def finish(self):
         marker = {"version": 1, "archive": self.archive_id, "groups": self.count,
-                  "settings": vars(self.settings), "last": self.previous}
+                  "settings": vars(self.settings), "last": self.previous,
+                  "supergroups": self.supergroups.count, "last_supergroup": self.supergroups.previous}
         marker["marker_sha256"] = catalog_root_digest(marker)
         directory = self.archive / "metadata"
         directory.mkdir(exist_ok=True)
@@ -156,5 +164,10 @@ class MetadataWriter:
         for path in paths:
             write_json(path, marker)
         check_files(paths, self.settings.max_file_bytes, self.settings.max_group_bytes)
+        if self.settings.par2:
+            from .bootstrap import create_root_parity
+            parity = create_root_parity(self.archive / ".tmp", self.archive_id, self.settings)
+            for path in parity:
+                os.replace(path, directory / path.name)
         for path in paths:
             os.replace(path, directory / path.name)

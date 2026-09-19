@@ -155,19 +155,18 @@ def create_parity(directory, prefix, members, slice_size, blocks, output_directo
     return files
 
 
-def check_parity(directory, prefix, repair=False, data_directory=None):
-    files = sorted(directory.glob(prefix + "*.par2"))
+def check_parity(directory, prefix, repair=False, data_directory=None, parity_files=None):
+    files = sorted(parity_files if parity_files is not None else directory.glob(prefix + "*.par2"))
     if not files:
         return 2
-    index = directory / (prefix + ".par2")
-    if not index.exists():
-        index = files[0]
+    index = next((path for path in files if path.name == prefix + ".par2"), files[0])
     operation = "repair" if repair else "verify"
-    role = "metadata" if prefix.endswith("_metadata") else "data"
+    role = "metadata" if "_metadata" in prefix else "group" if "_group-" in prefix else "supergroup"
     progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
     data_directory = data_directory or directory
     arguments = [executable("par2"), operation, "-q", "-t1", "-T1",
-                 f"-B{data_directory.resolve()}", "--", index.name]
+                 f"-B{data_directory.resolve()}", "--", str(index.resolve()),
+                 *(str(path.resolve()) for path in files if path != index)]
     result = subprocess.run(arguments, cwd=directory, capture_output=True, text=True, errors="replace")
     # par2: 0 = intact, 1 = repair possible, 2 = insufficient recovery data,
     # 4 = insufficient critical PAR2 metadata. Other codes are operational errors.

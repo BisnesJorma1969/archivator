@@ -39,7 +39,7 @@ zstd, OpenSSL, and PAR2 are needed only when using their respective features.
 
 ## Generate, back up, damage, and restore
 
-Allow roughly **30 GiB free** for sources, archives, restored files, and scratch.
+Allow roughly **40 GiB free** for sources, archives, restored files, and scratch.
 Everything generated stays under gitignored `poc/work/`.
 
 | Source | Default generated workload |
@@ -98,11 +98,18 @@ Payload names distinguish complete TARs (`.tar.zst.cms`) from direct file bytes
 independently. Source-name inventories are also encrypted (`.jsonl.zst.cms`). Each group
 keeps its metadata beside the data; byte-identical `-spare` copies are under `metadata/`.
 Compression and PAR2 settings apply to both locations. Shards reuse the first two characters
-of the group's ID. Keep passing `archive1`; discovery is recursive.
+of the group's ID, inside its supergroup directory. Keep passing `archive1`; discovery is recursive.
 
 Defaults: **268435455 bytes per stored file** and **15032385536 bytes per group**,
 including metadata and PAR2. Override with `--max-file-bytes` and
 `--max-group-bytes`, using exact bytes. No filesystem/media overhead is guessed.
+A **group** is one bounded data/metadata/PAR2 media unit. A **supergroup** contains
+up to **5 groups**, with separate PAR2 sized for **110% of the largest protected
+group**, at least 20% overall. This protects against losing a whole group plus
+some additional damage. `--supergroup-groups` and `--supergroup-margin-percent`
+are configurable; `--no-supergroup-par2` keeps only group/metadata protection.
+`--no-par2` disables every PAR2 layer. See [protection rules](POC.md#supergroup-protection-and-bounded-work).
+
 Grouping defaults to one active group plus four waiting groups and a 95%
 close-on-miss threshold; see the [queue options](poc/README.md#commands).
 
@@ -124,8 +131,13 @@ their format or metadata.
 You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
-damaged data blocks**. Deleting PAR2 files reduces that capacity. Full-catalog
-recovery uses at least one intact marker: `*_metadata_catalog-root.json` or `*_metadata_catalog-root-spare.json`.
+damaged data blocks**. Deleting PAR2 files reduces that capacity. You can also
+remove all files whose names contain one chosen `_group-<id>`: supergroup PAR2
+can recover that group while enough outer recovery blocks survive. A two-character
+shard directory can hold several groups, so deleting it may remove more than one.
+Do not delete the entire supergroup directory when testing a single-group loss.
+Both `*_metadata_catalog-root.json` and its `-spare` copy have their own PAR2
+protection; either copy or sufficient bootstrap PAR2 is enough to start recovery.
 
 Check the damaged archive:
 

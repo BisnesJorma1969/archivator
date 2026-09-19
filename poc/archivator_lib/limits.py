@@ -39,7 +39,7 @@ class ParityPlan:
     largest_file: int
 
 
-def parity_plan(members, slice_size, max_file_bytes, enabled=True):
+def parity_plan(members, slice_size, max_file_bytes, enabled=True, blocks=None):
     """Bound par2cmdline's uniform-volume output, including repeated packets.
 
     members maps stored relative names to byte lengths. Recovery packets use
@@ -51,7 +51,8 @@ def parity_plan(members, slice_size, max_file_bytes, enabled=True):
         return ParityPlan(0, 0, 0, 0)
     lengths = list(members.values())
     slices = sum(ceil_div(length, slice_size) for length in lengths)
-    blocks = recovery_blocks(lengths, slice_size)
+    if blocks is None:
+        blocks = recovery_blocks(lengths, slice_size)
     if slices > 32768 or blocks > 32768:
         raise ArchiveError("PAR2 block capacity exceeded; close the group or increase slice size")
     critical = 76 + 16 * len(members)
@@ -83,6 +84,8 @@ def parity_plan(members, slice_size, max_file_bytes, enabled=True):
 def check_files(paths, max_file_bytes, max_group_bytes):
     total = 0
     for path in paths:
+        if not path.name.isascii() or len(path.name) > 255:
+            raise ArchiveError("Output filename exceeds portable ASCII component limits")
         size = path.stat().st_size
         if size > max_file_bytes:
             raise ArchiveError(f"Output exceeds file limit: {path.name} ({size:,} > {max_file_bytes:,})")

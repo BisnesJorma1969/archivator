@@ -103,7 +103,13 @@ def file_category(path):
     if name.endswith(("_metadata_catalog-root.json", "_metadata_catalog-root-spare.json")):
         return "bootstrap"
     if name.endswith(".par2"):
-        return "metadata_parity" if "_metadata_group-" in name else "group_parity"
+        if "_metadata_catalog-root" in name:
+            return "bootstrap_parity"
+        if "_metadata_group-" in name:
+            return "metadata_parity"
+        if "_group-" in name:
+            return "group_parity"
+        return "supergroup_parity" if "_supergroup-" in name else "parity"
     if "_chunk-" in name:
         return "data"
     return "metadata" if name.startswith("archive-") else "files"

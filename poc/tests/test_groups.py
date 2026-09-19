@@ -26,7 +26,7 @@ class GroupTests(ArchiveTest):
                     group = "bootstrap"
                 else:
                     group = ("central" if "metadata" in path.relative_to(archive).parts else "local",
-                             path.parent.name, path.name.split("_group-")[-1][:32])
+                             path.parent.name, path.name.split("_group-")[-1][:24])
                 totals[group] += path.stat().st_size
             self.assertTrue(all(size <= SMALL.max_group_bytes for size in totals.values()), totals)
             chunks = list(archive.rglob("*_chunk-*"))
@@ -117,7 +117,7 @@ class GroupTests(ArchiveTest):
         group = next(item for item in manifests(self.archive) if item["members"])
         isolated = self.root / "isolated"
         isolated.mkdir()
-        for path in (self.archive / group["group"][:2]).glob(f"*_group-{group['group']}*"):
+        for path in (self.archive / group["supergroup"] / group["group"][:2]).glob(f"*_group-{group['group']}*"):
             shutil.copyfile(path, isolated / path.name)
         self.assertEqual(restore(isolated, self.restored), 1)
         self.assertFalse((self.restored / "large").exists())

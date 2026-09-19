@@ -20,7 +20,7 @@ class IndependentChunkTests(ArchiveTest):
     def test_names_distinguish_complete_tar_from_raw_and_reject_wrong_offsets(self):
         for encrypted in (False, True):
             for kind in ("raw", "tar"):
-                name = chunk_name("a" * 32, "b" * 32, 12, "c" * 32, 0, 10240, encrypted, kind)
+                name = chunk_name("a" * 24, "b" * 24, 12, "c" * 24, 0, 10240, encrypted, kind, supergroup="d" * 24)
                 parsed = parse_chunk(name)
                 self.assertEqual(parsed["kind"], kind)
                 self.assertEqual(parsed["length"], 10240)
@@ -77,8 +77,8 @@ class IndependentChunkTests(ArchiveTest):
         for path in self.archive.rglob("archive-*"):
             self.assertLessEqual(path.stat().st_size, SMALL.max_file_bytes)
         for group in manifests(self.archive):
-            prefix = f"archive-{group['archive']}_group-{group['group']}"
-            size = sum(path.stat().st_size for path in (self.archive / group["group"][:2]).glob(prefix + "*"))
+            prefix = f"archive-{group['archive']}_supergroup-{group['supergroup']}_group-{group['group']}"
+            size = sum(path.stat().st_size for path in (self.archive / group["supergroup"] / group["group"][:2]).glob(prefix + "*"))
             self.assertLessEqual(size, SMALL.max_group_bytes)
         self.assertEqual(restore(self.archive, self.restored, key=key), 0)
         self.assertEqual(compare(self.source, self.restored), 0)

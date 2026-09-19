@@ -10,7 +10,7 @@ from itertools import chain
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, directory_batches, empty_destination, ensure_disjoint, public_entry
-from .format import Settings, chunk_name, metadata_prefix, new_id, group_prefix, spare_metadata_name
+from .format import Settings, chunk_name, metadata_prefix, new_id, group_prefix, spare_metadata_name, stored_path
 from .limits import ceil_div, check_files, input_limit, parity_plan, stored_bound
 from .metadata import MetadataWriter, json_bytes, store_metadata
 from .progress import progress
@@ -69,19 +69,20 @@ class GroupWriter:
         self.encryption_overhead = encryption_overhead
         self.staging = archive / ".tmp"
         self.group_id = new_id()
+        self.supergroup_id = catalog.supergroups.id
         self.members = []
         self.input_bytes = input_limit(min(settings.max_file_bytes, settings.max_group_bytes // 4),
                                        encryption_overhead, settings.compression)
 
     def source_name(self):
-        prefix = group_prefix(self.archive_id, self.group_id)
+        prefix = group_prefix(self.archive_id, self.supergroup_id, self.group_id)
         name = prefix + "_metadata_index-files.jsonl"
         if self.settings.compression:
             name += ".zst"
         return name + ".cms" if self.certificate else name
 
     def manifest(self, members, source_digest):
-        return {"version": 1, "archive": self.archive_id, "group": self.group_id,
+        return {"version": 1, "archive": self.archive_id, "group": self.group_id, "supergroup": self.supergroup_id,
                 "compression": "zstd" if self.settings.compression else "none",
                 "encryption": "cms-aes-256-gcm" if self.certificate else "none",
                 "settings": vars(self.settings),
@@ -100,7 +101,7 @@ class GroupWriter:
         manifest_length = stored_bound(len(manifest_bytes.encode("ascii")) + 1, compression=settings.compression)
         lengths = {member["filename"]: member["stored_length"] for member in members}
         lengths[self.source_name()] = source_length
-        prefix = group_prefix(self.archive_id, self.group_id)
+        prefix = group_prefix(self.archive_id, self.supergroup_id, self.group_id)
         suffix = ".zst" if settings.compression else ""
         lengths[prefix + "_metadata_index-chunks.json" + suffix] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
@@ -113,13 +114,13 @@ class GroupWriter:
             # The identical central copies need their own parity and a receipt.
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
-            receipt_name = metadata_prefix(self.archive_id, self.group_id) + "_checksums.json" + suffix
+            receipt_name = metadata_prefix(self.archive_id, self.supergroup_id, self.group_id) + "_checksums.json" + suffix
             central = {spare_metadata_name(self.source_name()): source_length,
                        spare_metadata_name(prefix + "_metadata_index-chunks.json" + suffix): manifest_length,
                        receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             for path in self.catalog.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
-                central[metadata_prefix(self.archive_id, self.group_id) + "_" + role] = path.stat().st_size
+                central[metadata_prefix(self.archive_id, self.supergroup_id, self.group_id) + "_" + role] = path.stat().st_size
             if max(central.values()) > settings.max_file_bytes:
                 return None
             protection = parity_plan(central, settings.slice_size, settings.max_file_bytes, settings.par2)
@@ -133,13 +134,15 @@ class GroupWriter:
         stream_id = stream["stream"]
         kind = "tar" if stream["type"] == "tar" else "raw"
         return {"filename": chunk_name(self.archive_id, self.group_id, number, stream_id,
-                                        offset, length, bool(self.certificate), kind, self.settings.compression),
+                                        offset, length, bool(self.certificate), kind, self.settings.compression, supergroup=self.supergroup_id),
                 "chunk": number, "stream": stream_id, "kind": kind, "offset": offset, "length": length,
                 "stored_length": size, "stored_sha256": "0" * 64,
                 "plaintext_sha256": "0" * 64, "plaintext_sha512": "0" * 128}
 
     def proposed(self, chunks, stream, entries):
         key = stream["stream"] if stream else None
+        if key is not None and key in self.sources and self.sources[key][0] is not stream:
+            raise ArchiveError("Stream ID collision; refusing to replace an existing stream")
         if key is None and key in self.sources:
             entries = self.sources[key][1] + entries
         sources = {**self.sources, key: (stream, entries)}
@@ -161,10 +164,12 @@ class GroupWriter:
         members, sources = self.proposed(chunks, stream, entries)
         if not self.fits(members, sources):
             raise ArchiveError("Group cannot hold the selected content with metadata and parity")
-        shard = self.archive / self.group_id[:2]
+        shard = stored_path(self.archive, self.source_name()).parent
         if chunks:
-            shard.mkdir(exist_ok=True)
+            shard.mkdir(parents=True, exist_ok=True)
         for chunk, member in zip(chunks, members[len(self.members):]):
+            if (shard / member["filename"]).exists():
+                raise ArchiveError("Chunk filename collision; refusing to overwrite stored data")
             os.replace(chunk["path"], shard / member["filename"])
             print(f"Stored chunk: {member['length']:,} plaintext bytes -> "
                   f"{member['stored_length']:,} stored bytes; group {self.group_id}", flush=True)
@@ -174,10 +179,12 @@ class GroupWriter:
     def finish_set(self):
         if not self.sources:
             return
-        shard = self.archive / self.group_id[:2]
-        shard.mkdir(exist_ok=True)
-        prefix = group_prefix(self.archive_id, self.group_id)
+        shard = stored_path(self.archive, self.source_name()).parent
+        shard.mkdir(parents=True, exist_ok=True)
+        prefix = group_prefix(self.archive_id, self.supergroup_id, self.group_id)
         source_name = self.source_name().removesuffix(".cms").removesuffix(".zst")
+        if (shard / self.source_name()).exists():
+            raise ArchiveError("Group ID collision; refusing to overwrite metadata")
 
         def records():
             yield {"streams": [stream for stream, _ in self.sources.values() if stream is not None]}
@@ -216,7 +223,9 @@ class GroupWriter:
             parity_hashes[path.name] = sha256(path)
             os.replace(path, shard / path.name)
         directory.rmdir()
-        self.catalog.add(self.group_id, [shard / stored, shard / manifest_name], parity_hashes)
+        central = self.catalog.add(self.supergroup_id, self.group_id, [shard / stored, shard / manifest_name], parity_hashes)
+        self.catalog.supergroups.add(self.group_id, [shard / name for name in names] + central,
+                                     {member["filename"]: member["stored_sha256"] for member in self.members})
         print(f"Finished group: {total:,}/{self.settings.max_group_bytes:,} bytes including metadata and enabled parity", flush=True)
         self.members = []
         self.sources = {}
@@ -231,6 +240,16 @@ class GroupQueue:
         self.settings = self.planner.settings
         self.active = None
         self.waiting = []
+        self.created = 0
+
+    def new_group(self):
+        # All active/waiting groups belong to this one bounded supergroup.
+        if self.created == self.settings.supergroup_groups:
+            self.finish()
+            self.planner.catalog.supergroups.finish()
+            self.created = 0
+        self.created += 1
+        return self.make_group()
 
     def used_bytes(self, group):
         budget = group.budget(group.members, group.sources)
@@ -269,7 +288,7 @@ class GroupQueue:
             self.active.append(chunks, stream, entries)
             return
         self.retire_active()
-        self.active = self.make_group()
+        self.active = self.new_group()
         self.active.append(chunks, stream, entries)
 
     def start_large_file(self):
@@ -280,12 +299,12 @@ class GroupQueue:
                 self.waiting.remove(group)
                 group.finish_set()
         self.retire_active()
-        self.active = self.make_group()
+        self.active = self.new_group()
 
     def append_fragment(self, chunk, stream, entries):
         if not self.active.can_add([chunk], stream, entries):
             self.active.finish_set()
-            self.active = self.make_group()
+            self.active = self.new_group()
         self.active.append([chunk], stream, entries)
         # The final group stays active when the file ends; subsequent whole
         # files/TARs may fill its remainder. Intermediate groups never wait.
@@ -589,6 +608,7 @@ def backup(source, archive, certificate=None, settings=None):
                         flush([entry])
         flush(pending)
         queue.finish()
+        catalog.supergroups.finish()
         catalog.finish()
     finally:
         progress.update("Removing backup temporary files")

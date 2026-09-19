@@ -22,8 +22,8 @@ Compression, encryption and PAR2 are independently optional, in all eight
 combinations. Defaults: zstd and PAR2 enabled, encryption disabled. Backup uses
 `--compression` / `--no-compression`, `--par2` / `--no-par2`, and
 `--encrypt-cert CERT.pem` / `--no-encryption` (omitting the certificate also disables
-it). Compression controls payload and metadata; PAR2 controls local and central
-protection. Readers discover modes from filenames and validated metadata.
+it). Compression controls payload and metadata; PAR2 controls group, supergroup, central metadata, and catalog-root
+protection. `--no-supergroup-par2` disables only the outer layer. Readers discover modes from filenames and validated metadata.
 Only enabled features require their external executables.
 
 Implementation is under `poc/`; generated data and scratch use ignored
@@ -37,10 +37,13 @@ Implementation is under `poc/`; generated data and scratch use ignored
 | Stream | Plaintext bytes of one original file or one ordinary POSIX/PAX TAR |
 | Chunk | One complete TAR or a range of RAW file bytes, optionally compressed and/or encrypted |
 | Group | Whole streams, or a spanning RAW file's range optionally followed by whole streams, plus metadata and optional PAR2 |
+| Supergroup | A bounded set of groups, with separate cross-group PAR2 when enabled |
+| Group parity | PAR2 over one group's stored chunks and primary metadata |
+| Supergroup parity | PAR2 over several groups' stored data and metadata, excluding every group/central PAR2 file |
 | Central metadata set | Identical metadata copies and their checksum receipt, optionally protected by separate PAR2 |
 
-Archive IDs, stream IDs, and data-group IDs are random 128-bit identifiers, not
-content hashes. Each is 32 lowercase hexadecimal digits. Central metagroup PAR2
+Archive, supergroup, group, and stream IDs are random 96-bit identifiers, not
+content hashes. Each is 24 lowercase hexadecimal digits. Central metadata PAR2
 **reuses its data group's ID**; no extra random metadata or shard IDs are generated.
 
 A TAR is exactly one chunk. Several complete TARs and whole RAW files may share
@@ -58,6 +61,9 @@ interpretable and repairable, but cannot reproduce absent fragments.
 | `large_file_bytes` / `--large-file-bytes` | Automatic: the derived safe input ceiling |
 | `waiting_groups` / `--waiting-groups` | 4, in addition to one active group |
 | `group_close_percent` / `--group-close-percent` | 95, applied when the next whole unit does not fit |
+| `supergroup_groups` / `--supergroup-groups` | 5 |
+| `supergroup_margin_percent` / `--supergroup-margin-percent` | 110 |
+| `supergroup_par2` / `--[no-]supergroup-par2` | Enabled when PAR2 is enabled |
 | Internal PAR2 `slice_size` | 1048576 (1 MiB) |
 
 These are exact byte counts. The program does not interpret media marketing
@@ -69,7 +75,10 @@ The file ceiling applies to **every final file**: plain or encoded payload, mani
 inventories, checksum receipts, bootstrap files, PAR2 indexes, and volumes.
 The group ceiling includes data, local metadata, and **all PAR2 overhead**.
 Central metadata recovery sets obey the same two ceilings. The two catalog-root
-copies form a separate small bootstrap set and are checked together.
+copies and their PAR2 form a separate small bootstrap set and are checked together.
+Supergroup recovery files are packed without padding into numbered parity-media
+directories; each directory obeys `max_group_bytes`. Its two index copies are
+checked together as another metadata set. Every individual file obeys the file cap.
 
 The implementation reserves compression expansion, measured CMS wrapper space,
 PAR2 packet headers and repeated critical packets, and metadata before admitting
@@ -205,7 +214,7 @@ also constrain admission when PAR2 is enabled; slice sizes are positive multiple
 
 With PAR2 disabled, groups retain both metadata copies and all checksums, but
 contain no PAR2 files and have no parity reservation or PAR2 block-capacity limit.
-Checksum receipts carry empty group-hash maps. Missing/corrupt payloads cannot
+Checksum receipts carry empty parity-hash maps. Missing/corrupt payloads cannot
 be reconstructed; repair may still recover an intentional metadata duplicate
 from its healthy counterpart and never invents parity for a non-PAR2 archive.
 
@@ -237,6 +246,57 @@ slices; damage across many slices can cost more capacity than its byte percentag
 suggests. Lost recovery volumes remove capacity too. Required critical PAR2
 metadata must also survive. An index can be replaced by a surviving volume.
 
+### Supergroup protection and bounded work
+
+A supergroup contains at most `supergroup_groups` groups (default 5). All active
+and waiting groups belong to that same supergroup. Before creating a group beyond
+that limit, close every waiting/active group and finish the supergroup. No tails
+are collected across supergroup boundaries. No padding is added.
+
+Finish each group's primary metadata, group PAR2, and central metadata set first.
+Then finish the supergroup's public `index-groups` and generate its PAR2 directly
+from the stored inputs, without input copies or hardlinks. Protected inputs are
+chunks, both group-index copies, central checksum receipts and first-set format/
+certificate metadata, plus the supergroup index. **No group or central `.par2`
+file is protected by supergroup PAR2.** They can be regenerated from repaired inputs.
+The supergroup index gets an identical `-spare` copy under central `metadata/`.
+It contains generated archive names, hashes, sizes and group membership, not source
+paths; encrypted source inventories stay encrypted throughout parity processing.
+
+For the outer slice size, sum `ceil(stored_file_bytes / slice_size)` separately
+for every protected file in each group. Recovery blocks are the maximum of:
+
+- 20% of total source blocks (including the reserved supergroup-index size);
+- `supergroup_margin_percent` (default 110%) of the largest group's block count;
+- one block more than that largest group.
+
+Round upward. Increase the outer slice size by doubling when necessary to remain
+within PAR2's 32768-block capacity; record the actual size, block count and volume
+count in the index. All metadata/packet overhead and file/media limits still apply.
+The final short supergroup uses only its actual members, never the maximum group
+capacity. A one-group tail consequently has roughly another full data copy's worth
+of outer parity, not five groups' worth. An index that cannot fit the file limit
+fails explicitly; reduce the configured supergroup group count.
+
+Indexes form their own backward SHA-256 chain, including the preceding set's
+PAR2 hashes. The catalog-root stores both chains' last links and counts. Missing
+supergroup-index copies can be reconstructed from standard PAR2 file-description
+packets and par2cmdline; no custom erasure coding is implemented.
+
+Recovery first fixes locally recoverable groups, then charges remaining damage
+against their supergroup. The layers' recovery-block counts are **not additive**.
+Supergroup failure does not discard unrelated intact groups or complete streams.
+Verify reports redundancy loss even if all payloads remain usable. Explicit repair
+regenerates group, central, supergroup and root PAR2 from verified inputs as needed.
+
+Backup's outer protection window and a recovery workspace are bounded by one
+supergroup. Already published local output remains the archive, not a staging copy.
+Restore retains only the selected group's repaired payload when leaving an outer
+workspace; metadata can stay cached. Cloud upload/eviction is not implemented.
+The current RAW restore still assembles an entire original stream in scratch;
+filename-only restore also retains decoded streams. Streaming destination writes
+and bounded catalog pagination remain necessary before production-scale restores.
+
 ## 7. Metadata order, copies, and completeness
 
 For each group:
@@ -257,6 +317,10 @@ last link, group count, and settings go into two identical self-checksummed
 **catalog-root markers**, one primary and one `-spare`, published last. These are
 small checksum-chain roots, not copies of the complete catalog. This bounded chain avoids one unbounded archive-wide
 checksum list or marker. Each central recovery set is independently bounded.
+The two catalog-root copies also have their own PAR2 set, sized for all source
+blocks in both copies plus one extra block; this allows losing both copies.
+Bootstrap PAR2 is generated before publishing the roots and needs no settings
+or readable root copy to reconstruct them.
 
 The first central set additionally protects a small uncompressed format note and
 normalized public recipient certificate when encrypted. These and catalog-root
@@ -285,27 +349,34 @@ See [FORMAT.md](poc/FORMAT.md) for the complete filename table.
 
 ```text
 ARCHIVE/
-  <gid[:2]>/
-    archive-<aid>_group-<gid>_chunk-...tar[.zst][.cms]
-    archive-<aid>_group-<gid>_chunk-...raw[.zst][.cms]
-    archive-<aid>_group-<gid>_metadata_index-chunks.json[.zst]
-    archive-<aid>_group-<gid>_metadata_index-files.jsonl[.zst][.cms]
-    archive-<aid>_group-<gid>.par2
-    archive-<aid>_group-<gid>.vol...par2
-  metadata/
+  <sgid>/
     <gid[:2]>/
-      archive-<aid>_group-<gid>_metadata_index-chunks-spare.json[.zst]
-      archive-<aid>_group-<gid>_metadata_index-files-spare.jsonl[.zst][.cms]
-      archive-<aid>_metadata_group-<gid>_checksums.json[.zst]
-      archive-<aid>_metadata_group-<gid>.par2
-      archive-<aid>_metadata_group-<gid>.vol...par2
+      archive-<aid>_supergroup-<sgid>_group-<gid>_chunk-...tar[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_group-<gid>_chunk-...raw[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-chunks.json[.zst]
+      archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-files.jsonl[.zst][.cms]
+      archive-<aid>_supergroup-<sgid>_group-<gid>*.par2
+    metadata/
+      archive-<aid>_supergroup-<sgid>_metadata_index-groups.json[.zst]
+    parity/<media-number>/
+      archive-<aid>_supergroup-<sgid>*.par2
+  metadata/
+    <sgid>/
+      archive-<aid>_supergroup-<sgid>_metadata_index-groups-spare.json[.zst]
+      <gid[:2]>/
+        archive-<aid>_supergroup-<sgid>_group-<gid>_metadata_index-*-spare.json*[.zst][.cms]
+        archive-<aid>_supergroup-<sgid>_metadata_group-<gid>_checksums.json[.zst]
+        archive-<aid>_supergroup-<sgid>_metadata_group-<gid>*.par2
     archive-<aid>_metadata_catalog-root.json
     archive-<aid>_metadata_catalog-root-spare.json
+    archive-<aid>_metadata_catalog-root*.par2
 ```
 
 Only populated shard directories are created. Many groups can share a shard.
 PAR2 files in this layout exist only when enabled. Group IDs and the `group-`
-name component remain in use without PAR2. PAR2 stores basenames relative to its shard. Chunk numbers are local to a group,
+name component remain in use without PAR2. Each supergroup has its own top-level
+directory, named with its existing ID. Group/central PAR2 stores basenames relative
+to its shard; supergroup PAR2 stores canonical paths relative to ARCHIVE. Chunk numbers are local to a group,
 zero-padded to **at least** four digits, without a four-digit maximum. Offsets
 and lengths are plaintext byte coordinates, not compressed/encrypted coordinates.
 Only RAW filenames have offsets; both formats have lengths.
@@ -314,7 +385,11 @@ Readers discover files recursively in flat, nested, or mixed layouts. Group inde
 have distinct primary and `-spare` basenames with identical bytes. Use recorded
 checksums to select good bytes and report missing/damaged redundancy. Every
 basename is unique, so the entire archive can be flattened without collisions.
-Duplicate basenames are rejected. Local PAR2 protects primary names; central
+Duplicate basenames are rejected. Generated paths use ASCII only, at most 255
+bytes per component and 240 characters relative to ARCHIVE. This includes all
+supergroup/shard directories and permits copying ARCHIVE contents to a FAT32 or
+exFAT volume root with conventional Windows path limits, as well as ext3/ext4.
+An arbitrarily deep external destination prefix is not part of this guarantee. Local PAR2 protects primary names; central
 PAR2 protects spare names, and recovery maps copies to the required names. Archive-file mtimes and enumeration order have no recovery significance.
 
 ## 9. Verify, repair, and restore
@@ -324,6 +399,8 @@ PAR2 protects spare names, and recovery maps copies to the required names. Archi
   metadata in scratch to complete its diagnosis, never changing the archive.
 - `repair` changes stored inputs **in place**. No staging copies/hardlinks of
   data or parity. Scattered inputs are gathered with same-filesystem renames.
+  Supergroup volumes on separate parity media are temporarily gathered by rename
+  beside their index for par2cmdline, then returned to their media directories.
   Replacing a missing/damaged intentional metadata duplicate can copy its healthy
   counterpart. Regenerate missing PAR2 from intact inputs only for PAR2-enabled archives. Completed changes
   remain if a later set fails.
@@ -332,6 +409,8 @@ PAR2 protects spare names, and recovery maps copies to the required names. Archi
   hardlinks fall back to ordinary copies. Archives are never modified.
 
 A valid catalog-root marker anchors the full catalog. Either marker copy suffices;
+if both are damaged/missing, bootstrap PAR2 restores them before reading settings.
+Even with bootstrap PAR2,
 conflicting valid copies are rejected. A surviving local group can also be
 restored without the central directory/markers. Report that original backup
 completeness cannot be proved, and return 1 for that partial-catalog mode.

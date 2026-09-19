@@ -66,7 +66,8 @@ class OptionalModeTests(ArchiveTest):
                             self.assertNotIn(b"private-notes.txt", path.read_bytes())
                             self.assertNotIn(b"private-large.bin", path.read_bytes())
                     for group_id in {parse_chunk(path.name)["group"] for path in chunks}:
-                        for directory in (archive / group_id[:2], archive / "metadata" / group_id[:2]):
+                        supergroup_id = next(parse_chunk(path.name)["supergroup"] for path in chunks if parse_chunk(path.name)["group"] == group_id)
+                        for directory in (archive / supergroup_id / group_id[:2], archive / "metadata" / supergroup_id / group_id[:2]):
                             group = [path for path in directory.iterdir() if group_id in path.name]
                             self.assertLessEqual(sum(path.stat().st_size for path in group), settings.max_group_bytes)
                     self.assertEqual(verify(archive), 0)

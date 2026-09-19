@@ -18,6 +18,12 @@ def parser():
                         help="Use zstd for payload and metadata (default: enabled)")
     backup.add_argument("--par2", action=argparse.BooleanOptionalAction, default=True,
                         help="Protect data and metadata with PAR2 (default: enabled)")
+    backup.add_argument("--supergroup-par2", action=argparse.BooleanOptionalAction, default=True,
+                        help="Add cross-group PAR2 when PAR2 is enabled (default: enabled)")
+    backup.add_argument("--supergroup-groups", type=int, default=5,
+                        help="Maximum groups in one supergroup (default: 5)")
+    backup.add_argument("--supergroup-margin-percent", type=int, default=110,
+                        help="Outer recovery blocks as percent of largest group (default: 110)")
     encryption = backup.add_mutually_exclusive_group()
     encryption.add_argument("--encrypt-cert", type=Path, help="Enable CMS encryption using this certificate")
     encryption.add_argument("--no-encryption", action="store_true", help="Explicitly disable encryption (the default)")
@@ -62,7 +68,9 @@ def main(argv=None):
                 settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes,
                                     large_file_bytes=args.large_file_bytes, waiting_groups=args.waiting_groups,
                                     group_close_percent=args.group_close_percent,
-                                    compression=args.compression, par2=args.par2)
+                                    compression=args.compression, par2=args.par2,
+                                    supergroup_par2=args.supergroup_par2, supergroup_groups=args.supergroup_groups,
+                                    supergroup_margin_percent=args.supergroup_margin_percent)
                 archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0

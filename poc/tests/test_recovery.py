@@ -86,7 +86,7 @@ class RecoveryTests(ArchiveTest):
             repair(self.archive)
         repair(self.archive, archive_id)
 
-    def test_metagroup_parity_damage_is_replenished(self):
+    def test_metadata_parity_damage_is_replenished(self):
         self.make_archive()
         volume = next(self.archive.rglob("*_metadata_group-*.vol*.par2"))
         flip(volume)

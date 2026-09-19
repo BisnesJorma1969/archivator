@@ -5,6 +5,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 
 from .common import ArchiveError, BUFFER_SIZE, IntegrityError, scratch
@@ -15,7 +16,10 @@ from .progress import progress
 from .recovery import discover, select, stage_existing
 
 DATA_PARITY_NAME = re.compile(
-    rf"archive-(?P<archive>{ID})_group-(?P<group>{ID})"
+    rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})_group-(?P<group>{ID})"
+    r"(?:\.vol[0-9]+\+[0-9]+)?\.par2")
+SUPER_PARITY_NAME = re.compile(
+    rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})"
     r"(?:\.vol[0-9]+\+[0-9]+)?\.par2")
 
 
@@ -23,6 +27,7 @@ def index_names(names, archive_id):
     """Validate portable basenames and derive all coordinates from them."""
     groups = {}
     chunks = {}
+    supergroups = {}
     for name in names:
         if not isinstance(name, str):
             raise IntegrityError("Scan index filenames must be strings")
@@ -33,6 +38,15 @@ def index_names(names, archive_id):
             entry["filename"] = name
             chunks[name] = entry
         else:
+            outer = SUPER_PARITY_NAME.fullmatch(name)
+            if outer:
+                if outer["archive"] != archive_id:
+                    raise IntegrityError("Scan index mixes archive IDs")
+                selected = supergroups.setdefault(outer["supergroup"], [])
+                if name in selected:
+                    raise IntegrityError(f"Duplicate scan index filename: {name}")
+                selected.append(name)
+                continue
             match = DATA_PARITY_NAME.fullmatch(name)
             if not match:
                 raise IntegrityError(f"Invalid recovery filename: {name!r}")
@@ -43,7 +57,7 @@ def index_names(names, archive_id):
         if name in group:
             raise IntegrityError(f"Duplicate scan index filename: {name}")
         group.append(name)
-    return groups, chunks
+    return groups, chunks, supergroups
 
 
 def stream_problem(chunks):
@@ -78,13 +92,13 @@ def scan(root, output, archive_id=None):
     for name, path in sorted(archives[selected].items()):
         if path.is_symlink() or not path.is_file():
             continue
-        if CHUNK_NAME.fullmatch(name) or DATA_PARITY_NAME.fullmatch(name):
+        if CHUNK_NAME.fullmatch(name) or DATA_PARITY_NAME.fullmatch(name) or SUPER_PARITY_NAME.fullmatch(name):
             names.append(name)
         elif "_chunk-" in name:
             print(f"Ignoring unrecognized chunk filename: {name!r}", flush=True)
     if not names:
         raise IntegrityError("No recognizable data chunks or data PAR2 files found")
-    groups, chunks = index_names(names, selected)
+    groups, chunks, supergroups = index_names(names, selected)
     streams = {}
     for chunk in chunks.values():
         streams.setdefault(chunk["stream"], []).append(chunk)
@@ -109,7 +123,8 @@ def scan(root, output, archive_id=None):
         raise
     finally:
         writer.close()
-    print(f"Scan complete: {len(chunks):,} chunks, {len(groups):,} parity sets; index: {output}")
+    print(f"Scan complete: {len(chunks):,} chunks, {len(groups):,} groups, "
+          f"{len(supergroups):,} supergroup PAR2 sets; index: {output}")
     print("Filename-only index: original large-file paths, hashes, and final stream lengths are unknown.")
     print("Missing tail chunks or entirely missing streams cannot always be detected.")
     return selected
@@ -132,8 +147,8 @@ def read_index(path):
             raise IntegrityError("Invalid archive ID in scan index")
         if not isinstance(index["files"], list) or not index["files"]:
             raise IntegrityError("Scan index must list data chunks or data PAR2 files")
-        groups, chunks = index_names(index["files"], index["archive"])
-        return index["archive"], groups, chunks
+        groups, chunks, supergroups = index_names(index["files"], index["archive"])
+        return index["archive"], groups, chunks, supergroups
     except (KeyError, TypeError, ValueError) as error:
         raise IntegrityError(f"Malformed scan index: {error}") from error
 
@@ -142,7 +157,8 @@ def recover_scanned_set(files, names, directory, archive_id, group_id):
     # Verify read-only links first. Without manifests, a repair-needed set has
     # no trusted per-file hashes, so copy its data before allowing PAR2 writes.
     stage_existing(files, names, directory, writable=False)
-    prefix = group_prefix(archive_id, group_id)
+    supergroup_id = (CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0]))["supergroup"]
+    prefix = group_prefix(archive_id, supergroup_id, group_id)
     status = check_parity(directory, prefix) if any(name.endswith(".par2") for name in names) else 4
     if status == 1:
         data_names = [name for name in names if CHUNK_NAME.fullmatch(name)]
@@ -197,10 +213,58 @@ def publish_stream(path, target, stream, kind):
         shutil.copyfileobj(source, output, BUFFER_SIZE)
 
 
+def scanned_groups(files, selected, groups, supergroups, cache):
+    """Yield one bounded supergroup workspace at a time, or its surviving groups."""
+    from .recovery import ArchiveFiles
+    from .supergroups import SupergroupRecovery, par2_members
+
+    available = ArchiveFiles(files.root)
+    available.update({name: path for name, path in files.items()
+                      if any(f"_supergroup-{sid}" in name for sid in supergroups)})
+    outer = SupergroupRecovery(selected, available, cache)
+    outer.load(None)
+    by_supergroup = {}
+    for gid, names in groups.items():
+        match = CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0])
+        by_supergroup.setdefault(match["supergroup"], {})[gid] = list(names)
+    for sid in supergroups:
+        local = by_supergroup.setdefault(sid, {})
+        if sid in outer.records:
+            names = list(outer.protected(outer.records[sid]))
+        else:
+            try:
+                names = par2_members(outer.parity_files(sid), selected, sid)
+            except (ArchiveError, OSError, ValueError) as error:
+                print(f"Cannot read supergroup {sid} file list: {error}", flush=True)
+                names = []
+        for name in names:
+            if match := CHUNK_NAME.fullmatch(name):
+                members = local.setdefault(match["group"], [])
+                if name not in members:
+                    members.append(name)
+    for sid, local in sorted(by_supergroup.items()):
+        with ExitStack() as stack:
+            view = files
+            verified = False
+            if sid in outer.records:
+                try:
+                    base = stack.enter_context(outer.recover(sid))
+                except IntegrityError as error:
+                    print(f"{error}; recovering surviving groups individually.", flush=True)
+                else:
+                    view = dict(files)
+                    for path in base.rglob("archive-*"):
+                        if path.is_file():
+                            view[path.name] = path
+                    verified = True
+            for gid, names in sorted(local.items()):
+                yield gid, names, view, verified
+
+
 def restore_scanned(root, target, index_path, archive_id, key, certificate):
     from .restore import unpack_chunk
 
-    selected, groups, known = read_index(index_path)
+    selected, groups, known, supergroups = read_index(index_path)
     if archive_id is not None and archive_id != selected:
         raise ArchiveError("Selected archive ID does not match scan index")
     archives = discover(root)
@@ -218,11 +282,16 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
     with scratch("scan-streams-") as temporary:
         decoded = Path(temporary)
         usable = {}
-        for number, (group_id, names) in enumerate(sorted(groups.items()), 1):
-            print(f"Recovering scanned set {number}/{len(groups)}: {group_id}", flush=True)
+        for number, (group_id, names, view, outer_verified) in enumerate(
+                scanned_groups(files, selected, groups, supergroups, decoded), 1):
+            print(f"Recovering scanned group {number}: {group_id}", flush=True)
             with scratch("scan-set-") as set_temporary:
                 directory = Path(set_temporary)
-                verified = recover_scanned_set(files, names, directory, selected, group_id)
+                if outer_verified:
+                    stage_existing(view, names, directory, writable=False)
+                    verified = True
+                else:
+                    verified = recover_scanned_set(view, names, directory, selected, group_id)
                 recovered = []
                 for path in sorted(directory.iterdir()):
                     if not CHUNK_NAME.fullmatch(path.name):

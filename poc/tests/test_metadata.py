@@ -66,6 +66,36 @@ class MetadataTests(ArchiveTest):
         with self.assertRaisesRegex(IntegrityError, "copies disagree"):
             restore(self.archive, self.restored)
 
+    def test_both_catalog_root_copies_recover_from_their_own_par2(self):
+        archive_id = self.make_archive(True)
+        originals = {}
+        for name in catalog_root_names(archive_id):
+            path = next(self.archive.rglob(name))
+            originals[name] = path.read_bytes()
+            path.unlink()
+        before = snapshot(self.archive)
+        self.assertEqual(verify(self.archive), 1)
+        self.assertEqual(restore(self.archive, self.restored, key=self.key), 0)
+        self.assertEqual(compare(self.source, self.restored), 0)
+        self.assertEqual(snapshot(self.archive), before)
+        repair(self.archive)
+        self.assertEqual(verify(self.archive), 0)
+        for name, content in originals.items():
+            self.assertEqual(next(self.archive.rglob(name)).read_bytes(), content)
+
+    def test_corrupted_roots_and_root_parity_damage_are_repaired(self):
+        archive_id = self.make_archive()
+        for name in catalog_root_names(archive_id):
+            next(self.archive.rglob(name)).write_bytes(b"broken metadata")
+        before = snapshot(self.archive)
+        self.assertEqual(restore(self.archive, self.restored), 0)
+        self.assertEqual(snapshot(self.archive), before)
+        repair(self.archive)
+        next(self.archive.rglob("*_metadata_catalog-root.vol*.par2")).unlink()
+        self.assertEqual(verify(self.archive), 1)
+        repair(self.archive)
+        self.assertEqual(verify(self.archive), 0)
+
     def test_checksum_receipt_itself_is_par2_protected(self):
         self.make_archive()
         receipt = next(self.archive.rglob("*_checksums.json.zst"))

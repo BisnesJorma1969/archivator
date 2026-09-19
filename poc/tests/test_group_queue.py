@@ -46,7 +46,7 @@ class QueuePolicyTests(unittest.TestCase):
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
 
     def queue(self, waiting=4, percent=95):
-        settings = SimpleNamespace(max_group_bytes=100, waiting_groups=waiting, group_close_percent=percent)
+        settings = SimpleNamespace(max_group_bytes=100, waiting_groups=waiting, group_close_percent=percent, supergroup_groups=100)
         return GroupQueue(lambda: CapacityGroup(settings))
 
     def test_waiting_group_is_filled_before_active_group(self):
@@ -190,7 +190,7 @@ class WholeFilePlacementTests(ArchiveTest):
         tail = next(iter(groups["c"]))
         isolated = self.root / "isolated"
         isolated.mkdir()
-        for path in (self.archive / tail[:2]).glob(f"*_group-{tail}*"):
+        for path in self.archive.rglob(f"*_group-{tail}*"):
             shutil.copyfile(path, isolated / path.name)
         target = self.root / "partial"
         self.assertEqual(restore(isolated, target), 1)

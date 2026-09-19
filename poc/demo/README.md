@@ -68,7 +68,7 @@ Options for `poc/demo/bitrot.py`:
 | `--damage` | `mixed` | `mixed`, `bitflip`, `zero`, `copy`, `delete`, or `insert` |
 | `--dry-run` | Off | Write the damage plan without modifying archives |
 | `--report` | Timestamped JSON under `poc/work/demo/` | Must be outside archives and not already exist |
-| `--include-bootstrap` | Off | Also damage both catalog-root copies; full-catalog recovery needs one intact copy |
+| `--include-bootstrap` | Off | Also damage both catalog-root copies; their separate PAR2 can recover missing/damaged copies |
 
 ### Damage model
 
@@ -110,7 +110,7 @@ metadata, including their compressed `.zst` and encrypted `.zst.cms` representat
 `metadata_catalog-root.json` and `metadata_catalog-root-spare.json`, are preserved by default; their sizes
 still count toward the total backup size. If the requested budget exceeds eligible
 bytes, it is capped and the actual percentage is reported. Add `--include-bootstrap`
-to include both copies; full-catalog bootstrap needs an intact marker. Local
+to include both copies; bootstrap can use an intact marker or its PAR2. Local
 groups and filename-only recovery do not require those markers. High percentages can also exhaust
 recovery capacity. See [manual recovery](../FORMAT.md).
 

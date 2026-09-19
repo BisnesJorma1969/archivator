@@ -17,7 +17,7 @@ from poc.tests.test_recovery import snapshot
 
 class ScanTests(ArchiveTest):
     def write_chunk(self, data, offset=0, kind="raw"):
-        name = chunk_name("a" * 32, "b" * 32, 0, "c" * 32, offset, len(data), False, kind)
+        name = chunk_name("a" * 24, "b" * 24, 0, "c" * 24, offset, len(data), False, kind, supergroup="d" * 24)
         self.archive.mkdir(exist_ok=True)
         writer = ZstdWriter(self.archive / name)
         writer.write(data)
@@ -32,7 +32,7 @@ class ScanTests(ArchiveTest):
     def test_scan_reads_names_not_payload_or_metadata_contents(self):
         name = self.write_chunk(b"payload")
         (self.archive / name).write_bytes(b"not even a zstd frame")
-        (self.archive / ("archive-" + "a" * 32 + "_metadata_catalog-root.json")).write_bytes(b"invalid json")
+        (self.archive / ("archive-" + "a" * 24 + "_metadata_catalog-root.json")).write_bytes(b"invalid json")
         nested = self.archive / "nested" / "deeper"
         nested.mkdir(parents=True)
         (self.archive / name).rename(nested / name)
@@ -41,7 +41,7 @@ class ScanTests(ArchiveTest):
             scan(self.archive, index)
         data = read_zstd_json(index)
         self.assertEqual(data["files"], [name])
-        self.assertEqual(data["archive"], "a" * 32)
+        self.assertEqual(data["archive"], "a" * 24)
         with self.assertRaises(FileExistsError):
             scan(self.archive, index)
 
@@ -160,7 +160,7 @@ class ScanTests(ArchiveTest):
         index = self.root / "bad-index.json.zst"
         writer = ZstdWriter(index)
         writer.write(json.dumps({"format": "archivator-scan", "version": 1,
-                                 "archive": "a" * 32, "files": ["../outside"]}).encode())
+                                 "archive": "a" * 24, "files": ["../outside"]}).encode())
         writer.finish()
         with self.assertRaises(IntegrityError):
             restore(self.archive, self.restored, scan_index=index)
