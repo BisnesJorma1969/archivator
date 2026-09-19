@@ -133,7 +133,7 @@ class ParityGroupTests(ArchiveTest):
             finish(writer)
             # The actual output descriptor has closed; append via its known
             # staging name to model an unexpected compressor-size regression.
-            with (self.archive / ".tmp" / "chunk.zst").open("ab") as output:
+            with (self.archive / ".tmp" / "chunk").open("ab") as output:
                 output.write(bytes(SMALL.max_file_bytes + 1))
 
         with patch.object(ZstdWriter, "finish", oversized):

@@ -6,49 +6,62 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
+from contextlib import contextmanager
 
 from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, scratch, sha256
 from .external import decrypt, executable
+from .format import parse_chunk
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import stage_set, discover, open_archive, recover_set, select
 from .progress import progress
 
 
-def unpack_chunk(directory, member, output, encrypted, key, certificate, verify_hashes=True):
-    stored = directory / member["filename"]
-    compressed = stored
-    if encrypted:
-        compressed = directory / "decrypted.zst"
-        decrypt(stored, compressed, key, certificate)
-    hashes = Hashes()
-    length = 0
-    progress.update(f"Decompressing and checking chunk: 0/{member['length']:,} plaintext bytes")
-    with tempfile.TemporaryFile(dir=directory) as errors, subprocess.Popen(
-            [executable("zstd"), "-q", "-d", "-c", "--", str(compressed)],
+@contextmanager
+def chunk_reader(path, compressed):
+    if not compressed:
+        with path.open("rb") as source:
+            yield source
+        return
+    with tempfile.TemporaryFile(dir=path.parent) as errors, subprocess.Popen(
+            [executable("zstd"), "-q", "-d", "-c", "--", str(path)],
             stdout=subprocess.PIPE, stderr=errors) as process:
         try:
-            while data := process.stdout.read(min(BUFFER_SIZE, member["length"] - length + 1)):
-                length += len(data)
-                if length > member["length"]:
-                    raise IntegrityError("Decompressed chunk exceeds its declared length")
-                hashes.update(data)
-                output.write(data)
-                progress.update(f"Decompressing and checking chunk: {length:,}/{member['length']:,} plaintext bytes")
+            yield process.stdout
             if process.wait():
                 errors.seek(0)
                 message = errors.read().decode("utf-8", errors="replace").strip()
-                raise IntegrityError(f"Invalid zstd chunk {member['filename']}: {message}")
+                raise IntegrityError(f"Invalid zstd chunk {path.name}: {message}")
         finally:
             # Stop decoding immediately on length or output failures.
             if process.poll() is None:
                 process.kill()
+
+
+def unpack_chunk(directory, member, output, encrypted, key, certificate, verify_hashes=True):
+    stored = directory / member["filename"]
+    encoded = stored
+    if encrypted:
+        encoded = directory / "decrypted"
+        decrypt(stored, encoded, key, certificate)
+    compressed = parse_chunk(member["filename"])["compressed"]
+    hashes = Hashes()
+    length = 0
+    progress.update(f"Decoding and checking chunk: 0/{member['length']:,} plaintext bytes")
+    with chunk_reader(encoded, compressed) as source:
+        while data := source.read(min(BUFFER_SIZE, member["length"] - length + 1)):
+            length += len(data)
+            if length > member["length"]:
+                raise IntegrityError("Decoded chunk exceeds its declared length")
+            hashes.update(data)
+            output.write(data)
+            progress.update(f"Decoding and checking chunk: {length:,}/{member['length']:,} plaintext bytes")
     if length != member["length"]:
-        raise IntegrityError("Decompressed chunk length mismatch")
+        raise IntegrityError("Decoded chunk length mismatch")
     if verify_hashes and (hashes.values()["sha256"] != member["plaintext_sha256"]
                           or hashes.values()["sha512"] != member["plaintext_sha512"]):
         raise IntegrityError("Plaintext chunk checksum mismatch")
     if encrypted:
-        compressed.unlink()
+        encoded.unlink()
 
 
 def extract_tar(path, target, inventory):

@@ -11,6 +11,7 @@ from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError, Hashes, IntegrityError
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.external import executable
+from poc.archivator_lib.format import chunk_name
 from poc.archivator_lib.restore import restore, unpack_chunk
 from poc.tests.support import ArchiveTest, SMALL
 from poc.tests.test_recovery import flip, snapshot
@@ -31,7 +32,8 @@ class RestoreTests(ArchiveTest):
                                     input=data, capture_output=True, check=True).stdout
         hashes = Hashes()
         hashes.update(data)
-        member = {"filename": "chunk.zst", "length": len(data),
+        name = chunk_name("a" * 32, "b" * 32, 0, "c" * 32, 0, len(data), False)
+        member = {"filename": name, "length": len(data),
                   "plaintext_sha256": hashes.values()["sha256"],
                   "plaintext_sha512": hashes.values()["sha512"]}
         path = self.root / member["filename"]

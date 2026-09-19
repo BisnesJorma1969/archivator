@@ -34,7 +34,7 @@ class ArchiveFiles(dict):
 
 def group_metadata(name):
     return bool(re.fullmatch(rf"archive-{ID}_parity-{ID}_metadata_index-"
-                             r"(?:chunks\.json\.zst|files\.jsonl\.zst(?:\.cms)?)", name))
+                             r"(?:chunks\.json(?:\.zst)?|files\.jsonl(?:\.zst)?(?:\.cms)?)", name))
 
 
 def discover(root):
@@ -174,8 +174,8 @@ def read_completion(archive_id, files):
                     or marker["marker_sha256"] != completion_digest(marker)
                     or not isinstance(marker["groups"], int) or marker["groups"] < 1):
                 raise IntegrityError("Invalid marker")
-            Settings(**marker["settings"])
-            validate_link(marker["last"], archive_id)
+            settings = Settings(**marker["settings"])
+            validate_link(marker["last"], archive_id, settings.par2)
             valid.append(marker)
         except (OSError, ArchiveError, KeyError, TypeError, ValueError):
             damaged.append(name)
@@ -186,13 +186,17 @@ def read_completion(archive_id, files):
     return valid[0], damaged
 
 
-def validate_link(link, archive_id):
+def validate_link(link, archive_id, par2):
     if not re.fullmatch(ID, link["parity"]) or not valid_digest(link["receipt_sha256"]):
         raise IntegrityError("Invalid metadata chain link")
-    validate_parity_hashes(link["parity_hashes"], metadata_prefix(archive_id, link["parity"]))
+    validate_parity_hashes(link["parity_hashes"], metadata_prefix(archive_id, link["parity"]), par2)
 
 
-def validate_parity_hashes(hashes, prefix):
+def validate_parity_hashes(hashes, prefix, enabled):
+    if not enabled:
+        if hashes != {}:
+            raise IntegrityError("Unexpected PAR2 checksums when PAR2 is disabled")
+        return
     if not isinstance(hashes, dict) or len(hashes) < 2:
         raise IntegrityError("Missing PAR2 checksums")
     for name, digest in hashes.items():
@@ -220,15 +224,17 @@ def validate_manifest(manifest, archive_id, name, digest):
     if not re.fullmatch(ID, parity_id):
         raise IntegrityError("Invalid parity ID")
     prefix = parity_prefix(archive_id, parity_id)
-    if (manifest["version"] != 1 or manifest["archive"] != archive_id
-            or name != prefix + "_metadata_index-chunks.json.zst" or manifest["compression"] != "zstd"):
-        raise IntegrityError("Inconsistent group manifest")
     settings = Settings(**manifest["settings"])
+    suffix = ".zst" if settings.compression else ""
+    compression = "zstd" if settings.compression else "none"
+    if (manifest["version"] != 1 or manifest["archive"] != archive_id
+            or name != prefix + "_metadata_index-chunks.json" + suffix or manifest["compression"] != compression):
+        raise IntegrityError("Inconsistent group manifest")
     if manifest["encryption"] not in ("none", "cms-aes-256-gcm"):
         raise IntegrityError("Unsupported encryption")
     encrypted = manifest["encryption"] != "none"
     source_name = archive_filename(manifest["source_metadata"], archive_id)
-    if not source_name.startswith(prefix + "_metadata_") or source_name.endswith(".cms") != encrypted:
+    if source_name != prefix + "_metadata_index-files.jsonl" + suffix + (".cms" if encrypted else ""):
         raise IntegrityError("Invalid private metadata filename")
     if not valid_digest(manifest["source_sha256"]):
         raise IntegrityError("Invalid source metadata checksum")
@@ -236,7 +242,8 @@ def validate_manifest(manifest, archive_id, name, digest):
     for number, member in enumerate(manifest["members"]):
         expected = {"archive": archive_id, "parity": parity_id, "chunk": number,
                     "stream": member["stream"], "offset": member["offset"],
-                    "length": member["length"], "encrypted": encrypted, "kind": member["kind"]}
+                    "length": member["length"], "encrypted": encrypted, "kind": member["kind"],
+                    "compressed": settings.compression}
         if parse_chunk(member["filename"]) != expected or member["chunk"] != number:
             raise IntegrityError("Chunk filename/manifest mismatch")
         if member["offset"] < 0 or member["length"] <= 0 or not 0 < member["stored_length"] <= settings.max_file_bytes:
@@ -257,6 +264,10 @@ def validate_manifest(manifest, archive_id, name, digest):
 def repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish=False):
     """PAR2 writes only here: scratch copies or explicitly selected in-place files."""
     damaged = mismatches(directory, hashes)
+    if not settings.par2:
+        if damaged:
+            raise IntegrityError(f"Unrecoverable files in {prefix}: PAR2 is disabled")
+        return [], []
     parity_damage = mismatches(directory, parity_hashes) if parity_hashes else []
     status = check_parity(directory, prefix)
     previous = None
@@ -285,14 +296,15 @@ def load_central(archive, original, in_place):
     for number in range(archive.complete["groups"]):
         if link is None:
             raise IntegrityError("Metadata chain ended early")
-        validate_link(link, archive.id)
+        validate_link(link, archive.id, settings.par2)
         parity_id = link["parity"]
         if parity_id in seen:
             raise IntegrityError("Metadata chain contains a cycle")
         seen.add(parity_id)
         prefix = metadata_prefix(archive.id, parity_id)
         group_prefix = parity_prefix(archive.id, parity_id)
-        receipt_name = prefix + "_checksums.json.zst"
+        suffix = ".zst" if settings.compression else ""
+        receipt_name = prefix + "_checksums.json" + suffix
         print(f"Checking metadata set {number + 1}/{archive.complete['groups']}: {parity_id}", flush=True)
         if in_place:
             directory = original.root / "metadata" / parity_id[:2]
@@ -320,7 +332,7 @@ def load_central(archive, original, in_place):
         if receipt_damage:
             before = {path.relative_to(directory) for path in directory.rglob("*")}
             receipt_previous = before
-            if check_parity(directory, prefix) != 1 or check_parity(directory, prefix, repair=True) != 0:
+            if not settings.par2 or check_parity(directory, prefix) != 1 or check_parity(directory, prefix, repair=True) != 0:
                 raise IntegrityError("Metadata checksum receipt cannot be recovered")
             if mismatches(directory, expected_receipt):
                 raise IntegrityError("Recovered metadata receipt checksum mismatch")
@@ -350,7 +362,7 @@ def load_central(archive, original, in_place):
                                                          link["parity_hashes"], in_place)
         except IntegrityError:
             missing = mismatches(directory, hashes)
-            if not missing or any(not group_metadata(name) for name in missing):
+            if not settings.par2 or not missing or any(not group_metadata(name) for name in missing):
                 raise
             # The local data set protects the same metadata bytes. It remains
             # useful when the central copy and its own parity were both lost.
@@ -367,7 +379,7 @@ def load_central(archive, original, in_place):
                     raise IntegrityError("Local metadata recovery failed checksum validation")
                 (directory / name).unlink(missing_ok=True)
                 shutil.copyfile(path, directory / name)
-            manifest_name = group_prefix + "_metadata_index-chunks.json.zst"
+            manifest_name = group_prefix + "_metadata_index-chunks.json" + suffix
             local_manifest = read_json(unpack_metadata(local / manifest_name, archive.metadata))
             local_manifest = validate_manifest(local_manifest, archive.id, manifest_name, hashes[manifest_name])
             local_hashes = protected_hashes(local_manifest)
@@ -378,7 +390,7 @@ def load_central(archive, original, in_place):
         remove_repair_backups(directory, hashes, receipt_previous)
         archive.metadata_damage.extend(receipt_damage + original_damage + damage + parity_damage)
         archive.checksums.update(hashes)
-        validate_parity_hashes(receipt["data_parity"], group_prefix)
+        validate_parity_hashes(receipt["data_parity"], group_prefix, settings.par2)
         archive.checksums.update(receipt["data_parity"])
         for name in receipt["members"]:
             archive.files[name] = directory / name
@@ -387,9 +399,12 @@ def load_central(archive, original, in_place):
                 if len(copies) < 2 or any(not path.is_file() or path.is_symlink() or sha256(path) != hashes[name]
                                           for path in copies):
                     archive.metadata_damage.append(name)
-        name = group_prefix + "_metadata_index-chunks.json.zst"
+        name = group_prefix + "_metadata_index-chunks.json" + suffix
         manifest = read_json(unpack_metadata(directory / name, archive.metadata))
-        archive.manifests.append(validate_manifest(manifest, archive.id, name, hashes[name]))
+        manifest = validate_manifest(manifest, archive.id, name, hashes[name])
+        if manifest["settings"] != archive.complete["settings"]:
+            raise IntegrityError("Group settings disagree with completion marker")
+        archive.manifests.append(manifest)
         link = receipt["previous"]
     if link is not None:
         raise IntegrityError("Metadata chain exceeds the completion marker's group count")
@@ -415,7 +430,8 @@ def load_local(archive, original, in_place):
         else:
             directory = archive.metadata / f"local-{parity_id}"
             stage_existing(original, names, directory, writable=False)
-        status = check_parity(directory, prefix)
+        has_parity = any(name.endswith(".par2") for name in names)
+        status = check_parity(directory, prefix) if has_parity else 4
         previous = None
         if status == 1:
             previous = {path.relative_to(directory) for path in directory.rglob("*")}
@@ -426,8 +442,13 @@ def load_local(archive, original, in_place):
                 stage_existing(original, [name for name in names if not name.endswith(".par2")], directory)
             if check_parity(directory, prefix, repair=True) != 0:
                 raise IntegrityError(f"Cannot recover local metadata for {parity_id}")
-        name = prefix + "_metadata_index-chunks.json.zst"
-        if not (directory / name).is_file():
+        manifests = [path for path in directory.glob(prefix + "_metadata_index-chunks.json*")
+                     if path.name in (prefix + "_metadata_index-chunks.json",
+                                      prefix + "_metadata_index-chunks.json.zst")]
+        if len(manifests) > 1:
+            raise IntegrityError("Ambiguous local manifests")
+        name = manifests[0].name if manifests else ""
+        if not name:
             raise IntegrityError(f"No usable local manifest for {parity_id}; use filename-only scan")
         manifest = read_json(unpack_metadata(directory / name, archive.metadata))
         manifest = validate_manifest(manifest, archive.id, name, sha256(directory / name))
@@ -535,10 +556,12 @@ def open_archive(archive_id, files, in_place=False, key=None, certificate=None):
                 load_central(archive, files, in_place)
             else:
                 load_local(archive, files, in_place)
-            encryption = {manifest["encryption"] for manifest in archive.manifests}
-            if len(encryption) != 1:
-                raise IntegrityError("Groups disagree about encryption")
-            archive.format = {"encryption": encryption.pop()}
+            modes = {(manifest["encryption"], manifest["compression"], manifest["settings"]["par2"])
+                     for manifest in archive.manifests}
+            if len(modes) != 1:
+                raise IntegrityError("Groups disagree about compression, encryption, or PAR2")
+            encryption, compression, par2 = modes.pop()
+            archive.format = {"encryption": encryption, "compression": compression, "par2": par2}
             for manifest in archive.manifests:
                 prefix = parity_prefix(archive_id, manifest["parity"])
                 archive.candidates[manifest["parity"]] = list(protected_hashes(manifest)) + [
@@ -563,6 +586,8 @@ def inspect_set(archive, manifest, directory):
     parity_hashes = {name: digest for name, digest in archive.checksums.items()
                      if name.startswith(prefix + ".") and name.endswith(".par2")}
     parity_damage = mismatches(directory, parity_hashes)
+    if not manifest["settings"]["par2"]:
+        return damage, [], 2 if damage else 0
     status = check_parity(directory, prefix)
     if not parity_hashes and status in (2, 4):
         parity_damage.append(prefix + ".par2 (unverified)")

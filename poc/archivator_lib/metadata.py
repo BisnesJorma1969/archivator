@@ -32,27 +32,31 @@ def completion_digest(complete):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def store_metadata(path, staging=None, certificate=None):
-    """Compress by role, then optionally encrypt source-name metadata exactly once."""
+def store_metadata(path, staging=None, certificate=None, compression=True):
+    """Optionally compress by role, then optionally encrypt source-name metadata exactly once."""
     path = Path(path)
     if path.suffix in (".zst", ".cms") or path.name.endswith(UNCOMPRESSED_METADATA_SUFFIXES):
         return path.name
     staging = staging or path.parent / ".tmp"
     staging.mkdir(mode=0o700, exist_ok=True)
-    compressed = staging / (path.name + ".zst")
-    run([executable("zstd"), "-q", "-3", "--single-thread", "--check",
-         str(path), "-o", str(compressed)], activity=f"Compressing metadata: {path.name!r}")
-    compressed.chmod(0o600)
+    encoded = path
+    if compression:
+        encoded = staging / (path.name + ".zst")
+        run([executable("zstd"), "-q", "-3", "--single-thread", "--check",
+             str(path), "-o", str(encoded)], activity=f"Compressing metadata: {path.name!r}")
+    encoded.chmod(0o600)
     if certificate:
-        encrypted = compressed.with_name(compressed.name + ".cms")
-        encrypt(compressed, encrypted, certificate)
-        compressed.unlink()
-        compressed = encrypted
-    destination = path.with_name(compressed.name)
-    if compressed != destination:
-        os.replace(compressed, destination)
-    path.unlink()
-    return compressed.name
+        encrypted = encoded.with_name(encoded.name + ".cms")
+        encrypt(encoded, encrypted, certificate)
+        if encoded != path:
+            encoded.unlink()
+        encoded = encrypted
+    destination = path.with_name(encoded.name)
+    if encoded != destination:
+        os.replace(encoded, destination)
+    if destination != path:
+        path.unlink()
+    return destination.name
 
 
 def unpack_metadata(path, destination=None, key=None, certificate=None):
@@ -115,17 +119,19 @@ class MetadataWriter:
         name = prefix + "_checksums.json"
         staging_root = self.archive / ".tmp"
         write_json(staging_root / name, receipt)
-        name = store_metadata(staging_root / name, staging_root)
+        name = store_metadata(staging_root / name, staging_root, compression=self.settings.compression)
         check_files([staging_root / name], self.settings.max_file_bytes, self.settings.max_group_bytes)
         os.replace(staging_root / name, destination / name)
         lengths = {name: (destination / name).stat().st_size for name in [*members, name]}
-        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes)
+        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes, self.settings.par2)
         if sum(lengths.values()) + plan.total_bytes > self.settings.max_group_bytes:
             raise ArchiveError("Central metadata recovery set exceeds group budget")
         staging = self.archive / ".tmp" / "central-parity"
         staging.mkdir()
-        files = create_parity(destination, prefix, list(lengths), self.settings.slice_size,
-                              plan.blocks, staging, plan.volumes)
+        files = []
+        if self.settings.par2:
+            files = create_parity(destination, prefix, list(lengths), self.settings.slice_size,
+                                  plan.blocks, staging, plan.volumes)
         check_files([*(destination / name for name in lengths), *files],
                     self.settings.max_file_bytes, self.settings.max_group_bytes)
         hashes = {}

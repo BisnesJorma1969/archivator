@@ -21,7 +21,7 @@ class FormatTests(unittest.TestCase):
         name = chunk_name(archive, parity, 3, stream, 512, 256, True)
         self.assertEqual(parse_chunk(name), {
             "archive": archive, "parity": parity, "stream": stream,
-            "chunk": 3, "offset": 512, "length": 256, "encrypted": True, "kind": "raw",
+            "chunk": 3, "offset": 512, "length": 256, "encrypted": True, "kind": "raw", "compressed": True,
         })
         with self.assertRaises(IntegrityError):
             parse_chunk("../" + name)

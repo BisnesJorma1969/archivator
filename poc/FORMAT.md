@@ -20,16 +20,18 @@ Directories/symlinks alone need only inventory records, not payload chunks.
 The local group lives under `ARCHIVE/<pid[:2]>/`. Its identical metadata copies
 and separate central PAR2 live under `ARCHIVE/metadata/<pid[:2]>/`. Only populated
 shards are created; several groups can share one shard. Completion markers live
-under `ARCHIVE/metadata/`.
+under `ARCHIVE/metadata/`. Optional `.zst` and `.cms` suffixes describe the enabled
+transforms. PAR2 files exist only when enabled; group IDs and the `parity-` name
+component are used regardless.
 
 | Filename after `archive-<aid>_` | Role |
 | --- | --- |
-| `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar.zst[.cms]` | One complete, independently extractable TAR |
-| `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw.zst[.cms]` | Original file bytes: a whole file or a fragment |
-| `parity-<pid>_metadata_index-chunks.json.zst` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
-| `parity-<pid>_metadata_index-files.jsonl.zst[.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
+| `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar[.zst][.cms]` | One complete, independently extractable TAR |
+| `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Original file bytes: a whole file or a fragment |
+| `parity-<pid>_metadata_index-chunks.json[.zst]` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
+| `parity-<pid>_metadata_index-files.jsonl[.zst][.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
 | `parity-<pid>.par2`, `parity-<pid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
-| `metadata_parity-<pid>_checksums.json.zst` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
+| `metadata_parity-<pid>_checksums.json[.zst]` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
 | `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
 | `metadata_parity-<pid>_format.txt` | Small uncompressed format/settings note, in the first central set |
 | `metadata_parity-<pid>_recipient.pem` | Optional normalized public certificate, in the first central set |
@@ -59,16 +61,20 @@ not matter. Two group-metadata copies are intentional, other duplicates are not.
 
 ## Contents and dependency order
 
-Each chunk is one zstd level-3 frame with a content checksum and no dictionary.
-Encrypted chunks and inventories wrap zstd bytes in binary CMS AuthEnvelopedData,
+With compression enabled, each chunk is one zstd level-3 frame with a content
+checksum and no dictionary. Otherwise it contains plain TAR/RAW bytes.
+Encrypted chunks and inventories wrap either form in binary CMS AuthEnvelopedData,
 DER encoding, AES-256-GCM, RSA≥3072, RSA-OAEP/SHA-256 and MGF1-SHA-256.
-The suffix is `.zst.cms`. Decrypt/authenticate before decompression.
+Encryption appends `.cms`; compression appends `.zst` before it. Decrypt/authenticate
+first, then decompress if applicable. Metadata JSON/JSONL follows the same
+compression setting; only source-name inventories are encrypted.
 
 The public manifest contains `version`, `archive`, `parity`, `compression`,
 `encryption`, `settings`, `members`, `source_metadata`, and `source_sha256`.
 Each chunk member records `filename`, `chunk`, `stream`, `kind` (`tar` or `raw`), `offset`, `length`,
 `stored_length`, `stored_sha256`, `plaintext_sha256`, and `plaintext_sha512`.
-It contains no original source names.
+It contains no original source names. `compression` is `zstd` or `none`;
+`settings.compression` and `settings.par2` are booleans.
 
 The inventory is JSONL: first `{"streams": [...]}`, followed by
 `{"stream": "<id>", "entry": {...}}` records. Stream type is `file` or `tar`;
@@ -84,7 +90,7 @@ Names are JSON strings, including escaped Unicode, tabs, newlines and filesystem
 surrogate escapes. CRC32 matches ZIP. Digests are lowercase hex. SHA-256/SHA-512
 are integrity checks; the older digests are lookup aids.
 
-Local stored metadata is finished **before data PAR2**, so the same recovery set
+When PAR2 is enabled, local stored metadata is finished **before data PAR2**, so the same recovery set
 can recreate a missing manifest/inventory. Make its identical central copies,
 then write the central receipt with the finished data-PAR2 hashes. Central PAR2
 protects that receipt and the copies. No manifest hashes its own PAR2.
@@ -93,7 +99,8 @@ Each receipt links backward to the preceding central receipt's SHA-256 and PAR2
 hashes. Completion markers hold only the last link, group count, and settings,
 so they do not grow with the archive's group count. `marker_sha256` hashes
 canonical ASCII JSON, sorted keys and compact separators, excluding that field.
-Markers are published last, are outside PAR2, and are not signed.
+Markers are published last, are outside PAR2, and are not signed. Without PAR2,
+the copies, receipts, and checksum chain still exist; parity-hash maps are empty.
 
 ## Sizing and recovery capacity
 
@@ -111,7 +118,7 @@ queue, defaulting to four waiting groups and a 95% close-on-miss threshold.
 See the [queue rules](../POC.md#6-group-sizing-and-parity). These are writer policies,
 not a required restore order. No artificial chunk/group padding is used.
 
-PAR2 uses 1 MiB slices by default. Recovery is the maximum of 20% of actual
+When enabled, PAR2 uses 1 MiB slices by default. Recovery is the maximum of 20% of actual
 protected bytes, 125% of the largest member, and one slice more than that member
 occupies, rounded up to whole slices. Short/final sets may have much more than
 20% parity; the calculation never uses nominal maximum group capacity. Volume
@@ -127,6 +134,8 @@ contains the needed critical metadata.
 
 Work in an empty scratch directory. Replace the uppercase placeholders below
 with actual paths and IDs. Do not run manual repair against read-only originals.
+The commands below show the compressed, encrypted, PAR2-protected case. Skip PAR2
+commands if disabled; checksums alone detect corruption but cannot repair payloads.
 
 ### 1. Recover a local group
 
@@ -149,6 +158,7 @@ par2 repair "$base.par2"
 If the index is absent, give `par2` a surviving `.vol...par2` instead. Repeat for
 other groups needed by the desired direct-file stream. A TAR needs only its own
 group. Public manifests can be inspected with `zstd -dc "$base"_metadata_index-chunks.json.zst`.
+Without compression, read the `.json` manifest directly.
 Check stored SHA-256 values before decoding payload.
 
 For central metadata recovery, copy that set's files from `metadata/<pid[:2]>`
@@ -162,7 +172,8 @@ Unencrypted inventory: `zstd -dc ACTUAL_INVENTORY.jsonl.zst`.
 For encrypted inventory, use the same CMS decryption below as for a chunk, then
 `zstd -dc` the authenticated result. It reveals original paths/attributes and,
 for TAR streams, their complete member inventory. A private key suffices; the
-public recipient certificate is optional for decryption.
+public recipient certificate is optional for decryption. Without compression,
+read the `.jsonl` file or authenticated decrypted bytes directly.
 
 ### 3. Decode each chunk
 
@@ -177,11 +188,13 @@ sha256sum chunk.plain
 
 For unencrypted data use `zstd -dc "$chunk" > chunk.plain` instead. Check the
 plaintext length and hashes against the manifest when available, and the length
-in the filename otherwise.
+in the filename otherwise. Without compression, decrypt a `.cms` file straight
+to `chunk.plain`; with neither transform, the stored chunk itself is plaintext.
+Do not pass uncompressed bytes through zstd.
 
 ### 4. Extract a TAR or assemble a RAW file
 
-A `.tar.zst[.cms]` chunk already contains a **complete TAR**. No concatenation or
+A `.tar[.zst][.cms]` chunk already contains a **complete TAR**. No concatenation or
 offset calculation is needed:
 
 ```bash
@@ -193,7 +206,7 @@ tar -xpf chunk.plain -C extracted
 Each TAR can be extracted independently, even when another chunk is lost beyond
 PAR2 recovery. Multiple TAR chunks may be extracted into the same destination.
 
-For a `.raw.zst[.cms]` chunk, the filename supplies its original file position:
+For a `.raw[.zst][.cms]` chunk, the filename supplies its original file position:
 
 ```bash
 offset_field=${chunk#*_offset-}

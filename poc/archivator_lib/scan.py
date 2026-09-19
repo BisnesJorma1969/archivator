@@ -55,6 +55,7 @@ def stream_problem(chunks):
         return "a TAR stream must be one complete chunk"
     end = 0
     encryption = set()
+    compression = set()
     for chunk in sorted(chunks, key=lambda item: (item["offset"], item["filename"])):
         if chunk["offset"] > end:
             return f"missing bytes {end:,}..{chunk['offset'] - 1:,}"
@@ -62,6 +63,9 @@ def stream_problem(chunks):
             return f"overlapping chunk at offset {chunk['offset']:,}"
         end += chunk["length"]
         encryption.add(chunk["encrypted"])
+        compression.add(chunk["compressed"])
+    if len(compression) != 1:
+        return "inconsistent compression flags"
     if len(encryption) != 1:
         return "inconsistent encryption flags"
     return None
@@ -89,15 +93,17 @@ def scan(root, output, archive_id=None):
         print(f"Stream {stream}: {len(members):,} chunks; "
               f"{problem or 'no detected gaps in the observed range'}", flush=True)
     output = Path(output)
-    if not output.name.endswith(".json.zst"):
-        raise ArchiveError("Scan index filename must end in .json.zst")
+    if not output.name.endswith((".json", ".json.zst")):
+        raise ArchiveError("Scan index filename must end in .json or .json.zst")
     output.parent.mkdir(parents=True, exist_ok=True)
     # No archive contents, metadata, hashes, or PAR2 packets are read by scan.
     index = {"format": "archivator-scan", "version": 1, "archive": selected, "files": names}
-    writer = ZstdWriter(output)
+    compressed = output.name.endswith(".zst")
+    writer = ZstdWriter(output) if compressed else output.open("xb")
     try:
         writer.write((json.dumps(index, indent=2, sort_keys=True) + "\n").encode("ascii"))
-        writer.finish()
+        if compressed:
+            writer.finish()
     except BaseException:
         output.unlink(missing_ok=True)
         raise
@@ -111,8 +117,15 @@ def scan(root, output, archive_id=None):
 
 def read_index(path):
     try:
-        index = json.loads(run([executable("zstd"), "-qdc", "--", str(path)],
-                               activity="Reading filename-only recovery index"))
+        path = Path(path)
+        if path.name.endswith(".json.zst"):
+            content = run([executable("zstd"), "-qdc", "--", str(path)],
+                          activity="Reading filename-only recovery index")
+        elif path.suffix == ".json":
+            content = path.read_bytes()
+        else:
+            raise ArchiveError("Scan index filename must end in .json or .json.zst")
+        index = json.loads(content)
         if index["format"] != "archivator-scan" or index["version"] != 1:
             raise IntegrityError("Unsupported scan index")
         if not isinstance(index["archive"], str) or not re.fullmatch(ID, index["archive"]):
@@ -130,7 +143,7 @@ def recover_scanned_set(files, names, directory, archive_id, parity_id):
     # no trusted per-file hashes, so copy its data before allowing PAR2 writes.
     stage_existing(files, names, directory, writable=False)
     prefix = parity_prefix(archive_id, parity_id)
-    status = check_parity(directory, prefix)
+    status = check_parity(directory, prefix) if any(name.endswith(".par2") for name in names) else 4
     if status == 1:
         data_names = [name for name in names if CHUNK_NAME.fullmatch(name)]
         for name in data_names:
@@ -197,8 +210,9 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
     if any(chunk["encrypted"] for chunk in known.values()) and not key:
         raise ArchiveError("Encrypted archive requires --decrypt-key")
     empty_destination(target)
-    print("Filename-only restore: using chunk lengths, zstd checks, CMS authentication, and available PAR2.")
+    print("Filename-only restore: using chunk lengths and whichever zstd checks, CMS authentication, and PAR2 are present.")
     print("Original metadata hashes and final stream lengths are unavailable; completeness is not guaranteed.")
+    print("Plain chunks without PAR2 have no content integrity check in filename-only recovery.")
     restored = skipped = 0
     unresolved_sets = []
     with scratch("scan-streams-") as temporary:

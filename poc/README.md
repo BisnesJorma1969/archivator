@@ -7,12 +7,27 @@ backup/damage/restore walkthrough. Python uses only the standard library.
 
 | Command | Purpose |
 | --- | --- |
-| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES] [--waiting-groups COUNT] [--group-close-percent PERCENT]` | Create a backup in an absent/empty directory |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem | --no-encryption] [--[no-]compression] [--[no-]par2] [--max-file-bytes BYTES] [--max-group-bytes BYTES] [--large-file-bytes BYTES] [--waiting-groups COUNT] [--group-close-percent PERCENT]` | Create a backup in an absent/empty directory |
 | `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
 | `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
-| `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json.zst]` | Restore into an absent/empty directory; archive remains unchanged |
-| `scan ARCHIVE INDEX.json.zst [--archive-id ID]` | Build a filename-only recovery index |
+| `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json[.zst]]` | Restore into an absent/empty directory; archive remains unchanged |
+| `scan ARCHIVE INDEX.json[.zst] [--archive-id ID]` | Build a filename-only recovery index |
 | `compare SOURCE TARGET` | Compare paths, types, contents, and supported filesystem metadata |
+
+Compression, encryption, and PAR2 are independent:
+
+| Feature | Enable | Disable | Default |
+| --- | --- | --- | --- |
+| zstd (payload and metadata) | `--compression` | `--no-compression` | Enabled |
+| CMS (payload and source-name inventory) | `--encrypt-cert CERT.pem` | `--no-encryption`, or omit certificate | Disabled |
+| PAR2 (data and central metadata) | `--par2` | `--no-par2` | Enabled |
+
+All eight combinations work. Verify, repair, and restore read these choices from
+the archive; no matching switches are needed. Only enabled features require their
+external executable. Disabling PAR2 retains stored/plaintext checksums, metadata
+copies and the checksum chain, but cannot reconstruct damaged payloads. Repair
+can still replace a bad metadata copy from its healthy counterpart; it does not
+add PAR2 to an archive created without it. Groups, IDs and byte caps remain in use.
 
 Run these through `./poc/archivator`. Backup limits default to **268435455 bytes
 per stored file** and **15032385536 bytes per group**. Group sizes include metadata,
@@ -33,8 +48,8 @@ out, the fullest is closed (oldest on a tie). There is no age counter or artific
 zero padding. Full [placement rules](../POC.md#6-group-sizing-and-parity) include
 metadata/PAR2 reservations and bounded on-disk buffering of the current RAW file.
 
-Payload names end in `.tar.zst[.cms]` or `.raw.zst[.cms]`; source-name metadata
-uses `.jsonl.zst[.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
+Payload names end in `.tar[.zst][.cms]` or `.raw[.zst][.cms]`; source-name metadata
+uses `.jsonl[.zst][.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
 Each TAR payload is a whole archive, not a fragment. Verification and
 PAR2 repair operate on stored ciphertext and require no key. Restore requires
 `--decrypt-key` and validates CMS authentication before decompression.
@@ -58,14 +73,14 @@ member checksums.
 ## Recovery behavior
 
 Data groups contain whole TARs/RAW files, or a spanning RAW file's range, plus
-their own compressed metadata, protected together by PAR2. Each TAR is exactly
+their own metadata, compressed and PAR2-protected when enabled. Each TAR is exactly
 one chunk; a whole RAW file may contain several. A file that cannot fit an empty
 group starts fresh and spans groups. Its final group may accept subsequent whole
 files/TARs. Groups accumulate actual stored chunk sizes, reserving metadata and
 parity. Each group has identical metadata copies under `metadata/`, with
-separate PAR2 protection there. The public manifest,
-`metadata_index-chunks.json.zst`, describes stored chunks; the
-`metadata_index-files.jsonl.zst[.cms]` inventory describes original RAW files and
+separate PAR2 protection there when enabled. The public manifest,
+`metadata_index-chunks.json[.zst]`, describes stored chunks; the
+`metadata_index-files.jsonl[.zst][.cms]` inventory describes original RAW files and
 TAR members and is encrypted when encryption is enabled.
 The word **stream** means a TAR's bytes or a direct file's bytes, not a parity group.
 
@@ -106,7 +121,8 @@ output in its destination; retry into a fresh empty directory.
 
 If even local metadata is unavailable, scan surviving chunk and data-PAR2 names.
 This reads no archive contents, hashes, or PAR2 packets and never changes the
-archive. The separate index must not already exist.
+archive. The separate index must not already exist. Choose `.json` for an uncompressed
+index requiring no zstd executable, or `.json.zst` for a compressed one.
 
 ```bash
 ./poc/archivator scan poc/work/demo/archive1 poc/work/recovery1.json.zst
@@ -118,7 +134,8 @@ For encrypted data, add `--decrypt-key poc/work/recipient-key.pem` to restore.
 The index selects its archive ID; optional `--archive-id` must agree.
 
 Restore tries available PAR2 in scratch, including recovery of filenames missing
-when scanned. It checks declared plaintext lengths, zstd frames, and CMS tags.
+when scanned. It checks declared plaintext lengths and any zstd frames or CMS tags present.
+Plain chunks without PAR2 have no content integrity check in filename-only recovery.
 Streams with detected gaps, overlaps, unreadable chunks, or malformed declared
 TARs are skipped entirely. Other streams continue.
 

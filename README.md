@@ -34,7 +34,8 @@ sudo apt install -y python3 zstd openssl par2 coreutils tar
 | `tar` | Listing and extracting reconstructed TAR streams during manual recovery |
 
 `par2` is in Ubuntu's Universe repository. Run the install commands once before
-following any of the guides below.
+following any of the guides below. For the CLI alone, Python is mandatory;
+zstd, OpenSSL, and PAR2 are needed only when using their respective features.
 
 ## Generate, back up, damage, and restore
 
@@ -79,11 +80,24 @@ openssl req -x509 -newkey rsa:3072 -noenc \
   --encrypt-cert poc/work/recipient.pem
 ```
 
+Compression and PAR2 default to enabled; encryption defaults to disabled.
+Use `--no-compression` or `--no-par2` independently with either backup command.
+For a plain archive with all three disabled:
+
+```bash
+./poc/archivator backup poc/work/demo/source1 poc/work/demo/archive1 \
+  --no-compression --no-encryption --no-par2
+```
+
+This is another **alternative**, not a second backup into the same directory.
+Without PAR2, checksums detect damage but cannot repair lost/corrupt payloads;
+the repairable-damage walkthrough below assumes PAR2 is enabled.
+
 Payload names distinguish complete TARs (`.tar.zst.cms`) from direct file bytes
-(`.raw.zst.cms`); omit `.cms` without encryption. Each TAR chunk can be extracted
+(`.raw.zst.cms`); omit `.cms` without encryption and `.zst` without compression. Each TAR chunk can be extracted
 independently. Source-name inventories are also encrypted (`.jsonl.zst.cms`). Each group
-keeps its compressed metadata beside the data and PAR2; identical metadata copies
-and their own PAR2 are under `metadata/`. Shards reuse the first two characters
+keeps its metadata beside the data; identical copies are under `metadata/`.
+Compression and PAR2 settings apply to both locations. Shards reuse the first two characters
 of the group's ID. Keep passing `archive1`; discovery is recursive.
 
 Defaults: **268435455 bytes per stored file** and **15032385536 bytes per group**,

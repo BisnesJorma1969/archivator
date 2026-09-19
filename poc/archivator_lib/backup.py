@@ -71,15 +71,19 @@ class ParityWriter:
         self.parity_id = new_id()
         self.members = []
         self.input_bytes = input_limit(min(settings.max_file_bytes, settings.max_group_bytes // 4),
-                                       encryption_overhead)
+                                       encryption_overhead, settings.compression)
 
     def source_name(self):
         prefix = parity_prefix(self.archive_id, self.parity_id)
-        return prefix + "_metadata_index-files.jsonl.zst" + (".cms" if self.certificate else "")
+        name = prefix + "_metadata_index-files.jsonl"
+        if self.settings.compression:
+            name += ".zst"
+        return name + ".cms" if self.certificate else name
 
     def manifest(self, members, source_digest):
         return {"version": 1, "archive": self.archive_id, "parity": self.parity_id,
-                "compression": "zstd", "encryption": "cms-aes-256-gcm" if self.certificate else "none",
+                "compression": "zstd" if self.settings.compression else "none",
+                "encryption": "cms-aes-256-gcm" if self.certificate else "none",
                 "settings": vars(self.settings),
                 "members": members,
                 "source_metadata": self.source_name(), "source_sha256": source_digest}
@@ -91,32 +95,34 @@ class ParityWriter:
         """Stored data plus conservative metadata/PAR2 bytes, or no feasible fit."""
         settings = self.settings
         private_size = private_size or inventory_bound(sources)
-        source_length = stored_bound(private_size, self.encryption_overhead)
+        source_length = stored_bound(private_size, self.encryption_overhead, settings.compression)
         manifest_bytes = json.dumps(self.manifest(members, "0" * 64), ensure_ascii=True, indent=2, sort_keys=True)
-        manifest_length = stored_bound(len(manifest_bytes.encode("ascii")) + 1)
+        manifest_length = stored_bound(len(manifest_bytes.encode("ascii")) + 1, compression=settings.compression)
         lengths = {member["filename"]: member["stored_length"] for member in members}
         lengths[self.source_name()] = source_length
         prefix = parity_prefix(self.archive_id, self.parity_id)
-        lengths[prefix + "_metadata_index-chunks.json.zst"] = manifest_length
+        suffix = ".zst" if settings.compression else ""
+        lengths[prefix + "_metadata_index-chunks.json" + suffix] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
             return None
         try:
-            plan = parity_plan(lengths, settings.slice_size, settings.max_file_bytes)
+            plan = parity_plan(lengths, settings.slice_size, settings.max_file_bytes, settings.par2)
             total = sum(lengths.values()) + plan.total_bytes
             if total > settings.max_group_bytes:
                 return None
             # The identical central copies need their own parity and a receipt.
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
+            receipt_name = metadata_prefix(self.archive_id, self.parity_id) + "_checksums.json" + suffix
             central = {self.source_name(): source_length,
-                       prefix + "_metadata_index-chunks.json.zst": manifest_length,
-                       metadata_prefix(self.archive_id, self.parity_id) + "_checksums.json.zst": stored_bound(receipt_size)}
+                       prefix + "_metadata_index-chunks.json" + suffix: manifest_length,
+                       receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             for path in self.catalog.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
                 central[metadata_prefix(self.archive_id, self.parity_id) + "_" + role] = path.stat().st_size
             if max(central.values()) > settings.max_file_bytes:
                 return None
-            protection = parity_plan(central, settings.slice_size, settings.max_file_bytes)
+            protection = parity_plan(central, settings.slice_size, settings.max_file_bytes, settings.par2)
             if sum(central.values()) + protection.total_bytes > settings.max_group_bytes:
                 return None
             return total
@@ -127,7 +133,7 @@ class ParityWriter:
         stream_id = stream["stream"]
         kind = "tar" if stream["type"] == "tar" else "raw"
         return {"filename": chunk_name(self.archive_id, self.parity_id, number, stream_id,
-                                        offset, length, bool(self.certificate), kind),
+                                        offset, length, bool(self.certificate), kind, self.settings.compression),
                 "chunk": number, "stream": stream_id, "kind": kind, "offset": offset, "length": length,
                 "stored_length": size, "stored_sha256": "0" * 64,
                 "plaintext_sha256": "0" * 64, "plaintext_sha512": "0" * 128}
@@ -180,26 +186,29 @@ class ParityWriter:
                     yield {"stream": stream_id, "entry": public_entry(entry)}
 
         write_jsonl(self.staging / source_name, records())
-        stored = store_metadata(self.staging / source_name, self.staging, self.certificate)
+        stored = store_metadata(self.staging / source_name, self.staging, self.certificate, self.settings.compression)
         check_files([self.staging / stored], self.settings.max_file_bytes, self.settings.max_group_bytes)
         os.replace(self.staging / stored, shard / stored)
         manifest = self.manifest(self.members, sha256(shard / stored))
         manifest_name = prefix + "_metadata_index-chunks.json"
         write_json(self.staging / manifest_name, manifest)
-        manifest_name = store_metadata(self.staging / manifest_name, self.staging)
+        manifest_name = store_metadata(self.staging / manifest_name, self.staging, compression=self.settings.compression)
         check_files([self.staging / manifest_name], self.settings.max_file_bytes, self.settings.max_group_bytes)
         os.replace(self.staging / manifest_name, shard / manifest_name)
         names = [member["filename"] for member in self.members] + [stored, manifest_name]
         lengths = {name: (shard / name).stat().st_size for name in names}
-        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes)
+        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes, self.settings.par2)
         if sum(lengths.values()) + plan.total_bytes > self.settings.max_group_bytes:
             raise ArchiveError("Group metadata and PAR2 exceed the byte budget")
-        print(f"Protecting group {self.parity_id}: {len(self.members):,} chunks, "
-              f"{sum(lengths.values()):,} stored bytes; {plan.blocks:,} PAR2 slices", flush=True)
+        protection = f"{plan.blocks:,} PAR2 slices" if self.settings.par2 else "PAR2 disabled"
+        print(f"Finalizing group {self.parity_id}: {len(self.members):,} chunks, "
+              f"{sum(lengths.values()):,} stored bytes; {protection}", flush=True)
         directory = self.staging / "parity"
         directory.mkdir()
-        files = create_parity(shard, prefix, names, self.settings.slice_size, plan.blocks,
-                              directory, plan.volumes)
+        files = []
+        if self.settings.par2:
+            files = create_parity(shard, prefix, names, self.settings.slice_size, plan.blocks,
+                                  directory, plan.volumes)
         total = check_files([*(shard / name for name in names), *files],
                             self.settings.max_file_bytes, self.settings.max_group_bytes)
         parity_hashes = {}
@@ -208,7 +217,7 @@ class ParityWriter:
             os.replace(path, shard / path.name)
         directory.rmdir()
         self.catalog.add(self.parity_id, [shard / stored, shard / manifest_name], parity_hashes)
-        print(f"Finished group: {total:,}/{self.settings.max_group_bytes:,} bytes including metadata and PAR2", flush=True)
+        print(f"Finished group: {total:,}/{self.settings.max_group_bytes:,} bytes including metadata and enabled parity", flush=True)
         self.members = []
         self.sources = {}
 
@@ -304,21 +313,26 @@ class StreamWriter:
         self.hashes = Hashes(lookup=True)
         self.chunk_hashes = Hashes()
         self.chunk_length = 0
-        self.compressed = None
+        self.chunk_output = None
 
     def write(self, data):
         length = len(data)
         if self.stream["type"] == "tar" and self.size + length > self.parity.input_bytes:
-            raise ArchiveError("A complete TAR must fit in one independently compressed chunk")
+            raise ArchiveError("A complete TAR must fit in one independent chunk")
         remaining = memoryview(data)
         while remaining:
-            if self.compressed is None:
-                self.compressed = ZstdWriter(self.parity.staging / "chunk.zst")
+            if self.chunk_output is None:
+                path = self.parity.staging / "chunk"
+                if self.parity.settings.compression:
+                    self.chunk_output = ZstdWriter(path)
+                else:
+                    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    self.chunk_output = os.fdopen(descriptor, "wb")
             count = min(len(remaining), self.parity.input_bytes - self.chunk_length)
             piece = remaining[:count]
-            progress.update(f"Compressing stream: {self.size:,} plaintext bytes; "
+            progress.update(f"Encoding stream: {self.size:,} plaintext bytes; "
                             f"current chunk {self.chunk_length:,}/{self.parity.input_bytes:,}")
-            self.compressed.write(piece)
+            self.chunk_output.write(piece)
             self.hashes.update(piece)
             self.chunk_hashes.update(piece)
             self.chunk_length += count
@@ -331,17 +345,20 @@ class StreamWriter:
     def finish_chunk(self):
         if not self.chunk_length:
             return
-        self.compressed.finish()
-        self.compressed = None
-        path = self.parity.staging / "chunk.zst"
+        if self.parity.settings.compression:
+            self.chunk_output.finish()
+        else:
+            self.chunk_output.close()
+        self.chunk_output = None
+        path = self.parity.staging / "chunk"
         if self.parity.certificate:
-            encrypted = self.parity.staging / "chunk.zst.cms"
+            encrypted = self.parity.staging / "chunk.cms"
             encrypt(path, encrypted, self.parity.certificate)
             path.unlink()
             path = encrypted
         check_files([path], self.parity.settings.max_file_bytes, self.parity.settings.max_group_bytes)
         offset = self.size - self.chunk_length
-        staged = self.parity.staging / f"buffer-{self.stream['stream']}-{offset}.zst"
+        staged = self.parity.staging / f"buffer-{self.stream['stream']}-{offset}"
         if self.parity.certificate:
             staged = staged.with_name(staged.name + ".cms")
         os.replace(path, staged)
@@ -374,8 +391,8 @@ class StreamWriter:
             self.chunks.clear()
 
     def close(self):
-        if self.compressed:
-            self.compressed.close()
+        if self.chunk_output:
+            self.chunk_output.close()
 
 
 class HashingReader:
@@ -426,8 +443,10 @@ def backup(source, archive, certificate=None, settings=None):
     ensure_disjoint(source, archive)
     if WORK_DIR.resolve().is_relative_to(source.resolve()):
         raise ArchiveError("Source must not contain the PoC work directory")
-    executable("par2")
-    executable("zstd")
+    if settings.par2:
+        executable("par2")
+    if settings.compression:
+        executable("zstd")
     batches = directory_batches(source)
     first_batch = next(batches)  # Validate the root directory before creating output.
     empty_destination(archive)
@@ -453,8 +472,9 @@ def backup(source, archive, certificate=None, settings=None):
             probe.unlink()
             (staging / "probe.cms").unlink()
         format_path = staging / f"archive-{archive_id}_metadata_format.txt"
-        format_path.write_text("format=archivator\nversion=1\ncompression=zstd\n"
-                               "parity=par2-v2\n" + "\n".join(f"{k}={v}" for k, v in vars(settings).items()) + "\n")
+        format_path.write_text("format=archivator\nversion=1\n"
+                               f"parity={'par2-v2' if settings.par2 else 'none'}\n"
+                               + "\n".join(f"{k}={v}" for k, v in vars(settings).items()) + "\n")
         if fingerprint:
             with format_path.open("a") as output:
                 output.write(f"recipient-sha256={fingerprint}\n")
@@ -518,7 +538,7 @@ def backup(source, archive, certificate=None, settings=None):
             size = ceil_div(pending_tar_bytes + tar_growth + 1024, tarfile.RECORDSIZE) * tarfile.RECORDSIZE
             if size > planner.input_bytes:
                 return False
-            chunk = planner.candidate(planned_stream, stored_bound(size, overhead), length=size)
+            chunk = planner.candidate(planned_stream, stored_bound(size, overhead, settings.compression), length=size)
             if not planner.fits([chunk], {}, pending_inventory_bytes + inventory_growth):
                 return False
             pending.append(entry)

@@ -9,17 +9,19 @@ def ceil_div(value, divisor):
     return (value + divisor - 1) // divisor
 
 
-def stored_bound(plaintext, encryption_overhead=0):
+def stored_bound(plaintext, encryption_overhead=0, compression=True):
+    if not compression:
+        return plaintext + encryption_overhead
     # zstd can store incompressible blocks verbatim. This deliberately generous
     # allowance covers block/frame headers and checksums, including tiny frames.
     return plaintext + ceil_div(plaintext, 128) + 1024 + encryption_overhead
 
 
-def input_limit(output_limit, encryption_overhead=0):
-    available = output_limit - 1024 - encryption_overhead
+def input_limit(output_limit, encryption_overhead=0, compression=True):
+    available = output_limit - (1024 if compression else 0) - encryption_overhead
     if available <= 0:
         raise ArchiveError("File limit leaves no room for compression/encryption headers")
-    return available * 128 // 129
+    return available * 128 // 129 if compression else available
 
 
 def recovery_blocks(lengths, slice_size):
@@ -37,7 +39,7 @@ class ParityPlan:
     largest_file: int
 
 
-def parity_plan(members, slice_size, max_file_bytes):
+def parity_plan(members, slice_size, max_file_bytes, enabled=True):
     """Bound par2cmdline's uniform-volume output, including repeated packets.
 
     members maps stored relative names to byte lengths. Recovery packets use
@@ -45,6 +47,8 @@ def parity_plan(members, slice_size, max_file_bytes):
     times; the index has one copy. Allow 1024 bytes for each creator packet.
     The final output is checked as well, before anything is published.
     """
+    if not enabled:
+        return ParityPlan(0, 0, 0, 0)
     lengths = list(members.values())
     slices = sum(ceil_div(length, slice_size) for length in lengths)
     blocks = recovery_blocks(lengths, slice_size)

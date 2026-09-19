@@ -13,7 +13,7 @@ CHUNK_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_parity-(?P<parity>{ID})_"
     rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
     r"(?:offset-(?P<offset>[0-9]{20})_)?length-(?P<length>[0-9]{12})"
-    r"\.(?P<kind>raw|tar)\.zst(?P<encrypted>\.cms)?"
+    r"\.(?P<kind>raw|tar)(?P<compressed>\.zst)?(?P<encrypted>\.cms)?"
 )
 
 
@@ -25,8 +25,12 @@ class Settings:
     large_file_bytes: int | None = None
     waiting_groups: int = 4
     group_close_percent: int = 95
+    compression: bool = True
+    par2: bool = True
 
     def __post_init__(self):
+        if not isinstance(self.compression, bool) or not isinstance(self.par2, bool):
+            raise ArchiveError("Compression and PAR2 settings must be booleans")
         limits = (self.max_file_bytes, self.max_group_bytes, self.slice_size)
         if self.large_file_bytes is not None:
             limits += (self.large_file_bytes,)
@@ -44,14 +48,16 @@ def new_id():
     return secrets.token_hex(16)
 
 
-def chunk_name(archive, parity, chunk, stream, offset, length, encrypted, kind="raw"):
+def chunk_name(archive, parity, chunk, stream, offset, length, encrypted, kind="raw", compressed=True):
     if kind not in ("raw", "tar") or (kind == "tar" and offset != 0):
         raise ArchiveError("A TAR chunk must be a complete archive without an offset")
     coordinates = f"offset-{offset:020d}_" if kind == "raw" else ""
     name = (
         f"archive-{archive}_parity-{parity}_chunk-{chunk:04d}_"
-        f"stream-{stream}_{coordinates}length-{length:012d}.{kind}.zst"
+        f"stream-{stream}_{coordinates}length-{length:012d}.{kind}"
     )
+    if compressed:
+        name += ".zst"
     return name + ".cms" if encrypted else name
 
 
@@ -66,6 +72,7 @@ def parse_chunk(name):
     for field in ("chunk", "offset", "length"):
         result[field] = int(result[field])
     result["encrypted"] = bool(result["encrypted"])
+    result["compressed"] = bool(result["compressed"])
     return result
 
 

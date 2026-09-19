@@ -14,7 +14,13 @@ def parser():
     backup = commands.add_parser("backup", help="Create a complete archive")
     backup.add_argument("source", type=Path)
     backup.add_argument("archive", type=Path)
-    backup.add_argument("--encrypt-cert", type=Path)
+    backup.add_argument("--compression", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use zstd for payload and metadata (default: enabled)")
+    backup.add_argument("--par2", action=argparse.BooleanOptionalAction, default=True,
+                        help="Protect data and metadata with PAR2 (default: enabled)")
+    encryption = backup.add_mutually_exclusive_group()
+    encryption.add_argument("--encrypt-cert", type=Path, help="Enable CMS encryption using this certificate")
+    encryption.add_argument("--no-encryption", action="store_true", help="Explicitly disable encryption (the default)")
     backup.add_argument("--max-file-bytes", type=int, default=256 * 1024 * 1024 - 1,
                         help="Hard maximum for each stored file (default: 268435455)")
     backup.add_argument("--max-group-bytes", type=int, default=14 * 1024 * 1024 * 1024,
@@ -37,7 +43,7 @@ def parser():
                                  help="Recover streams using a filename-only index instead of archive metadata")
     scan = commands.add_parser("scan", help="Build a recovery index from filenames without reading archive contents")
     scan.add_argument("archive", type=Path)
-    scan.add_argument("index", type=Path, help="New recovery index ending in .json.zst")
+    scan.add_argument("index", type=Path, help="New recovery index ending in .json or .json.zst")
     scan.add_argument("--archive-id")
     compare = commands.add_parser("compare", help="Compare two filesystem trees")
     compare.add_argument("source", type=Path)
@@ -55,7 +61,8 @@ def main(argv=None):
                 from .format import Settings
                 settings = Settings(max_file_bytes=args.max_file_bytes, max_group_bytes=args.max_group_bytes,
                                     large_file_bytes=args.large_file_bytes, waiting_groups=args.waiting_groups,
-                                    group_close_percent=args.group_close_percent)
+                                    group_close_percent=args.group_close_percent,
+                                    compression=args.compression, par2=args.par2)
                 archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0
