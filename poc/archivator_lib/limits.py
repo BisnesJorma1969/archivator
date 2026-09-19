@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from .common import ArchiveError
+from .common import ArchiveError, IntegrityError
 
 
 def ceil_div(value, divisor):
@@ -24,37 +24,57 @@ def input_limit(output_limit, encryption_overhead=0, compression=True):
     return available * 128 // 129 if compression else available
 
 
-def recovery_blocks(lengths, slice_size):
-    largest = max(lengths)
-    return max(ceil_div(sum(lengths), 5 * slice_size),
-               ceil_div(5 * largest, 4 * slice_size),
-               ceil_div(largest, slice_size) + 1)
+# PAR2's GF(2^16) implementation limits source and recovery block counts.
+MAX_PAR2_BLOCKS = 32768
+MIN_SLICE_SIZE = 4096
 
 
 @dataclass(frozen=True)
 class ParityPlan:
+    slice_size: int
     blocks: int
     volumes: int
     total_bytes: int
     largest_file: int
 
+    def record(self):
+        return {"slice_size": self.slice_size, "blocks": self.blocks, "volumes": self.volumes}
 
-def parity_plan(members, slice_size, max_file_bytes, enabled=True, blocks=None):
-    """Bound par2cmdline's uniform-volume output, including repeated packets.
 
-    members maps stored relative names to byte lengths. Recovery packets use
-    68 header bytes. Critical packets are repeated bit_length(blocks_in_volume)
-    times; the index has one copy. Allow 1024 bytes for each creator packet.
-    The final output is checked as well, before anything is published.
-    """
+def plan_reservation(max_file_bytes):
+    """Upper-width fields let metadata reserve its own plan before serialization."""
+    return {"slice_size": max_file_bytes, "blocks": MAX_PAR2_BLOCKS, "volumes": MAX_PAR2_BLOCKS}
+
+
+def validate_parity_record(record, enabled=True):
     if not enabled:
-        return ParityPlan(0, 0, 0, 0)
-    lengths = list(members.values())
-    slices = sum(ceil_div(length, slice_size) for length in lengths)
-    if blocks is None:
-        blocks = recovery_blocks(lengths, slice_size)
-    if slices > 32768 or blocks > 32768:
-        raise ArchiveError("PAR2 block capacity exceeded; close the datagroup or increase slice size")
+        if record is not None:
+            raise IntegrityError("Unexpected PAR2 plan when parity is disabled")
+        return
+    if not isinstance(record, dict) or set(record) != {"slice_size", "blocks", "volumes"}:
+        raise IntegrityError("Invalid PAR2 plan")
+    if (any(type(value) is not int for value in record.values())
+            or record["slice_size"] < MIN_SLICE_SIZE or record["slice_size"] % 4
+            or not 1 <= record["blocks"] <= MAX_PAR2_BLOCKS
+            or not 1 <= record["volumes"] <= record["blocks"]):
+        raise IntegrityError("Invalid PAR2 block size, recovery count or volume count")
+
+
+def recovery_blocks(members, slice_size, groups=None, margin_percent=125, protect_all=False):
+    counts = {name: ceil_div(length, slice_size) for name, length in members.items()}
+    total = sum(counts.values())
+    if protect_all:
+        return total + 1
+    largest = (max(sum(counts[name] for name in group) for group in groups)
+               if groups else max(counts.values(), default=0))
+    return max(ceil_div(total, 5), ceil_div(largest * margin_percent, 100), largest + 1)
+
+
+def volume_plan(members, slice_size, max_file_bytes, blocks, volumes=None):
+    """Bound uniform PAR2 volumes, including headers and repeated critical packets."""
+    slices = sum(ceil_div(length, slice_size) for length in members.values())
+    if slices > MAX_PAR2_BLOCKS or blocks > MAX_PAR2_BLOCKS:
+        raise ArchiveError("PAR2 source/recovery block capacity exceeded")
     critical = 76 + 16 * len(members)
     for name, length in members.items():
         critical += 120 + ceil_div(len(name.encode("utf-8")), 4) * 4
@@ -68,17 +88,59 @@ def parity_plan(members, slice_size, max_file_bytes, enabled=True, blocks=None):
 
     if volume_size(1) > max_file_bytes:
         raise ArchiveError("A PAR2 slice and its metadata do not fit the file limit")
-    low, high = 1, blocks
-    while low < high:
-        middle = (low + high) // 2
-        if volume_size(ceil_div(blocks, middle)) <= max_file_bytes:
-            high = middle
-        else:
-            low = middle + 1
-    volumes = low
+    if volumes is None:
+        low, high = 1, blocks
+        while low < high:
+            middle = (low + high) // 2
+            if volume_size(ceil_div(blocks, middle)) <= max_file_bytes:
+                high = middle
+            else:
+                low = middle + 1
+        volumes = low
+    largest_file = max(index_size, volume_size(ceil_div(blocks, volumes)))
+    if largest_file > max_file_bytes:
+        raise ArchiveError("Recorded PAR2 volume exceeds the file limit")
     base, extra = divmod(blocks, volumes)
     total = index_size + extra * volume_size(base + 1) + (volumes - extra) * volume_size(base)
-    return ParityPlan(blocks, volumes, total, max(index_size, volume_size(ceil_div(blocks, volumes))))
+    return ParityPlan(slice_size, blocks, volumes, total, largest_file)
+
+
+def parity_plan(members, max_file_bytes, enabled=True, *, max_set_bytes=None,
+                groups=None, margin_percent=125, protect_all=False, record=None):
+    """Choose the smallest feasible slice, or reproduce a recorded set exactly.
+
+    Doubling is bounded by the output file ceiling. All source files, including
+    metadata, count separately; a short final file still consumes a whole slice.
+    A failed plan is a grouping boundary, never permission to lower redundancy.
+    """
+    if not enabled:
+        return ParityPlan(0, 0, 0, 0, 0)
+    if not members or any(length < 0 or length > max_file_bytes for length in members.values()):
+        raise ArchiveError("PAR2 member exceeds the file limit or the set is empty")
+    if record is not None:
+        validate_parity_record(record)
+        candidates = [record["slice_size"]]
+    else:
+        candidates = []
+        size = MIN_SLICE_SIZE
+        while size < max_file_bytes:
+            candidates.append(size)
+            size *= 2
+    reason = "File limit leaves no room for a PAR2 slice"
+    for size in candidates:
+        required = recovery_blocks(members, size, groups, margin_percent, protect_all)
+        blocks = record["blocks"] if record is not None else required
+        if blocks < required:
+            raise ArchiveError("Recorded PAR2 plan does not meet redundancy requirements")
+        try:
+            plan = volume_plan(members, size, max_file_bytes, blocks,
+                               record["volumes"] if record is not None else None)
+            if max_set_bytes is not None and sum(members.values()) + plan.total_bytes > max_set_bytes:
+                raise ArchiveError("Protected inputs and PAR2 exceed the recovery-set byte limit")
+            return plan
+        except ArchiveError as error:
+            reason = str(error)
+    raise ArchiveError(f"No feasible PAR2 geometry: {reason}")
 
 
 def check_files(paths, max_file_bytes, max_datagroup_bytes):

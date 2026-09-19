@@ -26,14 +26,14 @@ class LimitTests(unittest.TestCase):
         with TemporaryDirectory(dir=WORK_DIR) as temporary:
             directory = Path(temporary).resolve()
             members = {}
-            for number, length in enumerate((7, 9000, 22000)):
+            for number, length in enumerate((7, 5000, 7500)):
                 name = f'input-{number}'
                 (directory / name).write_bytes(bytes(length))
                 members[name] = length
             for limit in (8000, 16000, 64000):
-                plan = parity_plan(members, 1024, limit)
+                plan = parity_plan(members, limit)
                 prefix = f'set-{limit}'
-                run([executable('par2'), 'create', '-q', '-t1', '-T1', '-s1024',
+                run([executable('par2'), 'create', '-q', '-t1', '-T1', f'-s{plan.slice_size}',
                      f'-c{plan.blocks}', '-u', f'-n{plan.volumes}',
                      str(directory / (prefix + '.par2')), *members], cwd=directory)
                 sizes = [path.stat().st_size for path in directory.glob(prefix + '*.par2')]

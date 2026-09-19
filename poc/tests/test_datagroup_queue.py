@@ -151,7 +151,7 @@ class WholeFilePlacementTests(ArchiveTest):
 
     def test_non_fitting_file_starts_fresh_and_next_file_reuses_waiting_datagroup(self):
         key, certificate = self.certificate()
-        for name, size in (("a", 180000), ("b", 180000), ("c", 10000)):
+        for name, size in (("a", 220000), ("b", 220000), ("c", 10000)):
             (self.source / name).write_bytes(self.data(size))
         for encrypted in (False, True):
             archive = self.root / f"archive-{encrypted}"

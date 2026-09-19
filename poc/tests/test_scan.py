@@ -111,7 +111,10 @@ class ScanTests(ArchiveTest):
         self.assertEqual(snapshot(self.archive), before)
 
     def test_surviving_parity_can_recover_all_missing_chunk_names(self):
-        content = self.data(12000)
+        # Five payload blocks plus two metadata blocks fit the seven recovery
+        # blocks required by the largest-member margin. Erasing every input
+        # is only recoverable when the surviving parity covers their full sum.
+        content = self.data(20000)
         (self.source / "document.txt").write_bytes(content)
         backup(self.source, self.archive, settings=SMALL)
         self.remove_metadata(self.archive)

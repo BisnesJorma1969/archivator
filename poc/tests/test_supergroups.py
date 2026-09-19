@@ -18,7 +18,7 @@ class SupergroupTests(ArchiveTest):
         self.settings = replace(SMALL, supergroup_par2=True, supergroup_datagroups=3,
                                 max_datagroup_bytes=400000)
         # Independent whole streams remain useful if a supergroup cannot recover.
-        for number in range(9):
+        for number in range(12):
             (self.source / f"file-{number}.bin").write_bytes(self.data(90000, number))
         key, cert = self.certificate() if encrypted else (None, None)
         backup(self.source, self.archive, cert, self.settings)

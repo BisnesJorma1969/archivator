@@ -55,7 +55,7 @@ For compactness in this table, `G` means
 | `S_metadata_index-datagroups-spare.json[.zst]` | Identical central supergroup-index copy |
 | `S.par2`, `S.vol<start>+<count>.par2` | Cross-datagroup PAR2, including the primary supergroup index |
 | `archive-<aid>_metadata_catalog-root.json`, `..._metadata_catalog-root-spare.json` | Identical uncompressed checksum roots |
-| `archive-<aid>_metadata_catalog-root.par2`, `..._metadata_catalog-root.vol<start>+<count>.par2` | Independent protection for both roots, format note and optional certificate; all input blocks plus one 4 KiB slice |
+| `archive-<aid>_metadata_catalog-root.par2`, `..._metadata_catalog-root.vol<start>+<count>.par2` | Independent protection for both roots, format note and optional certificate; all input blocks plus one dynamically sized slice |
 
 **Inventories are metadata, not compressed file content.** Stream IDs inside
 the inventory match the payload chunk names. TAR entries list members; RAW entries
@@ -103,7 +103,7 @@ first, then decompress if applicable. Metadata JSON/JSONL follows the same
 compression setting; only source-name inventories are encrypted.
 
 The public manifest contains `version`, `archive`, `supergroup`, `datagroup`, `compression`,
-`encryption`, `settings`, `members`, `source_metadata`, and `source_sha256`.
+`encryption`, `settings`, `par2`, `members`, `source_metadata`, and `source_sha256`.
 Each chunk member records `filename`, `chunk`, `stream`, `kind` (`tar` or `raw`), `offset`, `length`,
 `stored_length`, `stored_sha256`, `plaintext_sha256`, and `plaintext_sha512`.
 It contains no original source names. `compression` is `zstd` or `none`;
@@ -128,9 +128,9 @@ can recreate a missing manifest/inventory. Make its identical central copies,
 then write the central receipt with the finished datagroup-PAR2 hashes. Central PAR2
 protects that receipt and the copies. No manifest hashes its own PAR2.
 
-Each receipt links backward to the preceding central receipt's SHA-256 and PAR2
+Each receipt includes its own `par2` geometry and links backward to the preceding central receipt's SHA-256 and PAR2
 hashes. Catalog-root markers hold the last central and supergroup links, counts,
-settings, and a `bootstrap_files` map of format/certificate names, sizes and SHA-256 values,
+`settings`, root `par2` geometry, and a `bootstrap_files` map of format/certificate names, sizes and SHA-256 values,
 so they do not grow with the archive's datagroup count. `marker_sha256` hashes
 canonical ASCII JSON, sorted keys and compact separators, excluding that field.
 These files contain the checksum-chain root, not the full catalog. The `-spare`
@@ -177,21 +177,27 @@ queue, defaulting to four waiting datagroups and a 95% close-on-miss threshold.
 See the [queue rules](../POC.md#6-datagroup-sizing-and-parity). These are writer policies,
 not a required restore order. No artificial chunk/datagroup padding is used.
 
-Datagroup and central PAR2 use 1 MiB slices by default. Recovery is the maximum of 20% of actual
-protected bytes, 125% of the largest member, and one slice more than that member
-occupies, rounded up to whole slices. Short/final sets may have much more than
-20% parity; the calculation never uses nominal maximum datagroup capacity. Volume
-count varies to keep indexes/volumes within the file limit. Packet headers and
-repeated critical metadata also consume space.
+All PAR2 sets choose their slice size dynamically: try 4 KiB, 8 KiB, 16 KiB,
+and so on until source/recovery counts (each at most 32768), file limits, and
+applicable media budgets fit. Count each protected file's partial final block
+separately. Datagroup and central recovery is the maximum of 20% of source blocks,
+125% of the largest member's blocks, and one block more than that member.
+Short/final sets may have much more than 20% parity; nominal maximum capacity
+never sets the recovery amount. Packet headers and repeated critical metadata
+consume space as well.
 
-Supergroup PAR2 uses at least 110% of the largest datagroup's source-block count,
+Supergroup recovery is at least 110% of the largest datagroup's source-block count,
 at least 20% of the total, and at least one block beyond the largest datagroup.
-Counts round separately per protected file; outer slices double if needed to fit
-PAR2's block limit. The index records the exact parameters. Recovery files are
-packed into numbered media directories within the same byte limit as a datagroup.
-A final short supergroup uses actual members, not nominal maximum capacity.
-Bootstrap PAR2 uses 4096-byte slices and protects every input block plus one;
-small roots therefore do not require megabytes of parity merely due to slice rounding.
+Its index and all open/waiting datagroups are included in admission reservations.
+If no legal geometry fits, close the datagroup or supergroup early. Configured
+capacities/counts are ceilings, not mandatory fill levels. Never lower redundancy
+to fit. Recovery files are packed into numbered, byte-bounded media directories.
+Bootstrap PAR2 protects every input block plus one, using the same dynamic planner.
+
+Each set's existing technical metadata stores `par2: {slice_size, blocks, volumes}`
+(or `null` when disabled). These are the actual generation parameters; retain them
+when regenerating parity, even if conservative metadata-size reservations resulted
+in extra recovery blocks. No global fixed slice size is stored in `settings`.
 See the [complete protection rules](../POC.md#supergroup-protection-and-bounded-work).
 
 There is no globally safe number of deletable files. Each set must retain enough

@@ -22,7 +22,6 @@ CHUNK_NAME = re.compile(
 class Settings:
     max_file_bytes: int = 256 * 1024 * 1024 - 1
     max_datagroup_bytes: int = 14 * 1024 * 1024 * 1024
-    slice_size: int = 1024 * 1024
     large_file_bytes: int | None = None
     waiting_datagroups: int = 4
     datagroup_close_percent: int = 95
@@ -41,13 +40,11 @@ class Settings:
             raise ArchiveError("Supergroup datagroup count must be a positive integer")
         if not isinstance(self.supergroup_margin_percent, int) or self.supergroup_margin_percent < 100:
             raise ArchiveError("Supergroup margin must be at least 100 percent")
-        limits = (self.max_file_bytes, self.max_datagroup_bytes, self.slice_size)
+        limits = (self.max_file_bytes, self.max_datagroup_bytes)
         if self.large_file_bytes is not None:
             limits += (self.large_file_bytes,)
         if any(not isinstance(value, int) or value <= 0 for value in limits):
             raise ArchiveError("All byte limits must be positive integers")
-        if self.slice_size % 4:
-            raise ArchiveError("PAR2 slice size must be a multiple of four")
         if not isinstance(self.waiting_datagroups, int) or self.waiting_datagroups < 0:
             raise ArchiveError("Waiting datagroup count must be a nonnegative integer")
         if not isinstance(self.datagroup_close_percent, int) or not 1 <= self.datagroup_close_percent <= 100:

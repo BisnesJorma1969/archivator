@@ -10,7 +10,7 @@ from poc.archivator_lib.common import WORK_DIR
 from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.format import Settings
 
-SMALL = Settings(max_file_bytes=65535, max_datagroup_bytes=262144, slice_size=1024, supergroup_par2=False)
+SMALL = Settings(max_file_bytes=65535, max_datagroup_bytes=262144, supergroup_par2=False)
 
 def read_zstd_json(path):
     return json.loads(run([executable("zstd"), "-qdc", str(path)]))

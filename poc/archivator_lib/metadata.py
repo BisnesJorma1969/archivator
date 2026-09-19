@@ -9,7 +9,7 @@ from pathlib import Path
 from .common import ArchiveError, IntegrityError, sha256, write_json
 from .external import decrypt, encrypt, executable, run, create_parity
 from .format import metadata_prefix, spare_metadata_name, stored_path
-from .limits import check_files, parity_plan
+from .limits import check_files, parity_plan, plan_reservation, stored_bound
 
 UNCOMPRESSED_METADATA_SUFFIXES = (
     "_metadata_catalog-root.json", "_metadata_catalog-root-spare.json",
@@ -118,22 +118,29 @@ class MetadataWriter:
             "version": 1, "archive": self.archive_id, "datagroup": datagroup_id, "supergroup": supergroup_id,
             "previous": self.previous, "members": members,
             "datagroup_parity": datagroup_parity,
+            "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.par2 else None,
         }
         name = prefix + "_checksums.json"
         staging_root = self.archive / ".tmp"
+        stored_name = name + (".zst" if self.settings.compression else "")
+        lengths = {name: item["size"] for name, item in members.items()}
+        receipt_size = len(json.dumps(receipt, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 1
+        lengths[stored_name] = stored_bound(receipt_size, compression=self.settings.compression)
+        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.par2,
+                           max_set_bytes=self.settings.max_datagroup_bytes)
+        receipt["par2"] = plan.record() if self.settings.par2 else None
         write_json(staging_root / name, receipt)
         name = store_metadata(staging_root / name, staging_root, compression=self.settings.compression)
         check_files([staging_root / name], self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
         os.replace(staging_root / name, destination / name)
         lengths = {name: (destination / name).stat().st_size for name in [*members, name]}
-        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes, self.settings.par2)
         if sum(lengths.values()) + plan.total_bytes > self.settings.max_datagroup_bytes:
             raise ArchiveError("Central metadata recovery set exceeds datagroup budget")
         staging = self.archive / ".tmp" / "central-parity"
         staging.mkdir()
         files = []
         if self.settings.par2:
-            files = create_parity(destination, prefix, list(lengths), self.settings.slice_size,
+            files = create_parity(destination, prefix, list(lengths), plan.slice_size,
                                   plan.blocks, staging, plan.volumes)
         check_files([*(destination / name for name in lengths), *files],
                     self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
@@ -153,6 +160,13 @@ class MetadataWriter:
                   "supergroups": self.supergroups.count, "last_supergroup": self.supergroups.previous,
                   "bootstrap_files": {path.name: {"size": path.stat().st_size, "sha256": sha256(path)}
                                       for path in self.bootstrap_files}}
+        marker["par2"] = plan_reservation(self.settings.max_file_bytes) if self.settings.par2 else None
+        marker["marker_sha256"] = "0" * 64
+        if self.settings.par2:
+            from .bootstrap import root_lengths
+            plan = parity_plan(root_lengths(self.archive_id, marker), self.settings.max_file_bytes,
+                               max_set_bytes=self.settings.max_datagroup_bytes, protect_all=True)
+            marker["par2"] = plan.record()
         marker["marker_sha256"] = catalog_root_digest(marker)
         directory = self.archive
         paths = [self.archive / ".tmp" / name for name in catalog_root_names(self.archive_id)]

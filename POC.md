@@ -64,8 +64,7 @@ interpretable and repairable, but cannot reproduce absent fragments.
 | `supergroup_datagroups` / `--supergroup-datagroups` | 5 |
 | `supergroup_margin_percent` / `--supergroup-margin-percent` | 110 |
 | `supergroup_par2` / `--[no-]supergroup-par2` | Enabled when PAR2 is enabled |
-| Internal data/central PAR2 `slice_size` | 1048576 (1 MiB) |
-| Bootstrap PAR2 slice size | 4096 (4 KiB) |
+| PAR2 slice size (all sets, automatic) | Smallest feasible power-of-two size, starting at 4096 bytes |
 
 These are exact byte counts. The program does not interpret media marketing
 capacities, estimate formatting overhead, or subtract filesystem space. For a
@@ -221,20 +220,35 @@ be reconstructed; repair may still recover an intentional metadata duplicate
 from its healthy counterpart and never invents parity for a non-PAR2 archive.
 
 With PAR2 enabled, protect **stored** chunks and transformed metadata together.
-For protected member lengths `lengths` and slice size `s`:
+For protected member lengths `lengths` and the selected slice size `s`:
 
 ```text
+source_blocks = [ceil(length / s) for length in lengths]
 recovery_blocks = max(
-    ceil(sum(lengths) / (5 * s)),
-    ceil(5 * max(lengths) / (4 * s)),
-    ceil(max(lengths) / s) + 1
+    ceil(sum(source_blocks) / 5),
+    ceil(5 * max(source_blocks) / 4),
+    max(source_blocks) + 1
 )
 ```
 
-This gives a normal 20% recovery target, at least 125% of the largest stored
-member, and an extra slice after rounding. Short/final datagroups may significantly
-exceed 20%; calculate from **actual protected bytes**, never the nominal maximum
-datagroup capacity. Do not pad with fake data or rebalance completed datagroups.
+This gives at least 20% of source blocks, at least 125% of the largest stored
+member's blocks, and at least one more block than that member occupies. Short/final datagroups may significantly
+exceed 20%; calculate from the protected files (with conservative metadata-size
+reservations), never the nominal maximum datagroup capacity. Do not pad with fake data or rebalance completed datagroups.
+
+Every PAR2 set uses the same dynamic planner, including central and root metadata.
+Try 4 KiB, 8 KiB, 16 KiB, and so on; select the smallest size that satisfies the
+32768 source-block and recovery-block limits, output-file ceiling, and applicable
+recovery-set byte budget. Each file's partial last block counts independently.
+No fixed data or metadata slice size is configured. A larger slice trades finer
+repair granularity for fewer source blocks; it never lowers the redundancy target.
+All slice sizes are multiples of PAR2's required four bytes.
+
+The chosen `par2` record (`slice_size`, `blocks`, `volumes`) lives in the existing
+datagroup index, central receipt, supergroup index, or catalog root. It is `null`
+when that set is disabled. Metadata reserves space for its own plan before
+serialization/compression; the resulting conservative geometry is kept for exact
+PAR2 regeneration, rather than recalculated from smaller compressed metadata.
 
 Use one PAR2 index and enough uniform recovery volumes to fit the file ceiling;
 neither four volumes nor a particular volume byte size is required. Budget
@@ -273,13 +287,17 @@ for every protected file in each datagroup. Recovery blocks are the maximum of:
 - `supergroup_margin_percent` (default 110%) of the largest datagroup's block count;
 - one block more than that largest datagroup.
 
-Round upward. Increase the outer slice size by doubling when necessary to remain
-within PAR2's 32768-block capacity; record the actual size, block count and volume
-count in the index. All metadata/packet overhead and file/media limits still apply.
+Round upward and use the same dynamic planner as every other set. Each outer
+PAR2 index/volume must fit both the file ceiling and a single parity medium.
+All metadata/packet overhead and file/media limits still apply.
 The final short supergroup uses only its actual members, never the maximum datagroup
 capacity. A one-datagroup tail consequently has roughly another full data copy's worth
-of outer parity, not five datagroups' worth. An index that cannot fit the file limit
-fails explicitly; reduce the configured supergroup datagroup count.
+of outer parity, not five datagroups' worth. Before admitting content, reserve the outer index and PAR2 geometry for **all**
+finished, active and waiting datagroups. If no feasible geometry fits, close the
+current datagroup or supergroup early and retry in an empty one. Thus PAR2 and
+index limits can reduce the effective capacity below either configured maximum.
+No tails cross that boundary. Content that cannot fit even an empty recovery
+window fails explicitly; limits and redundancy are never silently relaxed.
 
 Indexes form their own backward SHA-256 chain, including the preceding set's
 PAR2 hashes. The catalog-root stores both chains' last links and counts. Missing
@@ -322,7 +340,7 @@ small checksum-chain roots, not copies of the complete catalog. This bounded cha
 checksum list or marker. Each central recovery set is independently bounded.
 The two catalog-root copies, a small format note and the normalized public
 recipient certificate (when encrypted) live at the archive root. They share one
-bootstrap PAR2 set using **4096-byte slices**, sized for every protected input's
+bootstrap PAR2 set using the shared **dynamic slice planner**, sized for every protected input's
 rounded block count plus one extra block. All bootstrap inputs may therefore be
 lost together while sufficient parity survives. Bootstrap PAR2 is generated
 before publishing the roots; PAR2 needs no readable root/settings to recover them.
@@ -502,7 +520,7 @@ any real implementation:
    S3/Azure checksums. Cover every stored object, not only payload chunks. Define
    a non-circular integrity/bootstrap design for checksum metadata itself.
 3. **Fixed upload blocks.** Use **8 MiB upload-checksum blocks**, independently of
-   variable-sized stored chunks and 1 MiB PAR2 slices. Record each block's
+   variable-sized stored chunks and independently sized PAR2 slices. Record each block's
    offset, actual length (including the final short block), algorithm, and digest
    over stored bytes. The uploader must use exactly those boundaries. Handle
    provider part-count/object-size limits explicitly; do not silently resize parts

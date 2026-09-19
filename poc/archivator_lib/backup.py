@@ -11,7 +11,7 @@ from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_j
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, directory_batches, empty_destination, ensure_disjoint, public_entry
 from .format import Settings, chunk_name, metadata_prefix, new_id, datagroup_prefix, spare_metadata_name, stored_path
-from .limits import ceil_div, check_files, input_limit, parity_plan, stored_bound
+from .limits import ceil_div, check_files, input_limit, parity_plan, plan_reservation, stored_bound
 from .metadata import MetadataWriter, json_bytes, store_metadata
 from .progress import progress
 
@@ -71,6 +71,7 @@ class DatagroupWriter:
         self.datagroup_id = new_id()
         self.supergroup_id = catalog.supergroups.id
         self.members = []
+        self.planning_only = False
         self.input_bytes = input_limit(min(settings.max_file_bytes, settings.max_datagroup_bytes // 4),
                                        encryption_overhead, settings.compression)
 
@@ -86,13 +87,20 @@ class DatagroupWriter:
                 "compression": "zstd" if self.settings.compression else "none",
                 "encryption": "cms-aes-256-gcm" if self.certificate else "none",
                 "settings": vars(self.settings),
+                "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.par2 else None,
                 "members": members,
                 "source_metadata": self.source_name(), "source_sha256": source_digest}
 
     def fits(self, members, sources, private_size=None):
-        return self.budget(members, sources, private_size) is not None
+        reservation = self.reservation(members, sources, private_size)
+        return (reservation is not None and self.catalog.supergroups.fits(
+            self.datagroup_id, reservation[1], alone=self.planning_only))
 
     def budget(self, members, sources, private_size=None):
+        reservation = self.reservation(members, sources, private_size)
+        return reservation[0] if reservation is not None else None
+
+    def reservation(self, members, sources, private_size=None):
         """Stored data plus conservative metadata/PAR2 bytes, or no feasible fit."""
         settings = self.settings
         private_size = private_size or inventory_bound(sources)
@@ -107,23 +115,25 @@ class DatagroupWriter:
         if max(lengths.values()) > settings.max_file_bytes:
             return None
         try:
-            plan = parity_plan(lengths, settings.slice_size, settings.max_file_bytes, settings.par2)
+            plan = parity_plan(lengths, settings.max_file_bytes, settings.par2,
+                               max_set_bytes=settings.max_datagroup_bytes)
             total = sum(lengths.values()) + plan.total_bytes
             if total > settings.max_datagroup_bytes:
                 return None
             # The identical central copies need their own parity and a receipt.
             # Reserve a bounded hash map for this set and the previous set.
-            receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
+            receipt_size = 8192 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 400
             receipt_name = metadata_prefix(self.archive_id, self.supergroup_id, self.datagroup_id) + "_checksums.json" + suffix
             central = {spare_metadata_name(self.source_name()): source_length,
                        spare_metadata_name(prefix + "_metadata_index-chunks.json" + suffix): manifest_length,
                        receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             if max(central.values()) > settings.max_file_bytes:
                 return None
-            protection = parity_plan(central, settings.slice_size, settings.max_file_bytes, settings.par2)
+            protection = parity_plan(central, settings.max_file_bytes, settings.par2,
+                                     max_set_bytes=settings.max_datagroup_bytes)
             if sum(central.values()) + protection.total_bytes > settings.max_datagroup_bytes:
                 return None
-            return total
+            return total, {**lengths, **central}
         except ArchiveError:
             return None
 
@@ -159,8 +169,10 @@ class DatagroupWriter:
 
     def append(self, chunks, stream, entries):
         members, sources = self.proposed(chunks, stream, entries)
-        if not self.fits(members, sources):
-            raise ArchiveError("Datagroup cannot hold the selected content with metadata and parity")
+        reservation = self.reservation(members, sources)
+        if reservation is None or not self.catalog.supergroups.fits(self.datagroup_id, reservation[1]):
+            raise ArchiveError("Datagroup/supergroup cannot hold the selected content with metadata and parity")
+        self.catalog.supergroups.reserve(self.datagroup_id, reservation[1])
         datagroup_directory = stored_path(self.archive, self.source_name()).parent
         if chunks:
             datagroup_directory.mkdir(parents=True, exist_ok=True)
@@ -195,23 +207,32 @@ class DatagroupWriter:
         os.replace(self.staging / stored, datagroup_directory / stored)
         manifest = self.manifest(self.members, sha256(datagroup_directory / stored))
         manifest_name = prefix + "_metadata_index-chunks.json"
+        # Plan against an upper bound including the plan fields themselves.
+        # Keeping this geometry after compression makes regeneration deterministic.
+        stored_manifest_name = manifest_name + (".zst" if self.settings.compression else "")
+        lengths = {member["filename"]: member["stored_length"] for member in self.members}
+        lengths[stored] = (datagroup_directory / stored).stat().st_size
+        manifest_size = len(json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 1
+        lengths[stored_manifest_name] = stored_bound(manifest_size, compression=self.settings.compression)
+        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.par2,
+                           max_set_bytes=self.settings.max_datagroup_bytes)
+        manifest["par2"] = plan.record() if self.settings.par2 else None
         write_json(self.staging / manifest_name, manifest)
         manifest_name = store_metadata(self.staging / manifest_name, self.staging, compression=self.settings.compression)
         check_files([self.staging / manifest_name], self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
         os.replace(self.staging / manifest_name, datagroup_directory / manifest_name)
         names = [member["filename"] for member in self.members] + [stored, manifest_name]
         lengths = {name: (datagroup_directory / name).stat().st_size for name in names}
-        plan = parity_plan(lengths, self.settings.slice_size, self.settings.max_file_bytes, self.settings.par2)
         if sum(lengths.values()) + plan.total_bytes > self.settings.max_datagroup_bytes:
             raise ArchiveError("Datagroup metadata and PAR2 exceed the byte budget")
-        protection = f"{plan.blocks:,} PAR2 slices" if self.settings.par2 else "PAR2 disabled"
+        protection = f"{plan.blocks:,} PAR2 recovery blocks of {plan.slice_size:,} bytes" if self.settings.par2 else "PAR2 disabled"
         print(f"Finalizing datagroup {self.datagroup_id}: {len(self.members):,} chunks, "
               f"{sum(lengths.values()):,} stored bytes; {protection}", flush=True)
         directory = self.staging / "parity"
         directory.mkdir()
         files = []
         if self.settings.par2:
-            files = create_parity(datagroup_directory, prefix, names, self.settings.slice_size, plan.blocks,
+            files = create_parity(datagroup_directory, prefix, names, plan.slice_size, plan.blocks,
                                   directory, plan.volumes)
         total = check_files([*(datagroup_directory / name for name in names), *files],
                             self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
@@ -234,6 +255,7 @@ class DatagroupQueue:
     def __init__(self, make_datagroup):
         self.make_datagroup = make_datagroup
         self.planner = make_datagroup()  # Empty-datagroup feasibility, never published.
+        self.planner.planning_only = True
         self.settings = self.planner.settings
         self.active = None
         self.waiting = []
@@ -247,6 +269,20 @@ class DatagroupQueue:
             self.created = 0
         self.created += 1
         return self.make_datagroup()
+
+    def fresh_for(self, chunks, stream, entries):
+        candidate = self.new_datagroup()
+        if candidate.can_add(chunks, stream, entries):
+            return candidate
+        # A byte/index/PAR2 limit may close a supergroup before its group count.
+        # Nothing from this candidate has been published or reserved yet.
+        self.finish()
+        self.planner.catalog.supergroups.finish()
+        self.created = 0
+        candidate = self.new_datagroup()
+        if not candidate.can_add(chunks, stream, entries):
+            raise ArchiveError("Content and its metadata/PAR2 cannot fit an empty datagroup/supergroup")
+        return candidate
 
     def used_bytes(self, datagroup):
         budget = datagroup.budget(datagroup.members, datagroup.sources)
@@ -285,7 +321,7 @@ class DatagroupQueue:
             self.active.append(chunks, stream, entries)
             return
         self.retire_active()
-        self.active = self.new_datagroup()
+        self.active = self.fresh_for(chunks, stream, entries)
         self.active.append(chunks, stream, entries)
 
     def start_large_file(self):
@@ -301,7 +337,8 @@ class DatagroupQueue:
     def append_fragment(self, chunk, stream, entries):
         if not self.active.can_add([chunk], stream, entries):
             self.active.finish_set()
-            self.active = self.new_datagroup()
+            self.active = None
+            self.active = self.fresh_for([chunk], stream, entries)
         self.active.append([chunk], stream, entries)
         # The final datagroup stays active when the file ends; subsequent whole
         # files/TARs may fill its remainder. Intermediate datagroups never wait.
@@ -554,7 +591,7 @@ def backup(source, archive, certificate=None, settings=None):
         pending_tar_bytes = 0
         pending_inventory_bytes = 2048
         planner = queue.planner
-        planned_stream = {"stream": "0" * 32, "type": "tar"}
+        planned_stream = {"stream": "a" * 20, "type": "tar"}
 
         def append_if_fits(entry):
             nonlocal pending_tar_bytes, pending_inventory_bytes

@@ -13,7 +13,7 @@ from .filesystem import relative_path
 from .format import (ARCHIVE_NAME, ID, Settings, archive_filename, datagroup_metadata, metadata_prefix,
                      datagroup_prefix, parse_chunk, primary_metadata_name, spare_metadata_name, stored_path,
                      supergroup_prefix)
-from .limits import parity_plan
+from .limits import parity_plan, validate_parity_record
 from .metadata import ConflictingRoots, catalog_root_digest, catalog_root_names, unpack_metadata
 from .progress import progress
 
@@ -172,6 +172,7 @@ def read_catalog_root(archive_id, files):
                     or not isinstance(marker["datagroups"], int) or marker["datagroups"] < 1):
                 raise IntegrityError("Invalid marker")
             settings = Settings(**marker["settings"])
+            validate_parity_record(marker["par2"], settings.par2)
             from .bootstrap import auxiliary_names
             required, optional = auxiliary_names(archive_id)
             auxiliary = marker["bootstrap_files"]
@@ -245,6 +246,7 @@ def validate_manifest(manifest, archive_id, name, digest):
         raise IntegrityError("Invalid datagroup ID")
     prefix = datagroup_prefix(archive_id, manifest["supergroup"], datagroup_id)
     settings = Settings(**manifest["settings"])
+    validate_parity_record(manifest["par2"], settings.par2)
     suffix = ".zst" if settings.compression else ""
     compression = "zstd" if settings.compression else "none"
     if (manifest["version"] != 1 or manifest["archive"] != archive_id
@@ -281,7 +283,7 @@ def validate_manifest(manifest, archive_id, name, digest):
     return manifest
 
 
-def repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish=False):
+def repair_verified_set(directory, prefix, hashes, settings, parity_hashes, plan_record, replenish=False):
     """PAR2 writes only here: scratch copies or explicitly selected in-place files."""
     damaged = mismatches(directory, hashes)
     if not settings.par2:
@@ -300,10 +302,11 @@ def repair_verified_set(directory, prefix, hashes, settings, parity_hashes, repl
     remove_repair_backups(directory, hashes, previous)
     if replenish and (parity_damage or status in (2, 4)):
         lengths = {name: (directory / name).stat().st_size for name in hashes}
-        plan = parity_plan(lengths, settings.slice_size, settings.max_file_bytes)
+        plan = parity_plan(lengths, settings.max_file_bytes,
+                           max_set_bytes=settings.max_datagroup_bytes, record=plan_record)
         for path in directory.glob(prefix + "*.par2"):
             path.unlink()
-        create_parity(directory, prefix, list(hashes), settings.slice_size, plan.blocks, volumes=plan.volumes)
+        create_parity(directory, prefix, list(hashes), plan.slice_size, plan.blocks, volumes=plan.volumes)
         if parity_hashes and mismatches(directory, parity_hashes):
             raise IntegrityError("Regenerated PAR2 differs from recorded checksums")
     return damaged, parity_damage
@@ -363,6 +366,7 @@ def load_central(archive, original, in_place):
         receipt = read_json(unpack_metadata(receipt_path, archive.metadata))
         if receipt["version"] != 1 or receipt["archive"] != archive.id or receipt["datagroup"] != datagroup_id:
             raise IntegrityError("Invalid metadata receipt")
+        validate_parity_record(receipt["par2"], settings.par2)
         hashes = dict(expected_receipt)
         for name, record in receipt["members"].items():
             archive_filename(name, archive.id)
@@ -382,7 +386,7 @@ def load_central(archive, original, in_place):
                 shutil.copyfile(good, directory / name)
         try:
             damage, parity_damage = repair_verified_set(directory, prefix, hashes, settings,
-                                                         link["parity_hashes"], in_place)
+                                                         link["parity_hashes"], receipt["par2"], in_place)
         except IntegrityError:
             missing = mismatches(directory, hashes)
             if not settings.par2 or not missing or any(not datagroup_metadata(name) for name in missing):
@@ -412,7 +416,7 @@ def load_central(archive, original, in_place):
             if not mismatches(local, local_hashes):
                 remove_repair_backups(local, local_hashes, local_previous)
             damage, parity_damage = repair_verified_set(directory, prefix, hashes, settings,
-                                                         link["parity_hashes"], in_place)
+                                                         link["parity_hashes"], receipt["par2"], in_place)
         remove_repair_backups(directory, hashes, receipt_previous)
         archive.metadata_damage.extend(receipt_damage + original_damage + damage + parity_damage)
         archive.checksums.update(hashes)
@@ -684,12 +688,12 @@ def recover_set(archive, manifest, directory, replenish=False):
     damaged = mismatches(directory, hashes)
     settings = Settings(**manifest["settings"])
     try:
-        return repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish)
+        return repair_verified_set(directory, prefix, hashes, settings, parity_hashes, manifest["par2"], replenish)
     except IntegrityError:
         if not damaged or manifest["datagroup"] not in archive.supergroups.by_datagroup:
             raise
         archive.supergroups.restore_datagroup(manifest["datagroup"], directory)
-        _, parity_damage = repair_verified_set(directory, prefix, hashes, settings, parity_hashes, replenish)
+        _, parity_damage = repair_verified_set(directory, prefix, hashes, settings, parity_hashes, manifest["par2"], replenish)
         return damaged, parity_damage
 
 

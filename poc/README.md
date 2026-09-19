@@ -130,7 +130,7 @@ Repair, restore, and scan require `--archive-id` when several archives are prese
 Archive-file mtimes and directory order are irrelevant.
 
 Either self-checksummed catalog-root copy anchors both checksum chains. Their
-independent PAR2 uses 4 KiB slices and also protects the root-level format text
+independent PAR2 chooses its slice size dynamically and also protects the root-level format text
 and public certificate. It can reconstruct all these files if none survives.
 Conflicting valid copies are rejected. Backup cannot resume, and failed work is
 not marked complete. A failed restore can leave verified files or partial scratch

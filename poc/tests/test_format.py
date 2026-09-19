@@ -46,6 +46,6 @@ class FormatTests(unittest.TestCase):
             self.assertEqual(hashes.values()["crc32"], f"{archive.getinfo('sample.txt').CRC:08x}")
 
     def test_redundancy_accounts_for_short_sets_and_block_rounding(self):
-        self.assertEqual(recovery_blocks([1], 1024), 2)
-        self.assertEqual(recovery_blocks([3175], 1024), 5)
-        self.assertEqual(recovery_blocks([10240] * 8, 1024), 16)
+        self.assertEqual(recovery_blocks({"file": 1}, 4096), 2)
+        self.assertEqual(recovery_blocks({"file": 12700}, 4096), 5)
+        self.assertEqual(recovery_blocks({str(n): 40960 for n in range(8)}, 4096), 16)

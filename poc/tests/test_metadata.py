@@ -149,10 +149,9 @@ class MetadataTests(ArchiveTest):
         self.assertEqual(verify(self.archive), 0)
 
     def test_all_bootstrap_inputs_are_small_and_recover_together(self):
-        from poc.archivator_lib.bootstrap import ROOT_SLICE_SIZE
         archive_id = self.make_archive(True)
-        self.assertEqual(ROOT_SLICE_SIZE, 4096)
         root = read_json(self.archive / catalog_root_names(archive_id)[0])
+        self.assertEqual(root['par2']['slice_size'], 4096)
         expected = {name: (self.archive / name).read_bytes()
                     for name in [*catalog_root_names(archive_id), *root['bootstrap_files']]}
         self.assertTrue(any(name.endswith('_format.txt') for name in expected))

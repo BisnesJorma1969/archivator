@@ -8,11 +8,8 @@ from pathlib import Path
 from .common import IntegrityError, read_json, scratch
 from .external import check_parity, create_parity
 from .format import Settings
-from .limits import ceil_div, check_files, parity_plan
+from .limits import check_files, parity_plan
 from .metadata import ConflictingRoots, catalog_root_names
-
-# Bootstrap files are tiny; using data-sized slices needlessly costs megabytes.
-ROOT_SLICE_SIZE = 4096
 
 
 def root_prefix(archive_id):
@@ -34,19 +31,19 @@ def root_lengths(archive_id, marker):
     return lengths
 
 
-def root_plan(lengths, settings):
+def root_plan(lengths, settings, record):
     # Recover all bootstrap inputs, including BOTH roots, plus one damaged slice.
-    blocks = sum(ceil_div(length, ROOT_SLICE_SIZE) for length in lengths.values()) + 1
-    return parity_plan(lengths, ROOT_SLICE_SIZE, settings.max_file_bytes, blocks=blocks)
+    return parity_plan(lengths, settings.max_file_bytes, max_set_bytes=settings.max_datagroup_bytes,
+                       protect_all=True, record=record)
 
 
 def create_root_parity(directory, archive_id, settings, output=None):
     marker = read_json(directory / catalog_root_names(archive_id)[0])
     lengths = root_lengths(archive_id, marker)
-    plan = root_plan(lengths, settings)
+    plan = root_plan(lengths, settings, marker["par2"])
     if sum(lengths.values()) + plan.total_bytes > settings.max_datagroup_bytes:
         raise IntegrityError("Bootstrap metadata and PAR2 exceed the datagroup limit")
-    files = create_parity(directory, root_prefix(archive_id), list(lengths), ROOT_SLICE_SIZE,
+    files = create_parity(directory, root_prefix(archive_id), list(lengths), plan.slice_size,
                           plan.blocks, output, plan.volumes)
     check_files([*(directory / name for name in lengths), *files],
                 settings.max_file_bytes, settings.max_datagroup_bytes)
@@ -111,7 +108,7 @@ def recover_root(archive_id, files, temporary, in_place=False):
         if name not in remaining:
             files[name] = directory / name
     if settings.par2:
-        plan = root_plan(root_lengths(archive_id, marker), settings)
+        plan = root_plan(root_lengths(archive_id, marker), settings, marker["par2"])
         if check_parity(directory, prefix) or len(parity_names) != plan.volumes + 1:
             damage.append(prefix + " (root PAR2 damage)")
     return marker, damage
@@ -128,7 +125,7 @@ def repair_root(archive_id, files, marker):
     if not settings.par2:
         return
     prefix = root_prefix(archive_id)
-    plan = root_plan(root_lengths(archive_id, marker), settings)
+    plan = root_plan(root_lengths(archive_id, marker), settings, marker["par2"])
     paths = list(directory.glob(prefix + "*.par2"))
     if check_parity(directory, prefix) == 0 and len(paths) == plan.volumes + 1:
         return

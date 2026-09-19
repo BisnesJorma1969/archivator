@@ -14,7 +14,7 @@ from .external import check_parity, create_parity
 from .format import (ID, Settings, archive_filename, datagroup_metadata, datagroup_prefix, metadata_prefix,
                      new_id, primary_metadata_name, spare_metadata_name, stored_path,
                      supergroup_prefix)
-from .limits import ceil_div, check_files, parity_plan, stored_bound
+from .limits import check_files, parity_plan, stored_bound, validate_parity_record
 from .metadata import catalog_root_digest, store_metadata, unpack_metadata
 from .progress import progress
 
@@ -49,6 +49,7 @@ class SupergroupWriter:
         self.settings = settings
         self.id = new_id()
         self.datagroups = []
+        self.reservations = {}
         self.previous = None
         self.count = 0
 
@@ -61,39 +62,67 @@ class SupergroupWriter:
                 raise ArchiveError("Supergroup inputs must not contain datagroup PAR2")
             digest = known_hashes.get(path.name)
             members[path.name] = {"size": path.stat().st_size, "sha256": digest or sha256(path)}
-        self.datagroups.append({"datagroup": datagroup_id, "members": members})
+        expected = self.reservations[datagroup_id]["members"]
+        if set(members) != set(expected) or any(item["size"] > expected[name]["size"] for name, item in members.items()):
+            raise ArchiveError("Completed datagroup exceeds its supergroup reservation")
+        record = {"datagroup": datagroup_id, "members": members}
+        self.datagroups.append(record)
+        self.reservations[datagroup_id] = record
+
+    def reserve(self, datagroup_id, members):
+        if self.settings.par2 and self.settings.supergroup_par2:
+            self.reservations[datagroup_id] = {
+                "datagroup": datagroup_id,
+                "members": {name: {"size": size, "sha256": "0" * 64} for name, size in members.items()},
+            }
+
+    def fits(self, datagroup_id, members, alone=False):
+        if not (self.settings.par2 and self.settings.supergroup_par2):
+            return True
+        candidate = {"datagroup": datagroup_id,
+                     "members": {name: {"size": size, "sha256": "0" * 64} for name, size in members.items()}}
+        groups = {} if alone else dict(self.reservations)
+        groups[datagroup_id] = candidate
+        try:
+            self.plan(list(groups.values()))
+            return True
+        except ArchiveError:
+            return False
+
+    def plan(self, datagroups):
+        settings = self.settings
+        if len(datagroups) > settings.supergroup_datagroups:
+            raise ArchiveError("Supergroup datagroup count exceeded")
+        name = index_name(self.archive_id, self.id, settings.compression)
+        record = {"version": 1, "archive": self.archive_id, "supergroup": self.id,
+                  "settings": vars(settings), "datagroups": datagroups, "previous": self.previous}
+        # Reserve geometry and digest fields before protecting the index itself.
+        size = len(json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 2048
+        index_bound = stored_bound(size, compression=settings.compression)
+        if index_bound > settings.max_file_bytes or 2 * index_bound > settings.max_datagroup_bytes:
+            raise ArchiveError("Supergroup index exceeds byte limits")
+        lengths = {}
+        groups = []
+        for datagroup in datagroups:
+            members = {str(stored_path(self.root, filename).relative_to(self.root)): item["size"]
+                       for filename, item in datagroup["members"].items()}
+            lengths.update(members)
+            groups.append(list(members))
+        lengths[str(stored_path(self.root, name).relative_to(self.root))] = index_bound
+        # Outer parity can use multiple bounded media directories, but each
+        # individual volume must fit both the file ceiling and one medium.
+        plan = parity_plan(lengths, min(settings.max_file_bytes, settings.max_datagroup_bytes), groups=groups,
+                           margin_percent=settings.supergroup_margin_percent)
+        return name, record, lengths, plan
 
     def finish(self):
         if not self.datagroups:
             self.id = new_id()
+            self.reservations.clear()
             return
         settings = self.settings
-        name = index_name(self.archive_id, self.id, settings.compression)
-        record = {"version": 1, "archive": self.archive_id, "supergroup": self.id,
-                  "settings": vars(settings), "datagroups": self.datagroups, "previous": self.previous}
-        # Reserve the plan and self-checksum fields before choosing slice/volume
-        # counts. PAR2's exact output is checked again after generation.
-        size = len(json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 2048
-        index_bound = stored_bound(size, compression=settings.compression)
-        if index_bound > settings.max_file_bytes or 2 * index_bound > settings.max_datagroup_bytes:
-            raise ArchiveError("Supergroup index exceeds byte limits; reduce --supergroup-datagroups")
-        lengths = {str(stored_path(self.root, filename).relative_to(self.root)): item["size"]
-                   for datagroup in self.datagroups for filename, item in datagroup["members"].items()}
-        lengths[str(stored_path(self.root, name).relative_to(self.root))] = index_bound
-        slice_size = settings.slice_size
-        while True:
-            datagroup_blocks = [sum(ceil_div(item["size"], slice_size) for item in datagroup["members"].values())
-                            for datagroup in self.datagroups]
-            total_blocks = sum(datagroup_blocks) + ceil_div(index_bound, slice_size)
-            blocks = max(ceil_div(total_blocks, 5),
-                         ceil_div(max(datagroup_blocks) * settings.supergroup_margin_percent, 100),
-                         max(datagroup_blocks) + 1)
-            if total_blocks <= 32768 and blocks <= 32768:
-                plan = parity_plan(lengths, slice_size, settings.max_file_bytes, blocks=blocks)
-                break
-            slice_size *= 2
-            if slice_size >= settings.max_file_bytes:
-                raise ArchiveError("Supergroup PAR2 capacity exceeds file limit; reduce --supergroup-datagroups")
+        name, record, lengths, plan = self.plan(self.datagroups)
+        slice_size, blocks = plan.slice_size, plan.blocks
         record["par2"] = {"slice_size": slice_size, "blocks": blocks, "volumes": plan.volumes}
         record["marker_sha256"] = catalog_root_digest(record)
         target = stored_path(self.root, name)
@@ -119,6 +148,7 @@ class SupergroupWriter:
                          "parity_hashes": {path.name: sha256(path) for path in paths}}
         self.count += 1
         self.datagroups = []
+        self.reservations.clear()
         self.id = new_id()
 
 
@@ -241,10 +271,7 @@ class SupergroupRecovery:
                     raise IntegrityError("Invalid protected supergroup member")
                 stored_path(Path("."), name)
                 names.add(name)
-        plan = record["par2"]
-        if (not isinstance(plan["slice_size"], int) or plan["slice_size"] <= 0 or plan["slice_size"] % 4
-                or not 1 <= plan["blocks"] <= 32768 or not 1 <= plan["volumes"] <= plan["blocks"]):
-            raise IntegrityError("Invalid supergroup PAR2 plan")
+        validate_parity_record(record["par2"])
         return record
 
     def load(self, catalog_root):
