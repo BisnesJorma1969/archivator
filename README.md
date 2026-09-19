@@ -96,7 +96,7 @@ the repairable-damage walkthrough below assumes PAR2 is enabled.
 Payload names distinguish complete TARs (`.tar.zst.cms`) from direct file bytes
 (`.raw.zst.cms`); omit `.cms` without encryption and `.zst` without compression. Each TAR chunk can be extracted
 independently. Source-name inventories are also encrypted (`.jsonl.zst.cms`). Each group
-keeps its metadata beside the data; identical copies are under `metadata/`.
+keeps its metadata beside the data; byte-identical `-spare` copies are under `metadata/`.
 Compression and PAR2 settings apply to both locations. Shards reuse the first two characters
 of the group's ID. Keep passing `archive1`; discovery is recursive.
 

@@ -24,18 +24,18 @@ class ShardingTests(ArchiveTest):
         self.assertFalse(list(self.archive.rglob(".tmp")))
         self.assertTrue(all(any(path.iterdir()) for path in self.archive.rglob("*") if path.is_dir()))
 
-    def test_flat_mixed_layout_and_missing_local_manifest(self):
+    def test_flat_layout_has_unique_names_and_recovers_missing_local_manifest(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
         local = next(path for path in self.archive.rglob("*_metadata_index-chunks.json.zst")
                      if "metadata" not in path.relative_to(self.archive).parts)
         local.unlink()
-        buckets = [self.archive / "loose-a", self.archive / "loose-b"]
-        for bucket in buckets:
-            bucket.mkdir()
-        for path in list(self.archive.rglob("archive-*")):
-            bucket = buckets[1] if (buckets[0] / path.name).exists() else buckets[0]
-            path.rename(bucket / path.name)
+        paths = list(self.archive.rglob("archive-*"))
+        self.assertEqual(len(paths), len({path.name for path in paths}))
+        for path in paths:
+            destination = self.archive / path.name
+            self.assertFalse(destination.exists())
+            path.rename(destination)
         before = snapshot(self.archive)
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)

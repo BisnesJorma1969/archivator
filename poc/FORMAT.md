@@ -17,7 +17,7 @@ contain only that file, while its final group can accept subsequent whole stream
 A TAR contains at least two regular files; a singleton is RAW.
 Directories/symlinks alone need only inventory records, not payload chunks.
 
-The local group lives under `ARCHIVE/<pid[:2]>/`. Its identical metadata copies
+The local group lives under `ARCHIVE/<pid[:2]>/`. Its byte-identical `-spare` metadata copies
 and separate central PAR2 live under `ARCHIVE/metadata/<pid[:2]>/`. Only populated
 shards are created; several groups can share one shard. Catalog-root markers live
 under `ARCHIVE/metadata/`. Optional `.zst` and `.cms` suffixes describe the enabled
@@ -28,8 +28,10 @@ component are used regardless.
 | --- | --- |
 | `parity-<pid>_chunk-<n>_stream-<sid>_length-<length>.tar[.zst][.cms]` | One complete, independently extractable TAR |
 | `parity-<pid>_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Original file bytes: a whole file or a fragment |
-| `parity-<pid>_metadata_index-chunks.json[.zst]` | Public group structure, settings, chunk hashes and stored-inventory hash; local plus identical central copy |
-| `parity-<pid>_metadata_index-files.jsonl[.zst][.cms]` | Group's stream descriptions and original source entries; local plus identical central copy |
+| `parity-<pid>_metadata_index-chunks.json[.zst]` | Public group structure, settings, chunk hashes and stored-inventory hash; local primary |
+| `parity-<pid>_metadata_index-files.jsonl[.zst][.cms]` | Group's stream descriptions and original source entries; local primary |
+| `parity-<pid>_metadata_index-chunks-spare.json[.zst]` | Byte-identical public-index spare under `metadata/` |
+| `parity-<pid>_metadata_index-files-spare.jsonl[.zst][.cms]` | Byte-identical source-inventory spare under `metadata/` |
 | `parity-<pid>.par2`, `parity-<pid>.vol<start>+<count>.par2` | PAR2 over local payload **and metadata** |
 | `metadata_parity-<pid>_checksums.json[.zst]` | Central receipt: metadata-copy hashes/lengths, data-PAR2 hashes, previous central link |
 | `metadata_parity-<pid>.par2`, `metadata_parity-<pid>.vol<start>+<count>.par2` | PAR2 over that central set's metadata copies and receipt |
@@ -57,7 +59,10 @@ Offsets occur only in RAW names. TAR length includes headers, member padding,
 end markers and final record padding. Internally its chunk offset is always zero.
 Names remain meaningful when copied into a flat directory. PAR2 records relative
 basenames. Discovery is recursive; archive-file mtimes and enumeration order do
-not matter. Two group-metadata copies are intentional, other duplicates are not.
+not matter. Every stored file has a unique basename, including the two metadata
+copies. Flattening the archive therefore needs no collision handling. Duplicate
+basenames are rejected. A spare manifest still references primary filenames;
+recovery maps the byte-identical spare to the primary name when needed.
 
 ## Contents and dependency order
 

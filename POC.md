@@ -246,7 +246,8 @@ For each group:
 3. Write the public group manifest, optionally compressing it, referencing stored inventory and
    chunk SHA-256 values. It carries settings and plaintext chunk checksums.
 4. When enabled, generate data PAR2 over **chunks + stored inventory + stored manifest**.
-5. Make identical inventory/manifest copies under `metadata/`.
+5. Make byte-identical inventory/manifest copies under `metadata/`, adding
+   `-spare` before `.json`/`.jsonl` in their filenames.
 6. Write a central checksum receipt (compressed when enabled) covering these
    copies and any finished data PAR2 files; add central PAR2 when enabled.
 
@@ -293,7 +294,8 @@ ARCHIVE/
     archive-<aid>_parity-<pid>.vol...par2
   metadata/
     <pid[:2]>/
-      (identical copies of that group's manifest and inventory)
+      archive-<aid>_parity-<pid>_metadata_index-chunks-spare.json[.zst]
+      archive-<aid>_parity-<pid>_metadata_index-files-spare.jsonl[.zst][.cms]
       archive-<aid>_metadata_parity-<pid>_checksums.json[.zst]
       archive-<aid>_metadata_parity-<pid>.par2
       archive-<aid>_metadata_parity-<pid>.vol...par2
@@ -308,10 +310,12 @@ zero-padded to **at least** four digits, without a four-digit maximum. Offsets
 and lengths are plaintext byte coordinates, not compressed/encrypted coordinates.
 Only RAW filenames have offsets; both formats have lengths.
 
-Readers discover files recursively in flat, nested, or mixed layouts. Exactly two
-copies of group metadata are intentional; use recorded checksums to select good
-bytes and report missing/damaged redundancy. Other duplicate basenames are
-rejected. Archive-file mtimes and enumeration order have no recovery significance.
+Readers discover files recursively in flat, nested, or mixed layouts. Group indexes
+have distinct primary and `-spare` basenames with identical bytes. Use recorded
+checksums to select good bytes and report missing/damaged redundancy. Every
+basename is unique, so the entire archive can be flattened without collisions.
+Duplicate basenames are rejected. Local PAR2 protects primary names; central
+PAR2 protects spare names, and recovery maps copies to the required names. Archive-file mtimes and enumeration order have no recovery significance.
 
 ## 9. Verify, repair, and restore
 

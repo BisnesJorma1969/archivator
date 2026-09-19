@@ -10,7 +10,7 @@ from itertools import chain
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, directory_batches, empty_destination, ensure_disjoint, public_entry
-from .format import Settings, chunk_name, metadata_prefix, new_id, parity_prefix
+from .format import Settings, chunk_name, metadata_prefix, new_id, parity_prefix, spare_metadata_name
 from .limits import ceil_div, check_files, input_limit, parity_plan, stored_bound
 from .metadata import MetadataWriter, json_bytes, store_metadata
 from .progress import progress
@@ -114,8 +114,8 @@ class ParityWriter:
             # Reserve a bounded hash map for this set and the previous set.
             receipt_size = 4096 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 300
             receipt_name = metadata_prefix(self.archive_id, self.parity_id) + "_checksums.json" + suffix
-            central = {self.source_name(): source_length,
-                       prefix + "_metadata_index-chunks.json" + suffix: manifest_length,
+            central = {spare_metadata_name(self.source_name()): source_length,
+                       spare_metadata_name(prefix + "_metadata_index-chunks.json" + suffix): manifest_length,
                        receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             for path in self.catalog.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"

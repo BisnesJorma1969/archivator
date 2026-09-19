@@ -81,7 +81,7 @@ their own metadata, compressed and PAR2-protected when enabled. Each TAR is exac
 one chunk; a whole RAW file may contain several. A file that cannot fit an empty
 group starts fresh and spans groups. Its final group may accept subsequent whole
 files/TARs. Groups accumulate actual stored chunk sizes, reserving metadata and
-parity. Each group has identical metadata copies under `metadata/`, with
+parity. Each group has byte-identical `-spare` metadata copies under `metadata/`, with
 separate PAR2 protection there when enabled. The public manifest,
 `metadata_index-chunks.json[.zst]`, describes stored chunks; the
 `metadata_index-files.jsonl[.zst][.cms]` inventory describes original RAW files and
@@ -110,9 +110,10 @@ from the other can copy its verified bytes. Scattered inputs are normalized by
 same-filesystem renames; an unavailable cross-filesystem rename is not silently
 replaced with a copy. Earlier repairs remain if a later group fails.
 
-Discovery supports flat, sharded, nested, and mixed layouts. Exactly two copies
-of group metadata are expected, selected using checksums; other duplicate
-basenames are rejected. Verify checks all discovered archive IDs by default.
+Discovery supports flat, sharded, nested, and mixed layouts. Each group index has a primary and a byte-identical
+`-spare` copy, named before `.json`/`.jsonl` and any transform suffixes. Every
+basename is unique even when flattened; duplicate basenames are rejected.
+Checksums select usable primary/spare bytes regardless of directory placement. Verify checks all discovered archive IDs by default.
 Repair, restore, and scan require `--archive-id` when several archives are present.
 Archive-file mtimes and directory order are irrelevant.
 

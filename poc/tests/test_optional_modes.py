@@ -119,7 +119,7 @@ class OptionalModeTests(ArchiveTest):
         settings = replace(SMALL, compression=False, par2=False)
         with self.optional_tools(False, False, False):
             backup(self.source, self.archive, settings=settings)
-            private = next(path for path in self.archive.rglob("*_index-files.jsonl")
+            private = next(path for path in self.archive.rglob("*_index-files-spare.jsonl")
                            if "metadata" in path.relative_to(self.archive).parts)
             original = private.read_bytes()
             private.write_bytes(b"broken")
@@ -138,7 +138,7 @@ class OptionalModeTests(ArchiveTest):
         with self.optional_tools(False, True, True):
             backup(self.source, self.archive, certificate, settings)
             next(self.archive.rglob("*.raw.cms")).unlink()
-            for path in self.archive.rglob("*_index-files.jsonl.cms"):
+            for path in self.archive.rglob("*_index-files*.jsonl.cms"):
                 path.unlink()
             self.assertEqual(verify(self.archive), 1)
             self.assertEqual(restore(self.archive, self.restored, key=key), 0)

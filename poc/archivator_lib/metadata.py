@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .common import ArchiveError, sha256, write_json
 from .external import decrypt, encrypt, executable, run, create_parity
-from .format import metadata_prefix
+from .format import metadata_prefix, spare_metadata_name
 from .limits import check_files, parity_plan
 
 UNCOMPRESSED_METADATA_SUFFIXES = (
@@ -107,6 +107,8 @@ class MetadataWriter:
             if path in self.extra:
                 role = "recipient.pem" if path.suffix == ".pem" else "format.txt"
                 name = prefix + "_" + role
+            else:
+                name = spare_metadata_name(name)
             target = destination / name
             # This is the requested second metadata copy, not PAR2 staging.
             shutil.copyfile(path, target)

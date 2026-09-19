@@ -3,6 +3,7 @@ import shutil
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import IntegrityError, read_json, sha256, write_json
 from poc.archivator_lib.compare import compare
+from poc.archivator_lib.format import spare_metadata_name
 from poc.archivator_lib.metadata import catalog_root_digest, catalog_root_names
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
@@ -22,9 +23,10 @@ class MetadataTests(ArchiveTest):
         local = [path for path in self.archive.rglob("*_metadata_index-files*.cms")
                  if "metadata" not in path.relative_to(self.archive).parts]
         for path in local:
-            copies = list(self.archive.rglob(path.name))
-            self.assertEqual(len(copies), 2)
-            self.assertEqual(copies[0].read_bytes(), copies[1].read_bytes())
+            spares = list(self.archive.rglob(spare_metadata_name(path.name)))
+            self.assertEqual(len(spares), 1)
+            self.assertNotEqual(path.name, spares[0].name)
+            self.assertEqual(path.read_bytes(), spares[0].read_bytes())
         self.assertFalse(list(self.archive.rglob("*.jsonl")))
         self.assertFalse(list(self.archive.rglob("*_metadata_index-files*.zst")))
 

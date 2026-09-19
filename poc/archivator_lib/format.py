@@ -80,11 +80,27 @@ def parity_prefix(archive, parity):
     return f"archive-{archive}_parity-{parity}"
 
 
+def group_metadata(name):
+    return bool(re.fullmatch(rf"archive-{ID}_parity-{ID}_metadata_index-"
+                             r"(?:chunks(?:-spare)?\.json(?:\.zst)?|"
+                             r"files(?:-spare)?\.jsonl(?:\.zst)?(?:\.cms)?)", name))
+
+
+def primary_metadata_name(name):
+    return name.replace("-spare.json", ".json", 1)
+
+
+def spare_metadata_name(name):
+    return primary_metadata_name(name).replace(".json", "-spare.json", 1)
+
+
 def stored_path(root, name):
     """Canonical destinations; discovery also accepts flat or mixed layouts."""
     root = Path(root)
     match = re.match(rf"archive-{ID}_parity-({ID})(?:_|\.)", name)
     if match:
+        if group_metadata(name) and name != primary_metadata_name(name):
+            return root / "metadata" / match[1][:2] / name
         return root / match[1][:2] / name
     match = re.match(rf"archive-{ID}_metadata_parity-({ID})(?:_|\.)", name)
     if match:
