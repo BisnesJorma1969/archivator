@@ -11,7 +11,7 @@ The minimum for manual data recovery should be the intact backup data files,
 retaining their chunk filenames, and the private decryption key when encrypted.
 Everything else should use standard formats and tooling wherever possible.
 Metadata may still be needed to recover original paths for standalone direct-file
-streams and to verify that a backup is complete.
+datasets and to verify that a backup is complete.
 
 Run the PoC commands below from the repository root on **Ubuntu 26.04**, using Bash.
 
@@ -31,7 +31,7 @@ sudo apt install -y python3 zstd openssl par2 coreutils tar
 | `openssl` | OpenSSL 3.x with CMS AES-GCM, for encryption and encrypted tests |
 | `par2` | par2cmdline with `-t` and `-T` thread controls, for recovery |
 | `coreutils` | GNU `dd` and `sha256sum`, used by independent recovery tests and manual recovery |
-| `tar` | Listing and extracting reconstructed TAR streams during manual recovery |
+| `tar` | Listing and extracting reconstructed TAR datasets during manual recovery |
 
 `par2` is in Ubuntu's Universe repository. Run the install commands once before
 following any of the guides below. For the CLI alone, Python is mandatory;
@@ -106,11 +106,22 @@ Defaults: **268435455 bytes per stored file** and **15032385536 bytes per datagr
 including metadata and PAR2. Override with `--max-file-bytes` and
 `--max-datagroup-bytes`, using exact bytes. No filesystem/media overhead is guessed.
 A **datagroup** is one bounded data/metadata/PAR2 media unit. A **supergroup** contains
-up to **5 datagroups**, with separate PAR2 sized for **110% of the largest protected
-datagroup**, at least 20% overall. This protects against losing a whole datagroup plus
-some additional damage. `--supergroup-datagroups` and `--supergroup-margin-percent`
-are configurable; `--no-supergroup-par2` keeps only datagroup/metadata protection.
-`--no-par2` disables every PAR2 layer. See [protection rules](POC.md#supergroup-protection-and-bounded-work).
+up to **5 datagroups**. Local PAR2 defaults to **0 whole-file losses + 2% bitrot**;
+outer PAR2 to **1 whole-datagroup loss + 2% bitrot**. The four loss settings are
+independent; see the [command reference](poc/README.md#commands). Percentages reserve
+recovery-slice capacity, not arbitrary scattered changed bytes. Local 2% alone
+need not recover an entire file. `--no-supergroup-par2` disables only outer parity;
+`--no-par2` disables every layer. A large RAW dataset may span supergroups.
+
+Each datagroup also has a small JSON closing summary with counts and sizes in its
+filename. For a quick listing-only check, without reading archive contents:
+
+```bash
+./poc/archivator quick-check poc/work/demo/archive1
+```
+
+This does not check hashes or prove whole-backup completeness: same-size corruption
+or an entirely missing datagroup can escape it. Use `verify` for content checks.
 
 Placement defaults to one active datagroup plus four waiting datagroups and a 95%
 close-on-miss threshold; see the [queue options](poc/README.md#commands).
@@ -130,7 +141,7 @@ the actual percentage. See [damage options](poc/demo/README.md#bitrot-options).
 The damager accepts arbitrary files and already-damaged archives without validating
 their format or metadata.
 
-You can also manually delete any chosen data chunks (`*_chunk-*.zst` or `.zst.cms`) and
+You can also manually delete any chosen data chunks (`*_dataset-*.zst` or `.zst.cms`) and
 `.par2` files before verifying. There is no fixed safe file count: **each recovery
 set needs at least as many surviving valid PAR2 recovery blocks as missing or
 damaged data blocks**. Deleting PAR2 files reduces that capacity. You can also
@@ -185,9 +196,9 @@ needs the private key:
 ./poc/archivator verify poc/work/demo/archive1
 ```
 
-Without central metadata, surviving datagroups can still restore their complete streams.
+Without central metadata, surviving datagroups can still restore their complete datasets.
 If local metadata is also lost, use [filename-only scan and recovery](poc/README.md#filename-only-recovery).
-It can recover surviving streams without rebuilding the original metadata first.
+It can recover surviving datasets without rebuilding the original metadata first.
 
 ## Automated tests
 

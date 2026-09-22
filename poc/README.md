@@ -7,11 +7,12 @@ backup/damage/restore walkthrough. Python uses only the standard library.
 
 | Command | Purpose |
 | --- | --- |
-| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem | --no-encryption] [--[no-]compression] [--[no-]par2] [--max-file-bytes BYTES] [--max-datagroup-bytes BYTES] [--large-file-bytes BYTES] [--waiting-datagroups COUNT] [--datagroup-close-percent PERCENT] [--[no-]supergroup-par2] [--supergroup-datagroups COUNT] [--supergroup-margin-percent PERCENT]` | Create a backup in an absent/empty directory |
+| `backup SOURCE ARCHIVE [--encrypt-cert CERT.pem | --no-encryption] [--[no-]compression] [--[no-]par2] [--max-file-bytes BYTES] [--max-datagroup-bytes BYTES] [--large-file-bytes BYTES] [--waiting-datagroups COUNT] [--datagroup-close-percent PERCENT] [--[no-]supergroup-par2] [--supergroup-datagroups COUNT] [--datagroup-loss-files COUNT] [--datagroup-bitrot-percent PERCENT] [--supergroup-loss-datagroups COUNT] [--supergroup-bitrot-percent PERCENT]` | Create a backup in an absent/empty directory |
 | `verify ARCHIVE [--archive-id ID]` | Check stored bytes and PAR2 capacity without changing the archive |
 | `repair ARCHIVE [--archive-id ID]` | Repair archive files in place, without a private key |
 | `restore ARCHIVE TARGET [--archive-id ID] [--decrypt-key KEY.pem] [--decrypt-cert CERT.pem] [--scan-index INDEX.json[.zst]]` | Restore into an absent/empty directory; archive remains unchanged |
 | `scan ARCHIVE INDEX.json[.zst] [--archive-id ID]` | Build a filename-only recovery index |
+| `quick-check ARCHIVE [--archive-id ID]` | Compare datagroup counts/sizes with closing-summary filenames; no content reads |
 | `compare SOURCE TARGET` | Compare paths, types, contents, and supported filesystem metadata |
 
 Compression, encryption, and PAR2 are independent:
@@ -49,13 +50,26 @@ zero padding. Full [placement rules](../POC.md#6-datagroup-sizing-and-parity) in
 metadata/PAR2 reservations and bounded on-disk buffering of the current RAW file.
 
 `--supergroup-datagroups` defaults to **5**. Active and waiting datagroups stay inside
-that one supergroup; all close before moving to the next. `--supergroup-margin-percent`
-defaults to **110**, expressing recovery blocks relative to the largest protected
-datagroup; a 20%-of-total floor and one-extra-block minimum also apply.
-`--no-supergroup-par2` disables only cross-datagroup protection. `--no-par2` disables
-all PAR2, including bootstrap protection. Supergroup recovery volumes occupy
-numbered parity-media directories, each within `--max-datagroup-bytes`.
-See [two-layer protection](../POC.md#supergroup-protection-and-bounded-work).
+that one supergroup; all close before moving to the next. A RAW dataset can span
+supergroups; it keeps the same ID and offsets. No queue of open supergroups exists.
+
+| Loss setting | Default |
+| --- | ---: |
+| `--datagroup-loss-files` | 0 |
+| `--datagroup-bitrot-percent` | 2 |
+| `--supergroup-loss-datagroups` | 1 |
+| `--supergroup-bitrot-percent` | 2 |
+
+Whole-loss counts cover the largest protected members/groups. Bitrot adds the
+chosen percentage of all protected stored bytes, rounded to recovery slices.
+Local defaults do **not** guarantee a whole-file loss; outer defaults cover one
+datagroup plus the additional slice budget. Counts may be zero; percentages accept
+0–100. Both zero disables that level. Central metadata uses the local settings;
+bootstrap retains its separate full-input-loss protection. `--no-supergroup-par2`
+disables only cross-datagroup protection; `--no-par2` disables everything.
+Slice size is dynamic, with a soft target of about 2048 source blocks and hard
+PAR2/file/media limits. Recovery volumes occupy bounded numbered parity-media
+directories. See [protection rules](../POC.md#6-datagroup-sizing-and-parity).
 
 Payload names end in `.tar[.zst][.cms]` or `.raw[.zst][.cms]`; source-name metadata
 uses `.jsonl[.zst][.cms]`. Only RAW filenames have offsets; both have plaintext lengths.
@@ -73,14 +87,19 @@ diagnosis, so error logs may contain sensitive paths.
 
 ### Exit codes
 
-- `0`: success, intact archive, or identical trees.
+- `0`: success, intact archive, or identical trees; for `quick-check`, matching observed counts/sizes only.
 - `1`: integrity/comparison failure, or restore with an incomplete/unproven catalog.
 - `2`: usage or operational failure.
+
+`quick-check` reads no file contents. It can miss same-size corruption and an
+entirely missing datagroup with no surviving references. It does not replace
+`verify` or prove whole-backup completeness. Closing summaries contain no source
+names and are optional for data restore.
 
 Verify returns 1 for **any** damage, including repairable corruption, missing
 metadata copies, or lost parity. Its report distinguishes repairable and
 unrecoverable data. It does not prove that a private key works. Restore also
-checks plaintext lengths/hashes, complete stream hashes when available, and TAR
+checks plaintext lengths/hashes, complete dataset hashes when available, and TAR
 member checksums.
 
 ## Recovery behavior
@@ -92,21 +111,21 @@ datagroup starts fresh and spans datagroups. Its final datagroup may accept subs
 files/TARs. Datagroups accumulate actual stored chunk sizes, reserving metadata and
 parity. Each datagroup has byte-identical `-spare` metadata copies under `metadata/`, with
 separate PAR2 protection there when enabled. The public manifest,
-`metadata_index-chunks.json[.zst]`, describes stored chunks; the
+`metadata_index-datafiles.json[.zst]`, describes stored chunks; the
 `metadata_index-files.jsonl[.zst][.cms]` inventory describes original RAW files and
 TAR members and is encrypted when encryption is enabled.
-The word **stream** means a TAR's bytes or a direct file's bytes, not a datagroup.
+The word **dataset** means a TAR's bytes or a direct file's bytes, not a datagroup.
 
 Normal restore uses the complete, protected central catalog. With the central
 catalog/markers absent, normal restore can also use standalone local datagroups.
-It restores complete streams, skips detected gaps, and returns 1 because it cannot
+It restores complete datasets, skips detected gaps, and returns 1 because it cannot
 prove the original backup is complete. A large file's fragment is independently
 repairable, not a complete file. No zero-filled holes or fabricated completion
 markers are produced.
 
 If datagroup PAR2 cannot repair a datagroup, restore tries its supergroup after fixing
-locally recoverable damage in the other datagroups. If that also fails, restore still recovers complete streams from
-its individually verified surviving chunks. Missing/damaged streams are skipped,
+locally recoverable damage in the other datagroups. If that also fails, restore still recovers complete datasets from
+its individually verified surviving chunks. Missing/damaged datasets are skipped,
 and restore returns 1. Losing one TAR does not discard the datagroup's other TARs.
 
 Verify/restore can recover metadata in private scratch. Healthy inputs are
@@ -155,26 +174,26 @@ The index selects its archive ID; optional `--archive-id` must agree.
 Restore tries available datagroup/supergroup PAR2 in scratch, including recovery of filenames missing
 when scanned. It checks declared plaintext lengths and any zstd frames or CMS tags present.
 Plain chunks without PAR2 have no content integrity check in filename-only recovery.
-Streams with detected gaps, overlaps, unreadable chunks, or malformed declared
-TARs are skipped entirely. Other streams continue.
+Datasets with detected gaps, overlaps, unreadable chunks, or malformed declared
+TARs are skipped entirely. Other datasets continue.
 
 | Output | Meaning |
 | --- | --- |
-| `stream-<id>.raw` | Reconstructed RAW file bytes; original direct-file name unknown |
-| `stream-<id>.tar` | Complete TAR bytes, identified by the payload filename |
-| `stream-<id>/` | Safely extracted view of that TAR |
+| `dataset-<id>.raw` | Reconstructed RAW file bytes; original direct-file name unknown |
+| `dataset-<id>.tar` | Complete TAR bytes, identified by the payload filename |
+| `dataset-<id>/` | Safely extracted view of that TAR |
 
-RAW streams are not automatically extracted even if their contents are a TAR.
-Without authoritative source metadata, missing RAW tail chunks or entire streams may
+RAW datasets are not automatically extracted even if their contents are a TAR.
+Without authoritative source metadata, missing RAW tail chunks or entire datasets may
 be undetectable. Exit 0 means no **detected** gaps/decoding failures, not proof of
-original completeness. Exit 1 means skipped streams, unresolved PAR2 sets, or no
-recoverable stream. Extraction rejects unsafe paths, duplicates, special files,
+original completeness. Exit 1 means skipped datasets, unresolved PAR2 sets, or no
+recoverable dataset. Extraction rejects unsafe paths, duplicates, special files,
 and hardlinks and uses Python's explicit `data` filter.
 
 ## Filesystem conventions
 
 Directories, regular files, symlinks, and empty files are supported. Source
-hardlinks become independent files. Ownership, ACLs, xattrs, alternate streams,
+hardlinks become independent files. Ownership, ACLs, xattrs, alternate data streams,
 and snapshots are outside this PoC. Modes and nanosecond mtimes use ordinary OS
 APIs; unsupported symlink metadata or timestamp precision is reported. Directory
 attributes are applied last, deepest-first. Compare requires exact POSIX modes
@@ -186,7 +205,7 @@ rejected. Paths may be under `poc/work/`, but must not contain `poc/work/` itsel
 
 ## Code and tests
 
-- `backup.py`, `filesystem.py`: directory-local selection, TAR/direct streams, and publication.
+- `backup.py`, `filesystem.py`: directory-local selection, TAR/direct datasets, and publication.
 - `limits.py`, `format.py`: byte budgets, PAR2 sizing, filenames and settings.
 - `external.py`: zstd, CMS and PAR2 subprocesses.
 - `supergroups.py`, `bootstrap.py`: bounded cross-datagroup recovery and catalog-root PAR2.

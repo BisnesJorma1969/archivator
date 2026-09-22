@@ -5,7 +5,7 @@ commands live only in the [root README](../README.md).
 
 ## Names and layout
 
-`aid`, `sgid`, `gid`, and `sid` are archive, supergroup, datagroup, and stream IDs:
+`aid`, `sgid`, `gid`, and `sid` are archive, supergroup, datagroup, and dataset IDs:
 independent random 96-bit values expressed as 20 lowercase base32 characters (`a-z`, `2-7`, no `=` padding). They are
 identifiers, not hashes. Central metadata protection reuses its datagroup's ID.
 
@@ -13,11 +13,11 @@ A **datagroup** is one bounded media unit of chunks, metadata and datagroup PAR2
 **supergroup** contains up to five datagroups by default, with its own separate PAR2
 protecting their data and metadata but not their datagroup/central PAR2 files.
 
-A **stream** is either an ordinary POSIX/PAX TAR or one original file's raw bytes.
+A **dataset** is either an ordinary POSIX/PAX TAR or one original file's raw bytes.
 One TAR is one complete chunk. Multiple whole TARs and whole RAW files can share
 a datagroup, including RAW files with several chunks. A RAW file spans datagroups only
 when it cannot fit an empty one; it starts in a fresh datagroup. Intermediate datagroups
-contain only that file, while its final datagroup can accept subsequent whole streams.
+contain only that file, while its final datagroup can accept subsequent whole datasets.
 A TAR contains at least two regular files; a singleton is RAW.
 Directories/symlinks alone need only inventory records, not payload chunks.
 
@@ -41,13 +41,14 @@ For compactness in this table, `G` means
 
 | Filename | Role |
 | --- | --- |
-| `G_chunk-<n>_stream-<sid>_length-<length>.tar[.zst][.cms]` | One complete TAR |
-| `G_chunk-<n>_stream-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Whole original file bytes or one fragment |
-| `G_metadata_index-chunks.json[.zst]` | Public chunk coordinates, settings, stored/plaintext hashes |
+| `G_dataset-<sid>_length-<length>.tar[.zst][.cms]` | One complete TAR |
+| `G_dataset-<sid>_offset-<offset>_length-<length>.raw[.zst][.cms]` | Whole original file bytes or one fragment |
+| `G_metadata_index-datafiles.json[.zst]` | Public chunk coordinates, settings, stored/plaintext hashes |
 | `G_metadata_index-files.jsonl[.zst][.cms]` | Private source names/attributes for RAW and TAR |
-| `G_metadata_index-chunks-spare.json[.zst]` | Identical central chunk-index copy |
+| `G_metadata_index-datafiles-spare.json[.zst]` | Identical central chunk-index copy |
 | `G_metadata_index-files-spare.jsonl[.zst][.cms]` | Identical central source-index copy |
 | `G.par2`, `G.vol<start>+<count>.par2` | Datagroup PAR2 over chunks and primary metadata |
+| `G_sealed_data-<n>-<bytes>_metadata-<n>-<bytes>_parity-<n>-<bytes>.json` | Uncompressed closing summary; same counters in filename and JSON |
 | `M_checksums.json[.zst]` | Central receipt, datagroup-PAR2 hashes and preceding central link |
 | `M.par2`, `M.vol<start>+<count>.par2` | PAR2 over central metadata copies and receipt |
 | `archive-<aid>_metadata_format.txt`, `archive-<aid>_metadata_recipient.pem` | Uncompressed root-level format note and optional public certificate; bootstrap-PAR2 protected |
@@ -57,21 +58,20 @@ For compactness in this table, `G` means
 | `archive-<aid>_metadata_catalog-root.json`, `..._metadata_catalog-root-spare.json` | Identical uncompressed checksum roots |
 | `archive-<aid>_metadata_catalog-root.par2`, `..._metadata_catalog-root.vol<start>+<count>.par2` | Independent protection for both roots, format note and optional certificate; all input blocks plus one dynamically sized slice |
 
-**Inventories are metadata, not compressed file content.** Stream IDs inside
+**Inventories are metadata, not compressed file content.** Dataset IDs inside
 the inventory match the payload chunk names. TAR entries list members; RAW entries
 identify the original file and ancestors. Every data
 datagroup has its own manifest and inventory, including datagroups carrying different
-pieces of one large direct stream. The `stream` term is used consistently for
+pieces of one large direct dataset. The `dataset` term is used consistently for
 both types.
 
-`index-chunks` is the public technical index of stored chunks. `index-files`
+`index-datafiles` is the public technical index of stored chunks. `index-files`
 describes original paths and attributes for both RAW files and TAR members, so
 it is encrypted whenever the payload is encrypted. These are datagroup-level roles,
 not separate indexes for RAW and TAR content.
 
 Generated names contain lowercase ASCII letters, digits, `_`, `-`, `.`, and
-PAR2's `+`. Chunk numbers restart at zero per datagroup and are padded to at least
-four decimal digits, with no four-digit maximum. Offsets use twenty digits and
+PAR2's `+`. There is no per-datagroup payload ordinal. Offsets use twenty digits and
 lengths twelve; both refer to **uncompressed plaintext**, never ciphertext.
 Offsets occur only in RAW names. TAR length includes headers, member padding,
 end markers and final record padding. Internally its chunk offset is always zero.
@@ -104,18 +104,18 @@ compression setting; only source-name inventories are encrypted.
 
 The public manifest contains `version`, `archive`, `supergroup`, `datagroup`, `compression`,
 `encryption`, `settings`, `par2`, `members`, `source_metadata`, and `source_sha256`.
-Each chunk member records `filename`, `chunk`, `stream`, `kind` (`tar` or `raw`), `offset`, `length`,
+Each chunk member records `filename`, `dataset`, `kind` (`tar` or `raw`), `offset`, `length`,
 `stored_length`, `stored_sha256`, `plaintext_sha256`, and `plaintext_sha512`.
 It contains no original source names. `compression` is `zstd` or `none`;
 `settings.compression` and `settings.par2` are booleans.
 
-The inventory is JSONL: first `{"streams": [...]}`, followed by
-`{"stream": "<id>", "entry": {...}}` records. Stream type is `file` or `tar`;
-entries outside a byte stream use a null stream ID, and metadata-only datagroups
-have an empty streams list. Original entries
+The inventory is JSONL: first `{"datasets": [...]}`, followed by
+`{"dataset": "<id>", "entry": {...}}` records. Dataset type is `file` or `tar`;
+entries outside a byte dataset use a null dataset ID, and metadata-only datagroups
+have an empty datasets list. Original entries
 include `path`, `type`, `mode`, `mtime_ns`, and, where applicable, `size` or
 `symlink_target`. File checksums are CRC32, MD5, SHA-1, SHA-256, SHA-512. TAR hashes
-are calculated while writing members. A direct stream's final datagroup records its
+are calculated while writing members. A direct dataset's final datagroup records its
 whole-file hashes, unknown when earlier datagroups are written. Each datagroup repeats
 required ancestor-directory information, including root `.`.
 
@@ -125,8 +125,19 @@ are integrity checks; the older digests are lookup aids.
 
 When PAR2 is enabled, local stored metadata is finished **before datagroup PAR2**, so the same recovery set
 can recreate a missing manifest/inventory. Make its identical central copies,
-then write the central receipt with the finished datagroup-PAR2 hashes. Central PAR2
+write the closing summary from actual data/index/PAR2 counts and sizes, then
+write the central receipt with the summary name/size/hash and finished PAR2 hashes. Central PAR2
 protects that receipt and the copies. No manifest hashes its own PAR2.
+
+Closing-summary JSON has `version: 1`, `archive`, `supergroup`, `datagroup`, and
+`data`, `metadata`, `parity` objects, each with `files` and `bytes`. It excludes
+itself, central metadata and outer parity from the counters. There is no timestamp.
+Canonical encoding is ASCII-escaped JSON, sorted keys, compact separators and a
+trailing newline; the filename is sufficient to reconstruct it. It is protected
+by the central receipt hash and outer PAR2, not local PAR2 (which it describes).
+No extra spare summary is stored. Its bytes count toward datagroup/file ceilings.
+A receipt's `seal` field is `{filename, size, sha256}`. The summary is not required
+for payload restore; `quick-check` uses its filename and stat sizes only.
 
 Each receipt includes its own `par2` geometry and links backward to the preceding central receipt's SHA-256 and PAR2
 hashes. Catalog-root markers hold the last central and supergroup links, counts,
@@ -152,9 +163,9 @@ hashes without a circular dependency. Supergroup indexes and catalog roots
 provide separate, bounded recovery entry points. These roles remain ordinary
 JSON/JSONL, zstd, CMS, TXT and PEM rather than a custom container.
 
-With both PAR2 levels enabled, each datagroup has five JSON/JSONL files (two
-primary indexes, two spares and a receipt), plus two PAR2 sets. At least one index
-and one recovery volume per set means **at least nine auxiliary files per
+With both PAR2 levels enabled, each datagroup has six JSON/JSONL files (two
+primary indexes, two spares, a receipt and a closing summary), plus two PAR2 sets. At least one index
+and one recovery volume per set means **at least ten auxiliary files per
 datagroup**. Each supergroup adds two indexes and its PAR2 set (at least four
 files). Bootstrap adds two roots, format text, an optional public certificate
 and its PAR2 set (at least five files, or six when encrypted). Larger parity sets
@@ -182,22 +193,21 @@ queue, defaulting to four waiting datagroups and a 95% close-on-miss threshold.
 See the [queue rules](../POC.md#6-datagroup-sizing-and-parity). These are writer policies,
 not a required restore order. No artificial chunk/datagroup padding is used.
 
-All PAR2 sets choose their slice size dynamically: try 4 KiB, 8 KiB, 16 KiB,
-and so on until source/recovery counts (each at most 32768), file limits, and
-applicable media budgets fit. Count each protected file's partial final block
-separately. Datagroup and central recovery is the maximum of 20% of source blocks,
-125% of the largest member's blocks, and one block more than that member.
-Short/final sets may have much more than 20% parity; nominal maximum capacity
-never sets the recovery amount. Packet headers and repeated critical metadata
-consume space as well.
+All PAR2 sets choose power-of-two slices dynamically, at least 4 KiB, targeting
+roughly 2048 source blocks for practical computation. File/media limits and the
+32768 source/recovery-block ceilings remain hard constraints. Per-file partial
+blocks count separately. Local defaults cover **0 whole files + 2% bitrot**;
+outer defaults cover **1 largest datagroup + 2% bitrot**. The percentage is of all
+protected stored bytes at that level and is rounded up to slices. Whole-loss
+counts and bitrot percentages are independently configurable, including zero.
+Central metadata uses local settings; bootstrap protects all inputs plus one slice.
+Headers and repeated PAR2 metadata add overhead beyond the recovery payload.
 
-Supergroup recovery is at least 110% of the largest datagroup's source-block count,
-at least 20% of the total, and at least one block beyond the largest datagroup.
-Its index and all open/waiting datagroups are included in admission reservations.
-If no legal geometry fits, close the datagroup or supergroup early. Configured
-capacities/counts are ceilings, not mandatory fill levels. Never lower redundancy
-to fit. Recovery files are packed into numbered, byte-bounded media directories.
-Bootstrap PAR2 protects every input block plus one, using the same dynamic planner.
+The outer index and all open/waiting datagroups are included in admission
+reservations. If no legal geometry fits, close the datagroup or supergroup early;
+never lower redundancy to fit. Recovery files occupy bounded media directories.
+A RAW dataset can cross supergroups without changing ID or offsets. Only one
+supergroup is open; repair independence does not imply file-restore independence.
 
 Each set's existing technical metadata stores `par2: {slice_size, blocks, volumes}`
 (or `null` when disabled). These are the actual generation parameters; retain them
@@ -237,8 +247,8 @@ par2 repair "$base.par2"
 ```
 
 If the index is absent, give `par2` a surviving `.vol...par2` instead. Repeat for
-other datagroups needed by the desired direct-file stream. A TAR needs only its own
-datagroup. Public manifests can be inspected with `zstd -dc "$base"_metadata_index-chunks.json.zst`.
+other datagroups needed by the desired direct-file dataset. A TAR needs only its own
+datagroup. Public manifests can be inspected with `zstd -dc "$base"_metadata_index-datafiles.json.zst`.
 Without compression, read the `.json` manifest directly.
 Check stored SHA-256 values before decoding payload.
 
@@ -271,7 +281,7 @@ recovers the format text and public certificate; it contains no private key.
 Unencrypted inventory: `zstd -dc ACTUAL_INVENTORY.jsonl.zst`.
 For encrypted inventory, use the same CMS decryption below as for a chunk, then
 `zstd -dc` the authenticated result. It reveals original paths/attributes and,
-for TAR streams, their complete member inventory. A private key suffices; the
+for TAR datasets, their complete member inventory. A private key suffices; the
 public recipient certificate is optional for decryption. Without compression,
 read the `.jsonl` file or authenticated decrypted bytes directly.
 
@@ -312,21 +322,21 @@ For a `.raw[.zst][.cms]` chunk, the filename supplies its original file position
 offset_field=${chunk#*_offset-}
 offset_field=${offset_field%%_length-*}
 offset=$((10#$offset_field))
-dd if=chunk.plain of=reconstructed-stream bs=1M \
+dd if=chunk.plain of=reconstructed-dataset bs=1M \
   oflag=seek_bytes seek="$offset" conv=notrunc status=none
 ```
 
-Start with an absent `reconstructed-stream`; repeat for every chunk of the same
-RAW stream, using its numeric offset, never directory order. Check final size and
-whole-stream SHA-256 from the source metadata when available. The result is the
-original file, with no TAR wrapper. A singleton RAW stream needs only its one chunk.
+Start with an absent `reconstructed-dataset`; repeat for every chunk of the same
+RAW dataset, using its numeric offset, never directory order. Check final size and
+whole-dataset SHA-256 from the source metadata when available. The result is the
+original file, with no TAR wrapper. A singleton RAW dataset needs only its one chunk.
 
 Restore direct-file attributes from its inventory. Missing fragments of a large
-file cannot be recovered merely by possessing another datagroup from that stream.
+file cannot be recovered merely by possessing another datagroup from that dataset.
 If all metadata is unavailable, intact chunks (plus decryption key) still yield
 payload bytes; original direct-file names and definitive completeness may be
 unknown. [Filename-only scan](README.md#filename-only-recovery) automates this
-fallback, skipping detected incomplete streams instead of inventing holes.
+fallback, skipping detected incomplete datasets instead of inventing holes.
 
 Cloud-native checksum encodings/composition and fixed 8 MiB upload-block digests
 remain [mandatory production work](../POC.md#12-mandatory-checksum-requirements-for-a-real-implementation).
