@@ -1,13 +1,14 @@
 import io
 import json
 import tarfile
+from dataclasses import replace
 from unittest.mock import patch
 
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.cli import main
 from poc.archivator_lib.common import IntegrityError
 from poc.archivator_lib.external import ZstdWriter
-from poc.archivator_lib.format import chunk_name, parse_chunk
+from poc.archivator_lib.format import datafile_name, parse_datafile
 from poc.archivator_lib.limits import input_limit
 from poc.archivator_lib.restore import restore
 from poc.archivator_lib.scan import scan
@@ -17,7 +18,7 @@ from poc.tests.test_recovery import snapshot
 
 class ScanTests(ArchiveTest):
     def write_chunk(self, data, offset=0, kind="raw"):
-        name = chunk_name("a" * 20, "b" * 20, 0, "c" * 20, offset, len(data), False, kind, supergroup="d" * 20)
+        name = datafile_name("a" * 20, "b" * 20, "c" * 20, offset, len(data), False, kind, supergroup="d" * 20)
         self.archive.mkdir(exist_ok=True)
         writer = ZstdWriter(self.archive / name)
         writer.write(data)
@@ -26,7 +27,7 @@ class ScanTests(ArchiveTest):
 
     def remove_metadata(self, archive):
         for path in archive.rglob("archive-*"):
-            if "_metadata_" in path.name or "_metadata." in path.name or path.name.endswith("_metadata_index-chunks.json.zst"):
+            if "_metadata_" in path.name or "_metadata." in path.name or path.name.endswith("_metadata_index-datafiles.json.zst"):
                 path.unlink()
 
     def test_scan_reads_names_not_payload_or_metadata_contents(self):
@@ -56,9 +57,9 @@ class ScanTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"target-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                streams = catalog(archive, key if encrypted else None)
-                direct = next(item for item in streams if item["type"] == "file")
-                bundle = next(item for item in streams if item["type"] == "tar")
+                datasets = catalog(archive, key if encrypted else None)
+                direct = next(item for item in datasets if item["type"] == "file")
+                bundle = next(item for item in datasets if item["type"] == "tar")
                 self.remove_metadata(archive)
                 nested = archive / "nested" / "different"
                 nested.mkdir(parents=True)
@@ -71,20 +72,20 @@ class ScanTests(ArchiveTest):
                 before = snapshot(archive)
                 scan(archive, index)
                 self.assertEqual(restore(archive, target, key=key if encrypted else None, scan_index=index), 0)
-                self.assertEqual((target / f"stream-{direct['stream']}.raw").read_bytes(), content)
-                self.assertEqual((target / f"stream-{bundle['stream']}" / "document.txt").read_text(),
+                self.assertEqual((target / f"dataset-{direct['dataset']}.raw").read_bytes(), content)
+                self.assertEqual((target / f"dataset-{bundle['dataset']}" / "document.txt").read_text(),
                                  "recover this document")
-                self.assertTrue((target / f"stream-{bundle['stream']}.tar").is_file())
+                self.assertTrue((target / f"dataset-{bundle['dataset']}.tar").is_file())
                 self.assertEqual(snapshot(archive), before)
 
-    def test_unrecoverable_gap_skips_entire_stream_but_restores_other_streams(self):
+    def test_unrecoverable_gap_skips_entire_dataset_but_restores_other_datasets(self):
         (self.source / "small.txt").write_text("surviving file")
         (self.source / "second.txt").write_text("TAR companion")
         (self.source / "large").write_bytes(self.data(200000))
         backup(self.source, self.archive, settings=SMALL)
-        chunks = list(self.archive.rglob("*_chunk-*.zst"))
-        missing = next(path for path in chunks if parse_chunk(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
-        skipped_id = parse_chunk(missing.name)["stream"]
+        chunks = list(self.archive.rglob("*_dataset-*.zst"))
+        missing = next(path for path in chunks if parse_datafile(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
+        skipped_id = parse_datafile(missing.name)["dataset"]
         missing.unlink()
         self.remove_metadata(self.archive)
         for path in self.archive.rglob("*.par2"):
@@ -92,40 +93,38 @@ class ScanTests(ArchiveTest):
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 1)
-        self.assertFalse(list(self.restored.glob(f"stream-{skipped_id}*")))
+        self.assertFalse(list(self.restored.glob(f"dataset-{skipped_id}*")))
         self.assertEqual(next(self.restored.rglob("small.txt")).read_text(), "surviving file")
 
     def test_par2_recovers_a_chunk_missing_before_scan(self):
         (self.source / "large").write_bytes(self.data(80000))
         backup(self.source, self.archive, settings=SMALL)
-        missing = next(path for path in self.archive.rglob("*_chunk-*.zst")
-                       if parse_chunk(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
-        stream = parse_chunk(missing.name)["stream"]
+        missing = next(path for path in self.archive.rglob("*_dataset-*.zst")
+                       if parse_datafile(path.name)["offset"] == input_limit(SMALL.max_file_bytes))
+        dataset = parse_datafile(missing.name)["dataset"]
         missing.unlink()
         self.remove_metadata(self.archive)
         index = self.root / "scan.json.zst"
         before = snapshot(self.archive)
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 0)
-        self.assertEqual((self.restored / f"stream-{stream}.raw").read_bytes(), (self.source / "large").read_bytes())
+        self.assertEqual((self.restored / f"dataset-{dataset}.raw").read_bytes(), (self.source / "large").read_bytes())
         self.assertEqual(snapshot(self.archive), before)
 
-    def test_surviving_parity_can_recover_all_missing_chunk_names(self):
-        # Five payload blocks plus two metadata blocks fit the seven recovery
-        # blocks required by the largest-member margin. Erasing every input
-        # is only recoverable when the surviving parity covers their full sum.
+    def test_surviving_parity_can_recover_all_missing_datafile_names(self):
+        # Explicitly cover all three protected files: payload and both indexes.
         content = self.data(20000)
         (self.source / "document.txt").write_bytes(content)
-        backup(self.source, self.archive, settings=SMALL)
+        backup(self.source, self.archive, settings=replace(SMALL, datagroup_loss_files=3))
         self.remove_metadata(self.archive)
-        for path in self.archive.rglob("*_chunk-*.zst"):
+        for path in self.archive.rglob("*_dataset-*.zst"):
             path.unlink()
         index = self.root / "scan.json.zst"
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, scan_index=index), 0)
         self.assertEqual(next(self.restored.glob("*.raw")).read_bytes(), content)
 
-    def test_missing_after_scan_and_bad_encryption_key_never_publish_partial_streams(self):
+    def test_missing_after_scan_and_bad_encryption_key_never_publish_partial_datasets(self):
         (self.source / "large").write_bytes(self.data(80000))
         key, certificate = self.certificate()
         wrong_key, _ = self.certificate("wrong")
@@ -137,13 +136,13 @@ class ScanTests(ArchiveTest):
         scan(self.archive, index)
         self.assertEqual(restore(self.archive, self.restored, key=wrong_key, scan_index=index), 1)
         self.assertEqual(list(self.restored.iterdir()), [])
-        chunks = sorted(self.archive.rglob("*_chunk-*.cms"), key=lambda path: parse_chunk(path.name)["offset"])
+        chunks = sorted(self.archive.rglob("*_dataset-*.cms"), key=lambda path: parse_datafile(path.name)["offset"])
         missing = chunks[-1]
-        stream = parse_chunk(missing.name)["stream"]
+        dataset = parse_datafile(missing.name)["dataset"]
         missing.unlink()
         target = self.root / "missing-tail"
         self.assertEqual(restore(self.archive, target, key=key, scan_index=index), 1)
-        self.assertFalse(list(target.glob(f"stream-{stream}*")))
+        self.assertFalse(list(target.glob(f"dataset-{dataset}*")))
 
     def test_unsafe_tar_is_skipped_without_writing_outside_target(self):
         contents = io.BytesIO()
@@ -169,7 +168,7 @@ class ScanTests(ArchiveTest):
             restore(self.archive, self.restored, scan_index=index)
         self.assertFalse(self.restored.exists())
 
-    def test_overlapping_chunks_skip_stream(self):
+    def test_overlapping_chunks_skip_dataset(self):
         self.write_chunk(b"first chunk")
         self.write_chunk(b"overlap", offset=1)
         index = self.root / "scan.json.zst"

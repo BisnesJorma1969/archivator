@@ -5,7 +5,7 @@ from unittest.mock import patch
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError, sha256
 from poc.archivator_lib.external import create_parity, decrypt, executable
-from poc.archivator_lib.format import parse_chunk
+from poc.archivator_lib.format import parse_datafile
 from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
 
 
@@ -34,13 +34,13 @@ class BackupTests(ArchiveTest):
         contents = self.data(500000)
         (self.source / "large").write_bytes(contents)
         backup(self.source, self.archive, settings=SMALL)
-        direct = next(stream for stream in catalog(self.archive) if stream["type"] == "file")
-        chunks = sorted(self.archive.rglob(f"*_stream-{direct['stream']}_*.zst"),
-                        key=lambda path: parse_chunk(path.name)["offset"])
+        direct = next(dataset for dataset in catalog(self.archive) if dataset["type"] == "file")
+        chunks = sorted(self.archive.rglob(f"*_dataset-{direct['dataset']}_*.zst"),
+                        key=lambda path: parse_datafile(path.name)["offset"])
         decoded = [subprocess.run([executable("zstd"), "-qdc", str(path)],
                                   capture_output=True, check=True).stdout for path in chunks]
         self.assertEqual(b"".join(decoded), contents)
-        self.assertGreater(len({parse_chunk(path.name)["datagroup"] for path in chunks}), 1)
+        self.assertGreater(len({parse_datafile(path.name)["datagroup"] for path in chunks}), 1)
         self.assertEqual(direct["md5"], hashlib.md5(contents).hexdigest())
 
     def test_singleton_is_direct_and_encrypted_metadata_hides_its_name(self):
@@ -49,9 +49,9 @@ class BackupTests(ArchiveTest):
         combined.write_bytes(certificate.read_bytes() + key.read_bytes())
         (self.source / "secret-client-name").write_bytes(b"hello")
         backup(self.source, self.archive, combined, SMALL)
-        streams = catalog(self.archive, key)
-        self.assertEqual([stream["type"] for stream in streams], ["file"])
-        chunk = next(self.archive.rglob("*_chunk-*.zst.cms"))
+        datasets = catalog(self.archive, key)
+        self.assertEqual([dataset["type"] for dataset in datasets], ["file"])
+        chunk = next(self.archive.rglob("*_dataset-*.zst.cms"))
         compressed = self.root / "decoded.zst"
         decrypt(chunk, compressed, key, certificate)
         result = subprocess.run([executable("zstd"), "-qdc", str(compressed)], capture_output=True, check=True)

@@ -14,10 +14,10 @@ from poc.tests.test_recovery import flip, snapshot
 
 
 class SupergroupTests(ArchiveTest):
-    def make_archive(self, encrypted=False):
+    def make_archive(self, encrypted=False, bitrot_percent=2):
         self.settings = replace(SMALL, supergroup_par2=True, supergroup_datagroups=3,
-                                max_datagroup_bytes=400000)
-        # Independent whole streams remain useful if a supergroup cannot recover.
+                                max_datagroup_bytes=400000, supergroup_bitrot_percent=bitrot_percent)
+        # Independent whole datasets remain useful if a supergroup cannot recover.
         for number in range(12):
             (self.source / f"file-{number}.bin").write_bytes(self.data(90000, number))
         key, cert = self.certificate() if encrypted else (None, None)
@@ -56,7 +56,7 @@ class SupergroupTests(ArchiveTest):
         records, key = self.make_archive(encrypted=True)
         record = next(record for record in records if len(record["datagroups"]) == 3)
         self.lose_datagroup(record, record["datagroups"][0])
-        other = next(name for name in record["datagroups"][1]["members"] if "_chunk-" in name)
+        other = next(name for name in record["datagroups"][1]["members"] if "_dataset-" in name)
         flip(stored_path(self.archive, other))
         # Force the extra bitrot to consume OUTER margin, rather than being
         # repairable by that datagroup's local parity first.
@@ -71,8 +71,8 @@ class SupergroupTests(ArchiveTest):
         copyfile = shutil.copyfile
 
         def metadata_only(source, target, *args, **kwargs):
-            self.assertNotIn("_chunk-", str(source))
-            self.assertNotIn("_chunk-", str(target))
+            self.assertNotIn("_dataset-", str(source))
+            self.assertNotIn("_dataset-", str(target))
             self.assertFalse(str(source).endswith(".par2"))
             return copyfile(source, target, *args, **kwargs)
 
@@ -90,7 +90,7 @@ class SupergroupTests(ArchiveTest):
         copyfile = shutil.copyfile
 
         def no_healthy_payload_copy(source, target, *args, **kwargs):
-            self.assertNotIn("_chunk-", str(source))
+            self.assertNotIn("_dataset-", str(source))
             return copyfile(source, target, *args, **kwargs)
 
         with patch("shutil.copyfile", side_effect=no_healthy_payload_copy):
@@ -122,7 +122,9 @@ class SupergroupTests(ArchiveTest):
         self.assertEqual(verify(self.archive), 0)
 
     def test_filename_only_scan_recovers_missing_datagroup_without_indexes(self):
-        records, _ = self.make_archive()
+        # Erase metadata throughout the supergroup, not just on the lost medium.
+        # That is a larger loss than the default one-medium-plus-2% budget.
+        records, _ = self.make_archive(bitrot_percent=10)
         self.lose_datagroup(records[0], records[0]["datagroups"][0])
         for path in list(self.archive.rglob("archive-*")):
             if "_metadata" in path.name:

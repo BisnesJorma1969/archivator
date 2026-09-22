@@ -2,7 +2,7 @@ from collections import defaultdict
 
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.format import Settings, parse_chunk
+from poc.archivator_lib.format import Settings, parse_datafile
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL, catalog, manifests
@@ -29,8 +29,8 @@ class DatagroupTests(ArchiveTest):
                              path.parent.name, path.name.split("_datagroup-")[-1][:20])
                 totals[datagroup] += path.stat().st_size
             self.assertTrue(all(size <= SMALL.max_datagroup_bytes for size in totals.values()), totals)
-            chunks = list(archive.rglob("*_chunk-*"))
-            self.assertGreater(len({parse_chunk(path.name)["datagroup"] for path in chunks}), 1)
+            chunks = list(archive.rglob("*_dataset-*"))
+            self.assertGreater(len({parse_datafile(path.name)["datagroup"] for path in chunks}), 1)
             restore(archive, self.root / f"target-{encrypted}", key=key if encrypted else None)
             self.assertEqual(compare(self.source, self.root / f"target-{encrypted}"), 0)
 
@@ -40,24 +40,24 @@ class DatagroupTests(ArchiveTest):
         for number in range(120):
             (self.source / f"small-{number}").write_bytes(self.data(1000, number))
         backup(self.source, self.archive, settings=SMALL)
-        by_stream = defaultdict(set)
-        descriptions = {stream["stream"]: stream for stream in catalog(self.archive)}
+        by_dataset = defaultdict(set)
+        descriptions = {dataset["dataset"]: dataset for dataset in catalog(self.archive)}
         for manifest in manifests(self.archive):
-            ids = {member["stream"] for member in manifest["members"]}
+            ids = {member["dataset"] for member in manifest["members"]}
             for sid in ids:
-                members = [member for member in manifest["members"] if member["stream"] == sid]
+                members = [member for member in manifest["members"] if member["dataset"] == sid]
                 end = members[-1]["offset"] + members[-1]["length"]
                 if end < descriptions[sid]["size"]:
                     self.assertEqual(ids, {sid})
                 elif members[0]["offset"] > 0:
-                    self.assertEqual(manifest["members"][0]["stream"], sid)
+                    self.assertEqual(manifest["members"][0]["dataset"], sid)
             for sid in ids:
-                by_stream[sid].add(manifest["datagroup"])
-        for stream in descriptions.values():
-            if stream["type"] == "tar":
-                self.assertEqual(len(by_stream[stream["stream"]]), 1)
-        self.assertTrue(any(len(datagroups) > 1 for datagroups in by_stream.values()))
-        self.assertTrue(any(len({member["stream"] for member in datagroup["members"]}) > 1
+                by_dataset[sid].add(manifest["datagroup"])
+        for dataset in descriptions.values():
+            if dataset["type"] == "tar":
+                self.assertEqual(len(by_dataset[dataset["dataset"]]), 1)
+        self.assertTrue(any(len(datagroups) > 1 for datagroups in by_dataset.values()))
+        self.assertTrue(any(len({member["dataset"] for member in datagroup["members"]}) > 1
                             for datagroup in manifests(self.archive)))
 
     def test_tar_continues_across_directories_and_singleton_falls_back(self):
@@ -65,9 +65,9 @@ class DatagroupTests(ArchiveTest):
             (self.source / name).mkdir()
             (self.source / name / "document").write_text(name)
         backup(self.source, self.archive, settings=SMALL)
-        streams = catalog(self.archive)
-        self.assertEqual([stream["type"] for stream in streams], ["tar"])
-        paths = {entry["path"] for entry in streams[0]["inventory"]}
+        datasets = catalog(self.archive)
+        self.assertEqual([dataset["type"] for dataset in datasets], ["tar"])
+        paths = {entry["path"] for entry in datasets[0]["inventory"]}
         self.assertIn("one/document", paths)
         self.assertIn("two/document", paths)
         restore(self.archive, self.restored)
@@ -76,7 +76,7 @@ class DatagroupTests(ArchiveTest):
     def test_largest_chunk_loss_can_be_repaired(self):
         (self.source / "large").write_bytes(self.data(200000))
         backup(self.source, self.archive, settings=SMALL)
-        max(self.archive.rglob("*_chunk-*"), key=lambda path: path.stat().st_size).unlink()
+        max(self.archive.rglob("*_dataset-*"), key=lambda path: path.stat().st_size).unlink()
         self.assertEqual(verify(self.archive), 1)
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
@@ -88,7 +88,7 @@ class DatagroupTests(ArchiveTest):
             (self.source / f"a-{number:02}").write_bytes(self.data(30000, number))
         (self.source / "z-small").write_text("fits in a small gap")
         backup(self.source, self.archive, settings=SMALL)
-        first = next(stream for stream in catalog(self.archive) if stream["type"] == "tar")
+        first = next(dataset for dataset in catalog(self.archive) if dataset["type"] == "tar")
         paths = {entry["path"] for entry in first["inventory"]}
         self.assertIn("z-small", paths)
         self.assertNotIn("a-15", paths)
@@ -104,7 +104,7 @@ class DatagroupTests(ArchiveTest):
 
         def inspect(path):
             if str(path) == str(later):
-                self.assertTrue(list(self.archive.rglob("*_chunk-*")))
+                self.assertTrue(list(self.archive.rglob("*_dataset-*")))
             return actual_scandir(path)
 
         with patch("poc.archivator_lib.filesystem.os.scandir", side_effect=inspect):

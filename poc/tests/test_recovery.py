@@ -27,7 +27,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_in_place_data_repair_never_stages_copies_or_links(self):
         self.make_archive()
-        flip(next(self.archive.rglob("*_chunk-*.zst")))
+        flip(next(self.archive.rglob("*_dataset-*.zst")))
         next(self.archive.rglob("*_datagroup-*_metadata.vol*.par2")).unlink()
         with patch("shutil.copyfile", side_effect=AssertionError("No data staging copies")), \
                 patch("os.link", side_effect=AssertionError("No repair hard links")):
@@ -37,7 +37,7 @@ class RecoveryTests(ArchiveTest):
     def test_verify_is_read_only_and_reports_repairable_damage(self):
         self.make_archive()
         self.assertEqual(verify(self.archive), 0)
-        flip(next(self.archive.rglob("*_chunk-*.zst")))
+        flip(next(self.archive.rglob("*_dataset-*.zst")))
         before = snapshot(self.archive)
         self.assertEqual(verify(self.archive), 1)
         self.assertIn("repairable", self.report.getvalue())
@@ -47,7 +47,7 @@ class RecoveryTests(ArchiveTest):
 
     def test_repair_missing_chunk_and_parity_only_damage(self):
         self.make_archive()
-        next(self.archive.rglob("*_chunk-*.zst")).unlink()
+        next(self.archive.rglob("*_dataset-*.zst")).unlink()
         repair(self.archive)
         self.assertEqual(verify(self.archive), 0)
         volume = next(self.archive.rglob("*.vol*.par2"))

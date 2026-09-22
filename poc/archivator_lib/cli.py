@@ -22,8 +22,14 @@ def parser():
                         help="Add cross-datagroup PAR2 when PAR2 is enabled (default: enabled)")
     backup.add_argument("--supergroup-datagroups", type=int, default=5,
                         help="Maximum datagroups in one supergroup (default: 5)")
-    backup.add_argument("--supergroup-margin-percent", type=int, default=110,
-                        help="Outer recovery blocks as percent of largest datagroup (default: 110)")
+    backup.add_argument("--datagroup-loss-files", type=int, default=0,
+                        help="Local PAR2: tolerate loss of this many protected files (default: 0)")
+    backup.add_argument("--datagroup-bitrot-percent", type=int, default=2,
+                        help="Local PAR2: additional damaged-slice budget as percent of stored input bytes (default: 2)")
+    backup.add_argument("--supergroup-loss-datagroups", type=int, default=1,
+                        help="Outer PAR2: tolerate loss of this many datagroups (default: 1)")
+    backup.add_argument("--supergroup-bitrot-percent", type=int, default=2,
+                        help="Outer PAR2: additional damaged-slice budget as percent of stored input bytes (default: 2)")
     encryption = backup.add_mutually_exclusive_group()
     encryption.add_argument("--encrypt-cert", type=Path, help="Enable CMS encryption using this certificate")
     encryption.add_argument("--no-encryption", action="store_true", help="Explicitly disable encryption (the default)")
@@ -46,11 +52,14 @@ def parser():
             command.add_argument("--decrypt-key", type=Path)
             command.add_argument("--decrypt-cert", type=Path)
             command.add_argument("--scan-index", type=Path,
-                                 help="Recover streams using a filename-only index instead of archive metadata")
+                                 help="Recover datasets using a filename-only index instead of archive metadata")
     scan = commands.add_parser("scan", help="Build a recovery index from filenames without reading archive contents")
     scan.add_argument("archive", type=Path)
     scan.add_argument("index", type=Path, help="New recovery index ending in .json or .json.zst")
     scan.add_argument("--archive-id")
+    quick = commands.add_parser("quick-check", help="Check datagroup counts and sizes without reading contents")
+    quick.add_argument("archive", type=Path)
+    quick.add_argument("--archive-id")
     compare = commands.add_parser("compare", help="Compare two filesystem trees")
     compare.add_argument("source", type=Path)
     compare.add_argument("target", type=Path)
@@ -70,7 +79,10 @@ def main(argv=None):
                                     datagroup_close_percent=args.datagroup_close_percent,
                                     compression=args.compression, par2=args.par2,
                                     supergroup_par2=args.supergroup_par2, supergroup_datagroups=args.supergroup_datagroups,
-                                    supergroup_margin_percent=args.supergroup_margin_percent)
+                                    datagroup_loss_files=args.datagroup_loss_files,
+                                    datagroup_bitrot_percent=args.datagroup_bitrot_percent,
+                                    supergroup_loss_datagroups=args.supergroup_loss_datagroups,
+                                    supergroup_bitrot_percent=args.supergroup_bitrot_percent)
                 archive = backup(args.source, args.archive, args.encrypt_cert, settings)
                 print(f"Backup complete: {args.archive} (archive {archive})")
                 return 0
@@ -92,6 +104,9 @@ def main(argv=None):
                 from .scan import scan
                 scan(args.archive, args.index, args.archive_id)
                 return 0
+            if args.command == "quick-check":
+                from .seal import quick_check
+                return quick_check(args.archive, args.archive_id)
             from .compare import compare
             print(f"Comparing {args.source} with {args.target}", flush=True)
             return compare(args.source, args.target)

@@ -8,7 +8,7 @@ from poc.archivator_lib.cli import parser
 from poc.archivator_lib.common import ArchiveError, IntegrityError
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.external import decrypt, executable
-from poc.archivator_lib.format import Settings, chunk_name, parse_chunk
+from poc.archivator_lib.format import Settings, datafile_name, parse_datafile
 from poc.archivator_lib.limits import input_limit
 from poc.archivator_lib.restore import restore
 from poc.archivator_lib.scan import scan
@@ -20,8 +20,8 @@ class IndependentChunkTests(ArchiveTest):
     def test_names_distinguish_complete_tar_from_raw_and_reject_wrong_offsets(self):
         for encrypted in (False, True):
             for kind in ("raw", "tar"):
-                name = chunk_name("a" * 20, "b" * 20, 12, "c" * 20, 0, 10240, encrypted, kind, supergroup="d" * 20)
-                parsed = parse_chunk(name)
+                name = datafile_name("a" * 20, "b" * 20, "c" * 20, 0, 10240, encrypted, kind, supergroup="d" * 20)
+                parsed = parse_datafile(name)
                 self.assertEqual(parsed["kind"], kind)
                 self.assertEqual(parsed["length"], 10240)
                 self.assertEqual(parsed["offset"], 0)
@@ -29,7 +29,7 @@ class IndependentChunkTests(ArchiveTest):
                 self.assertTrue(name.endswith(f".{kind}.zst" + (".cms" if encrypted else "")))
                 wrong = name.replace(".raw.zst", ".tar.zst") if kind == "raw" else name.replace(".tar.zst", ".raw.zst")
                 with self.assertRaises(IntegrityError):
-                    parse_chunk(wrong)
+                    parse_datafile(wrong)
 
     def test_each_tar_is_independently_readable_and_compressed_units_share_datagroup(self):
         for number in range(24):
@@ -39,12 +39,12 @@ class IndependentChunkTests(ArchiveTest):
         self.assertEqual(len(datagroups), 1)
         chunks = list(self.archive.rglob("*.tar.zst"))
         self.assertGreaterEqual(len(chunks), 8)
-        self.assertGreater(sum(parse_chunk(path.name)["length"] for path in chunks), SMALL.max_datagroup_bytes)
+        self.assertGreater(sum(parse_datafile(path.name)["length"] for path in chunks), SMALL.max_datagroup_bytes)
         found = set()
         for chunk in chunks:
             data = subprocess.run([executable("zstd"), "-qdc", str(chunk)],
                                   capture_output=True, check=True).stdout
-            self.assertEqual(len(data), parse_chunk(chunk.name)["length"])
+            self.assertEqual(len(data), parse_datafile(chunk.name)["length"])
             # GNU tar can list each decoded object without any concatenation.
             subprocess.run(["tar", "-tf", "-"], input=data, capture_output=True, check=True)
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as bundle:
@@ -70,7 +70,7 @@ class IndependentChunkTests(ArchiveTest):
             decrypt(chunk, compressed, key, certificate)
             data = subprocess.run([executable("zstd"), "-qdc", str(compressed)],
                                   capture_output=True, check=True).stdout
-            self.assertEqual(len(data), parse_chunk(chunk.name)["length"])
+            self.assertEqual(len(data), parse_datafile(chunk.name)["length"])
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as bundle:
                 self.assertEqual(len([member for member in bundle if member.isfile()]), 2)
             compressed.unlink()
@@ -90,15 +90,15 @@ class IndependentChunkTests(ArchiveTest):
         (self.source / "split").write_bytes(self.data(200000))
         settings = replace(SMALL, large_file_bytes=4096)
         backup(self.source, self.archive, settings=settings)
-        self.assertTrue(all(stream["type"] == "file" for stream in catalog(self.archive)))
-        split = next(stream for stream in catalog(self.archive) if stream["path"] == "split")
-        chunks = [parse_chunk(path.name) for path in self.archive.rglob("*.raw.zst")
-                  if parse_chunk(path.name)["stream"] == split["stream"]]
+        self.assertTrue(all(dataset["type"] == "file" for dataset in catalog(self.archive)))
+        split = next(dataset for dataset in catalog(self.archive) if dataset["path"] == "split")
+        chunks = [parse_datafile(path.name) for path in self.archive.rglob("*.raw.zst")
+                  if parse_datafile(path.name)["dataset"] == split["dataset"]]
         self.assertEqual(max(chunk["length"] for chunk in chunks), input_limit(SMALL.max_file_bytes))
-        small_ids = {stream["stream"] for stream in catalog(self.archive) if stream["path"] in ("one", "two")}
+        small_ids = {dataset["dataset"] for dataset in catalog(self.archive) if dataset["path"] in ("one", "two")}
         whole = next(datagroup for datagroup in manifests(self.archive)
-                     if small_ids <= {member["stream"] for member in datagroup["members"]})
-        self.assertEqual(len([member for member in whole["members"] if member["stream"] in small_ids]), 2)
+                     if small_ids <= {member["dataset"] for member in datagroup["members"]})
+        self.assertEqual(len([member for member in whole["members"] if member["dataset"] in small_ids]), 2)
         args = parser().parse_args(["backup", "source", "archive", "--large-file-bytes", "4096"])
         self.assertEqual(args.large_file_bytes, 4096)
         with self.assertRaises(ArchiveError):
@@ -131,10 +131,10 @@ class IndependentChunkTests(ArchiveTest):
             (self.source / str(number)).write_bytes(self.data(20000, number))
         backup(self.source, self.archive, settings=SMALL)
         missing = next(self.archive.rglob("*.tar.zst"))
-        lost_id = parse_chunk(missing.name)["stream"]
-        lost = next(stream for stream in catalog(self.archive) if stream["stream"] == lost_id)
+        lost_id = parse_datafile(missing.name)["dataset"]
+        lost = next(dataset for dataset in catalog(self.archive) if dataset["dataset"] == lost_id)
         lost_paths = {entry["path"] for entry in lost["inventory"] if entry["type"] == "file"}
-        prefix = missing.name.split("_chunk-", 1)[0]
+        prefix = missing.name.split("_dataset-", 1)[0]
         for path in missing.parent.glob(prefix + "*.par2"):
             path.unlink()
         missing.unlink()
@@ -149,7 +149,7 @@ class IndependentChunkTests(ArchiveTest):
         scan(self.archive, index)
         scanned = self.root / "scanned"
         restore(self.archive, scanned, scan_index=index)
-        self.assertFalse(list(scanned.glob(f"stream-{lost_id}*")))
+        self.assertFalse(list(scanned.glob(f"dataset-{lost_id}*")))
         self.assertTrue(list(scanned.glob("*.tar")))
         self.assertEqual(snapshot(self.archive), before)
 

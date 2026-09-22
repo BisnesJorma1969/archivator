@@ -27,6 +27,8 @@ def input_limit(output_limit, encryption_overhead=0, compression=True):
 # PAR2's GF(2^16) implementation limits source and recovery block counts.
 MAX_PAR2_BLOCKS = 32768
 MIN_SLICE_SIZE = 4096
+# A performance target, not a format limit or a cap on member count.
+TARGET_SOURCE_BLOCKS = 2048
 
 
 @dataclass(frozen=True)
@@ -60,14 +62,22 @@ def validate_parity_record(record, enabled=True):
         raise IntegrityError("Invalid PAR2 block size, recovery count or volume count")
 
 
-def recovery_blocks(members, slice_size, groups=None, margin_percent=125, protect_all=False):
+def recovery_blocks(members, slice_size, groups=None, loss_count=0, bitrot_percent=2, protect_all=False):
+    """Whole-file/group losses plus a separate slice budget for bitrot.
+
+    Whole losses use per-file rounded source blocks. Bitrot is a percentage of
+    stored input bytes, rounded up once; it is not a percentage of flipped bits.
+    """
     counts = {name: ceil_div(length, slice_size) for name, length in members.items()}
     total = sum(counts.values())
     if protect_all:
         return total + 1
-    largest = (max(sum(counts[name] for name in group) for group in groups)
-               if groups else max(counts.values(), default=0))
-    return max(ceil_div(total, 5), ceil_div(largest * margin_percent, 100), largest + 1)
+    units = ([sum(counts[name] for name in group) for group in groups]
+             if groups is not None else list(counts.values()))
+    lost = sum(sorted(units, reverse=True)[:loss_count])
+    bitrot = ceil_div(sum(members.values()) * bitrot_percent, 100 * slice_size)
+    # There is no additional source loss to cover once every source block is lost.
+    return min(total, lost + bitrot)
 
 
 def volume_plan(members, slice_size, max_file_bytes, blocks, volumes=None):
@@ -106,14 +116,14 @@ def volume_plan(members, slice_size, max_file_bytes, blocks, volumes=None):
 
 
 def parity_plan(members, max_file_bytes, enabled=True, *, max_set_bytes=None,
-                groups=None, margin_percent=125, protect_all=False, record=None):
-    """Choose the smallest feasible slice, or reproduce a recorded set exactly.
+                groups=None, loss_count=0, bitrot_percent=2, protect_all=False, record=None):
+    """Choose practical dynamic slices, or reproduce a recorded set exactly.
 
     Doubling is bounded by the output file ceiling. All source files, including
     metadata, count separately; a short final file still consumes a whole slice.
     A failed plan is a grouping boundary, never permission to lower redundancy.
     """
-    if not enabled:
+    if not enabled or (not protect_all and loss_count == 0 and bitrot_percent == 0):
         return ParityPlan(0, 0, 0, 0, 0)
     if not members or any(length < 0 or length > max_file_bytes for length in members.values()):
         raise ArchiveError("PAR2 member exceeds the file limit or the set is empty")
@@ -126,9 +136,15 @@ def parity_plan(members, max_file_bytes, enabled=True, *, max_set_bytes=None,
         while size < max_file_bytes:
             candidates.append(size)
             size *= 2
+        # Starting near a modest source-block count avoids huge Reed-Solomon
+        # matrices. Try coarser slices first; finer ones remain available when
+        # an output-file or media ceiling prevents the preferred geometry.
+        preferred = max(MIN_SLICE_SIZE, ceil_div(sum(members.values()), TARGET_SOURCE_BLOCKS))
+        candidates = ([size for size in candidates if size >= preferred]
+                      + [size for size in reversed(candidates) if size < preferred])
     reason = "File limit leaves no room for a PAR2 slice"
     for size in candidates:
-        required = recovery_blocks(members, size, groups, margin_percent, protect_all)
+        required = recovery_blocks(members, size, groups, loss_count, bitrot_percent, protect_all)
         blocks = record["blocks"] if record is not None else required
         if blocks < required:
             raise ArchiveError("Recorded PAR2 plan does not meet redundancy requirements")

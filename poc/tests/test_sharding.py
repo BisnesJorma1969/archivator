@@ -4,7 +4,7 @@ from unittest.mock import patch
 from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.format import parse_chunk, stored_path
+from poc.archivator_lib.format import parse_datafile, stored_path
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
 from poc.tests.support import ArchiveTest, SMALL
@@ -28,7 +28,7 @@ class ShardingTests(ArchiveTest):
     def test_flat_layout_has_unique_names_and_recovers_missing_local_manifest(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        local = next(path for path in self.archive.rglob("*_metadata_index-chunks.json.zst")
+        local = next(path for path in self.archive.rglob("*_metadata_index-datafiles.json.zst")
                      if "metadata" not in path.relative_to(self.archive).parts)
         local.unlink()
         paths = list(self.archive.rglob("archive-*"))
@@ -48,7 +48,7 @@ class ShardingTests(ArchiveTest):
 
     def test_symlink_recovery_directory_is_rejected(self):
         backup(self.source, self.archive, settings=SMALL)
-        local = next(path for path in self.archive.rglob("*_metadata_index-chunks.json.zst")
+        local = next(path for path in self.archive.rglob("*_metadata_index-datafiles.json.zst")
                      if "metadata" not in path.relative_to(self.archive).parts)
         displaced = self.root / "displaced"
         local.parent.rename(displaced)
@@ -63,7 +63,7 @@ class ShardingTests(ArchiveTest):
         ids = (number.to_bytes(12, "big") for number in range(1000))
         with patch("poc.archivator_lib.format.secrets.token_bytes", side_effect=lambda size: next(ids)):
             backup(self.source, self.archive, settings=SMALL)
-        supergroup = parse_chunk(next(self.archive.rglob("*_chunk-*")).name)["supergroup"]
+        supergroup = parse_datafile(next(self.archive.rglob("*_dataset-*")).name)["supergroup"]
         self.assertEqual({path.name for path in self.archive.iterdir() if path.is_dir()}, {"data", "metadata"})
         self.assertTrue((self.archive / "data" / supergroup[:2] / supergroup).is_dir())
         self.assertTrue((self.archive / "metadata" / supergroup[:2] / supergroup).is_dir())

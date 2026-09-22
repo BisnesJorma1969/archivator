@@ -102,7 +102,7 @@ class MetadataWriter:
         from .supergroups import SupergroupWriter
         self.supergroups = SupergroupWriter(archive, archive_id, settings)
 
-    def add(self, supergroup_id, datagroup_id, metadata, datagroup_parity):
+    def add(self, supergroup_id, datagroup_id, metadata, datagroup_parity, seal):
         prefix = metadata_prefix(self.archive_id, supergroup_id, datagroup_id)
         destination = stored_path(self.archive, prefix + "_checksums.json").parent
         destination.mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,8 @@ class MetadataWriter:
             "version": 1, "archive": self.archive_id, "datagroup": datagroup_id, "supergroup": supergroup_id,
             "previous": self.previous, "members": members,
             "datagroup_parity": datagroup_parity,
-            "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.par2 else None,
+            "seal": {"filename": seal.name, "size": seal.stat().st_size, "sha256": sha256(seal)},
+            "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.datagroup_par2 else None,
         }
         name = prefix + "_checksums.json"
         staging_root = self.archive / ".tmp"
@@ -126,9 +127,10 @@ class MetadataWriter:
         lengths = {name: item["size"] for name, item in members.items()}
         receipt_size = len(json.dumps(receipt, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 1
         lengths[stored_name] = stored_bound(receipt_size, compression=self.settings.compression)
-        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.par2,
-                           max_set_bytes=self.settings.max_datagroup_bytes)
-        receipt["par2"] = plan.record() if self.settings.par2 else None
+        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.datagroup_par2,
+                           max_set_bytes=self.settings.max_datagroup_bytes,
+                           loss_count=self.settings.datagroup_loss_files, bitrot_percent=self.settings.datagroup_bitrot_percent)
+        receipt["par2"] = plan.record() if self.settings.datagroup_par2 else None
         write_json(staging_root / name, receipt)
         name = store_metadata(staging_root / name, staging_root, compression=self.settings.compression)
         check_files([staging_root / name], self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
@@ -139,7 +141,7 @@ class MetadataWriter:
         staging = self.archive / ".tmp" / "central-parity"
         staging.mkdir()
         files = []
-        if self.settings.par2:
+        if self.settings.datagroup_par2:
             files = create_parity(destination, prefix, list(lengths), plan.slice_size,
                                   plan.blocks, staging, plan.volumes)
         check_files([*(destination / name for name in lengths), *files],

@@ -144,7 +144,7 @@ def create_parity(directory, prefix, members, slice_size, blocks, output_directo
     index = output_directory.resolve() / (prefix + ".par2")
     # Explicit source base keeps stored member names relative to the archive,
     # even when the recovery files are generated in a separate staging directory.
-    run([executable("par2"), "create", "-q", "-t1", "-T1", f"-s{slice_size}",
+    run([executable("par2"), "create", "-q", f"-s{slice_size}",
          f"-c{blocks}", "-u", f"-n{volumes}", f"-B{directory.resolve()}", "--", str(index), *members], cwd=directory,
         activity=f"PAR2: creating {blocks:,} recovery blocks of {slice_size:,} bytes for {len(members):,} files")
     files = sorted(output_directory.glob(prefix + "*.par2"))
@@ -164,7 +164,7 @@ def check_parity(directory, prefix, repair=False, data_directory=None, parity_fi
     role = "metadata" if "_metadata" in prefix else "datagroup" if "_datagroup-" in prefix else "supergroup"
     progress.update(f"PAR2: {operation} {role} recovery set; waiting for par2cmdline")
     data_directory = data_directory or directory
-    arguments = [executable("par2"), operation, "-q", "-t1", "-T1",
+    arguments = [executable("par2"), operation, "-q",
                  f"-B{data_directory.resolve()}", "--", str(index.resolve()),
                  *(str(path.resolve()) for path in files if path != index)]
     result = subprocess.run(arguments, cwd=directory, capture_output=True, text=True, errors="replace")

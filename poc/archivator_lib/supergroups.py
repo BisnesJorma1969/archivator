@@ -54,7 +54,7 @@ class SupergroupWriter:
         self.count = 0
 
     def add(self, datagroup_id, paths, known_hashes):
-        if not (self.settings.par2 and self.settings.supergroup_par2):
+        if not self.settings.outer_par2:
             return
         members = {}
         for path in paths:
@@ -62,7 +62,15 @@ class SupergroupWriter:
                 raise ArchiveError("Supergroup inputs must not contain datagroup PAR2")
             digest = known_hashes.get(path.name)
             members[path.name] = {"size": path.stat().st_size, "sha256": digest or sha256(path)}
-        expected = self.reservations[datagroup_id]["members"]
+        expected = dict(self.reservations[datagroup_id]["members"])
+        # The closing summary is named only after local parity sizes are known.
+        # Substitute its final name after checking it fits the reserved width.
+        from .seal import SEAL_NAME
+        reserved = next(name for name in expected if SEAL_NAME.fullmatch(name))
+        actual = next(name for name in members if SEAL_NAME.fullmatch(name))
+        if len(actual) > len(reserved):
+            raise ArchiveError("Closing-summary filename exceeds its reserved width")
+        expected[actual] = expected.pop(reserved)
         if set(members) != set(expected) or any(item["size"] > expected[name]["size"] for name, item in members.items()):
             raise ArchiveError("Completed datagroup exceeds its supergroup reservation")
         record = {"datagroup": datagroup_id, "members": members}
@@ -70,14 +78,14 @@ class SupergroupWriter:
         self.reservations[datagroup_id] = record
 
     def reserve(self, datagroup_id, members):
-        if self.settings.par2 and self.settings.supergroup_par2:
+        if self.settings.outer_par2:
             self.reservations[datagroup_id] = {
                 "datagroup": datagroup_id,
                 "members": {name: {"size": size, "sha256": "0" * 64} for name, size in members.items()},
             }
 
     def fits(self, datagroup_id, members, alone=False):
-        if not (self.settings.par2 and self.settings.supergroup_par2):
+        if not self.settings.outer_par2:
             return True
         candidate = {"datagroup": datagroup_id,
                      "members": {name: {"size": size, "sha256": "0" * 64} for name, size in members.items()}}
@@ -112,7 +120,7 @@ class SupergroupWriter:
         # Outer parity can use multiple bounded media directories, but each
         # individual volume must fit both the file ceiling and one medium.
         plan = parity_plan(lengths, min(settings.max_file_bytes, settings.max_datagroup_bytes), groups=groups,
-                           margin_percent=settings.supergroup_margin_percent)
+                           loss_count=settings.supergroup_loss_datagroups, bitrot_percent=settings.supergroup_bitrot_percent)
         return name, record, lengths, plan
 
     def finish(self):
@@ -249,7 +257,7 @@ class SupergroupRecovery:
                 or record["marker_sha256"] != catalog_root_digest(record)):
             raise IntegrityError("Invalid supergroup index")
         settings = Settings(**record["settings"])
-        if not settings.par2 or not settings.supergroup_par2:
+        if not settings.outer_par2:
             raise IntegrityError("Unexpected supergroup protection")
         if not 1 <= len(record["datagroups"]) <= settings.supergroup_datagroups:
             raise IntegrityError("Invalid supergroup datagroup count")
@@ -353,7 +361,7 @@ class SupergroupRecovery:
 
     def save_metadata(self, base, names):
         for name in names:
-            if "_chunk-" in name or name.endswith(".par2"):
+            if "_dataset-" in name or name.endswith(".par2"):
                 continue
             source = stored_path(base, name)
             if not source.is_file():
@@ -407,7 +415,7 @@ class SupergroupRecovery:
         if self.in_place:
             # Recover intentional metadata duplicates without attempting FEC.
             for name in names:
-                if "_chunk-" in name or name.endswith(".par2"):
+                if "_dataset-" in name or name.endswith(".par2"):
                     continue
                 target = stored_path(self.root, name)
                 source = self.files.get(name)
@@ -500,7 +508,7 @@ class SupergroupRecovery:
         """Retain repaired metadata only; discard each bounded payload workspace."""
         for sid, record in self.records.items():
             hashes = self.protected(record)
-            damaged = [name for name, digest in hashes.items() if "_chunk-" not in name and
+            damaged = [name for name, digest in hashes.items() if "_dataset-" not in name and
                        (name not in self.files or not self.files[name].is_file() or sha256(self.files[name]) != digest)]
             if not damaged:
                 continue
@@ -520,7 +528,7 @@ class SupergroupRecovery:
             for name, digest in self.protected(self.records[sid]).items():
                 if not name.startswith(prefix + "_"):
                     continue
-                if not ("_chunk-" in name or datagroup_metadata(name)
+                if not ("_dataset-" in name or datagroup_metadata(name)
                         and name == primary_metadata_name(name)):
                     continue
                 target = directory / name

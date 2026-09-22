@@ -11,7 +11,7 @@ from poc.archivator_lib.backup import backup
 from poc.archivator_lib.common import ArchiveError, Hashes, IntegrityError
 from poc.archivator_lib.compare import compare
 from poc.archivator_lib.external import executable
-from poc.archivator_lib.format import chunk_name
+from poc.archivator_lib.format import datafile_name
 from poc.archivator_lib.restore import restore, unpack_chunk
 from poc.tests.support import ArchiveTest, SMALL
 from poc.tests.test_recovery import flip, snapshot
@@ -32,7 +32,7 @@ class RestoreTests(ArchiveTest):
                                     input=data, capture_output=True, check=True).stdout
         hashes = Hashes()
         hashes.update(data)
-        name = chunk_name("a" * 20, "b" * 20, 0, "c" * 20, 0, len(data), False, supergroup="d" * 20)
+        name = datafile_name("a" * 20, "b" * 20, "c" * 20, 0, len(data), False, supergroup="d" * 20)
         member = {"filename": name, "length": len(data),
                   "plaintext_sha256": hashes.values()["sha256"],
                   "plaintext_sha512": hashes.values()["sha512"]}
@@ -87,7 +87,7 @@ class RestoreTests(ArchiveTest):
     def test_missing_chunk_repaired_only_in_scratch(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        missing = next(self.archive.rglob("*_chunk-*.zst"))
+        missing = next(self.archive.rglob("*_dataset-*.zst"))
         missing.unlink()
         restore(self.archive, self.restored)
         self.assertFalse(missing.exists())
@@ -96,7 +96,7 @@ class RestoreTests(ArchiveTest):
     def test_restore_copies_only_damaged_input_and_keeps_archive_unchanged(self):
         (self.source / "large").write_bytes(self.data(160000))
         backup(self.source, self.archive, settings=SMALL)
-        damaged = next(self.archive.rglob("*_chunk-*.zst"))
+        damaged = next(self.archive.rglob("*_dataset-*.zst"))
         flip(damaged)
         before = snapshot(self.archive)
         with patch("shutil.copyfile", wraps=shutil.copyfile) as copying:
@@ -143,7 +143,7 @@ class RestoreTests(ArchiveTest):
     def test_unrecoverable_damage_never_succeeds(self):
         (self.source / "lost").write_bytes(self.data(80000))
         backup(self.source, self.archive, settings=SMALL)
-        for path in list(self.archive.rglob("*_chunk-*.zst")) + list(self.archive.rglob("*.par2")):
+        for path in list(self.archive.rglob("*_dataset-*.zst")) + list(self.archive.rglob("*.par2")):
             path.unlink()
         self.assertEqual(restore(self.archive, self.restored), 1)
         self.assertFalse((self.restored / "lost").exists())

@@ -10,9 +10,9 @@ from .common import ArchiveError, IntegrityError
 
 ID = r"[a-z2-7]{20}"
 ARCHIVE_NAME = re.compile(rf"archive-({ID})_")
-CHUNK_NAME = re.compile(
+DATAFILE_NAME = re.compile(
     rf"archive-(?P<archive>{ID})_supergroup-(?P<supergroup>{ID})_datagroup-(?P<datagroup>{ID})_"
-    rf"chunk-(?P<chunk>[0-9]{{4,}})_stream-(?P<stream>{ID})_"
+    rf"dataset-(?P<dataset>{ID})_"
     r"(?:offset-(?P<offset>[0-9]{20})_)?length-(?P<length>[0-9]{12})"
     r"\.(?P<kind>raw|tar)(?P<compressed>\.zst)?(?P<encrypted>\.cms)?"
 )
@@ -29,7 +29,18 @@ class Settings:
     par2: bool = True
     supergroup_par2: bool = True
     supergroup_datagroups: int = 5
-    supergroup_margin_percent: int = 110
+    datagroup_loss_files: int = 0
+    datagroup_bitrot_percent: int = 2
+    supergroup_loss_datagroups: int = 1
+    supergroup_bitrot_percent: int = 2
+
+    @property
+    def datagroup_par2(self):
+        return self.par2 and bool(self.datagroup_loss_files or self.datagroup_bitrot_percent)
+
+    @property
+    def outer_par2(self):
+        return self.par2 and self.supergroup_par2 and bool(self.supergroup_loss_datagroups or self.supergroup_bitrot_percent)
 
     def __post_init__(self):
         if not isinstance(self.compression, bool) or not isinstance(self.par2, bool):
@@ -38,8 +49,12 @@ class Settings:
             raise ArchiveError("Supergroup PAR2 setting must be a boolean")
         if not isinstance(self.supergroup_datagroups, int) or self.supergroup_datagroups < 1:
             raise ArchiveError("Supergroup datagroup count must be a positive integer")
-        if not isinstance(self.supergroup_margin_percent, int) or self.supergroup_margin_percent < 100:
-            raise ArchiveError("Supergroup margin must be at least 100 percent")
+        if any(type(value) is not int or value < 0
+               for value in (self.datagroup_loss_files, self.supergroup_loss_datagroups)):
+            raise ArchiveError("Loss counts must be nonnegative integers")
+        if any(type(value) is not int or not 0 <= value <= 100
+               for value in (self.datagroup_bitrot_percent, self.supergroup_bitrot_percent)):
+            raise ArchiveError("Bitrot percentages must be integers from 0 to 100")
         limits = (self.max_file_bytes, self.max_datagroup_bytes)
         if self.large_file_bytes is not None:
             limits += (self.large_file_bytes,)
@@ -55,13 +70,13 @@ def new_id():
     return b32encode(secrets.token_bytes(12)).decode("ascii").rstrip("=").lower()
 
 
-def chunk_name(archive, datagroup, chunk, stream, offset, length, encrypted, kind="raw", compressed=True, *, supergroup):
+def datafile_name(archive, datagroup, dataset, offset, length, encrypted, kind="raw", compressed=True, *, supergroup):
     if kind not in ("raw", "tar") or (kind == "tar" and offset != 0):
         raise ArchiveError("A TAR chunk must be a complete archive without an offset")
     coordinates = f"offset-{offset:020d}_" if kind == "raw" else ""
     name = (
-        f"archive-{archive}_supergroup-{supergroup}_datagroup-{datagroup}_chunk-{chunk:04d}_"
-        f"stream-{stream}_{coordinates}length-{length:012d}.{kind}"
+        f"archive-{archive}_supergroup-{supergroup}_datagroup-{datagroup}_"
+        f"dataset-{dataset}_{coordinates}length-{length:012d}.{kind}"
     )
     if compressed:
         name += ".zst"
@@ -70,16 +85,16 @@ def chunk_name(archive, datagroup, chunk, stream, offset, length, encrypted, kin
     return name
 
 
-def parse_chunk(name):
+def parse_datafile(name):
     name = name.lower()
-    match = CHUNK_NAME.fullmatch(name)
+    match = DATAFILE_NAME.fullmatch(name)
     if not match:
         raise IntegrityError(f"Invalid chunk filename: {name!r}")
     result = match.groupdict()
     if (result["offset"] is not None) != (result["kind"] == "raw"):
         raise IntegrityError("Only RAW chunk filenames must have an offset")
     result["offset"] = result["offset"] or "0"
-    for field in ("chunk", "offset", "length"):
+    for field in ("offset", "length"):
         result[field] = int(result[field])
     result["encrypted"] = bool(result["encrypted"])
     result["compressed"] = bool(result["compressed"])
@@ -92,7 +107,7 @@ def datagroup_prefix(archive, supergroup, datagroup):
 
 def datagroup_metadata(name):
     return bool(re.fullmatch(rf"archive-{ID}_supergroup-{ID}_datagroup-{ID}_metadata_index-"
-                             r"(?:chunks(?:-spare)?\.json(?:\.zst)?|"
+                             r"(?:datafiles(?:-spare)?\.json(?:\.zst)?|"
                              r"files(?:-spare)?\.jsonl(?:\.zst)?(?:\.cms)?)", name))
 
 

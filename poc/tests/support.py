@@ -10,7 +10,8 @@ from poc.archivator_lib.common import WORK_DIR
 from poc.archivator_lib.external import executable, run
 from poc.archivator_lib.format import Settings
 
-SMALL = Settings(max_file_bytes=65535, max_datagroup_bytes=262144, supergroup_par2=False)
+SMALL = Settings(max_file_bytes=65535, max_datagroup_bytes=262144, supergroup_par2=False,
+                 datagroup_loss_files=1, datagroup_bitrot_percent=10)
 
 def read_zstd_json(path):
     return json.loads(run([executable("zstd"), "-qdc", str(path)]))
@@ -51,9 +52,9 @@ def catalog(archive, key=None):
     files = discover(archive)
     archive_id = next(iter(files))
     with open_archive(archive_id, files[archive_id], key=key) as opened:
-        return opened.streams
+        return opened.datasets
 
 
 def manifests(archive):
-    unique = {path.name: path for path in archive.rglob("*_metadata_index-chunks.json.zst")}
+    unique = {path.name: path for path in archive.rglob("*_metadata_index-datafiles.json.zst")}
     return [read_zstd_json(path) for path in unique.values()]

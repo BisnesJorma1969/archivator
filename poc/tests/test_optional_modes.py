@@ -12,7 +12,7 @@ from poc.archivator_lib.backup import backup
 from poc.archivator_lib.cli import main, parser
 from poc.archivator_lib.common import IntegrityError
 from poc.archivator_lib.compare import compare
-from poc.archivator_lib.format import parse_chunk
+from poc.archivator_lib.format import parse_datafile
 from poc.archivator_lib.recovery import repair, verify
 from poc.archivator_lib.restore import restore
 from poc.archivator_lib.scan import scan
@@ -52,10 +52,10 @@ class OptionalModeTests(ArchiveTest):
                     backup(self.source, archive, certificate if encryption else None, settings)
                     paths = [path for path in archive.rglob("*") if path.is_file()]
                     self.assertEqual(any(path.suffix == ".par2" for path in paths), par2)
-                    chunks = [path for path in paths if "_chunk-" in path.name]
-                    self.assertEqual({parse_chunk(path.name)["kind"] for path in chunks}, {"raw", "tar"})
+                    chunks = [path for path in paths if "_dataset-" in path.name]
+                    self.assertEqual({parse_datafile(path.name)["kind"] for path in chunks}, {"raw", "tar"})
                     for path in chunks:
-                        parsed = parse_chunk(path.name)
+                        parsed = parse_datafile(path.name)
                         self.assertEqual(parsed["compressed"], compression)
                         self.assertEqual(parsed["encrypted"], encryption)
                     for path in paths:
@@ -65,8 +65,8 @@ class OptionalModeTests(ArchiveTest):
                         if encryption:
                             self.assertNotIn(b"private-notes.txt", path.read_bytes())
                             self.assertNotIn(b"private-large.bin", path.read_bytes())
-                    for datagroup_id in {parse_chunk(path.name)["datagroup"] for path in chunks}:
-                        supergroup_id = next(parse_chunk(path.name)["supergroup"] for path in chunks if parse_chunk(path.name)["datagroup"] == datagroup_id)
+                    for datagroup_id in {parse_datafile(path.name)["datagroup"] for path in chunks}:
+                        supergroup_id = next(parse_datafile(path.name)["supergroup"] for path in chunks if parse_datafile(path.name)["datagroup"] == datagroup_id)
                         for directory in (archive / "data" / supergroup_id[:2] / supergroup_id / datagroup_id, archive / "metadata" / supergroup_id[:2] / supergroup_id / datagroup_id):
                             datagroup = [path for path in directory.iterdir() if datagroup_id in path.name]
                             self.assertLessEqual(sum(path.stat().st_size for path in datagroup), settings.max_datagroup_bytes)
@@ -78,26 +78,26 @@ class OptionalModeTests(ArchiveTest):
                     repair(archive)  # No parity must stay no parity, including explicit repair.
                     self.assertEqual(snapshot(archive), before)
 
-                    streams = catalog(archive, key if encryption else None)
-                    direct = next(stream for stream in streams if stream["type"] == "file")
-                    bundle = next(stream for stream in streams if stream["type"] == "tar")
+                    datasets = catalog(archive, key if encryption else None)
+                    direct = next(dataset for dataset in datasets if dataset["type"] == "file")
+                    bundle = next(dataset for dataset in datasets if dataset["type"] == "tar")
                     # Leave only payloads: recovery must not depend on metadata/PAR2.
                     for path in paths:
-                        if "_chunk-" not in path.name:
+                        if "_dataset-" not in path.name:
                             path.unlink()
                     index = self.root / f"scan-{label}.json"
                     scan(archive, index)
                     scanned = self.root / f"scanned-{label}"
                     self.assertEqual(restore(archive, scanned, key=key if encryption else None, scan_index=index), 0)
-                    self.assertEqual((scanned / f"stream-{direct['stream']}.raw").read_bytes(),
+                    self.assertEqual((scanned / f"dataset-{direct['dataset']}.raw").read_bytes(),
                                      (self.source / "private-large.bin").read_bytes())
-                    self.assertEqual((scanned / f"stream-{bundle['stream']}" / "private-notes.txt").read_bytes(),
+                    self.assertEqual((scanned / f"dataset-{bundle['dataset']}" / "private-notes.txt").read_bytes(),
                                      (self.source / "private-notes.txt").read_bytes())
                     if not compression and not encryption:
                         with tarfile.open(next(path for path in chunks if path.suffix == ".tar"), "r:") as tar:
                             self.assertIn("private-notes.txt", tar.getnames())
 
-    def test_no_parity_detects_corruption_and_restores_only_intact_streams(self):
+    def test_no_parity_detects_corruption_and_restores_only_intact_datasets(self):
         (self.source / "large").write_bytes(self.data(190000))
         (self.source / "note1").write_text("one")
         (self.source / "note2").write_text("two")
@@ -160,5 +160,5 @@ class OptionalModeTests(ArchiveTest):
             self.assertEqual(verify(self.archive), 0)
             self.assertEqual(restore(self.archive, self.restored), 0)
             self.assertEqual(compare(self.source, self.restored), 0)
-            manifest = next(self.archive.rglob("*_index-chunks.json"))
+            manifest = next(self.archive.rglob("*_index-datafiles.json"))
             self.assertEqual(json.loads(manifest.read_text())["compression"], "none")

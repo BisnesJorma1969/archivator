@@ -110,7 +110,7 @@ def file_category(path):
         if "_datagroup-" in name:
             return "datagroup_parity"
         return "supergroup_parity" if "_supergroup-" in name else "parity"
-    if "_chunk-" in name:
+    if "_dataset-" in name:
         return "data"
     return "metadata" if name.startswith("archive-") else "files"
 

@@ -17,15 +17,15 @@ from poc.tests.test_recovery import flip, snapshot
 
 
 class AcceptanceTests(ArchiveTest):
-    def test_thousands_of_small_files_in_multiple_tar_streams(self):
+    def test_thousands_of_small_files_in_multiple_tar_datasets(self):
         # Entry count, rather than data size, forces multiple bundles here.
         settings = SMALL
         for index in range(2001):
             (self.source / f"tiny-{index:04d}").write_bytes(f"file {index}\n".encode())
         backup(self.source, self.archive, settings=settings)
-        streams = catalog(self.archive)
-        self.assertGreater(len(streams), 1)
-        self.assertTrue(all(stream["type"] == "tar" and sum(entry["type"] == "file" for entry in stream["inventory"]) >= 2 for stream in streams))
+        datasets = catalog(self.archive)
+        self.assertGreater(len(datasets), 1)
+        self.assertTrue(all(dataset["type"] == "tar" and sum(entry["type"] == "file" for entry in dataset["inventory"]) >= 2 for dataset in datasets))
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
         for original in self.source.iterdir():
@@ -64,7 +64,7 @@ class AcceptanceTests(ArchiveTest):
                 archive = self.root / f"archive-{encrypted}"
                 target = self.root / f"restored-{encrypted}"
                 backup(self.source, archive, certificate if encrypted else None, SMALL)
-                chunks = list(archive.rglob("*_chunk-*.cms" if encrypted else "*_chunk-*.zst"))
+                chunks = list(archive.rglob("*_dataset-*.cms" if encrypted else "*_dataset-*.zst"))
                 max(chunks, key=lambda path: path.stat().st_size).unlink()
                 self.assertEqual(verify(archive), 1)
                 restore(archive, target, key=key if encrypted else None, certificate=certificate if encrypted else None)
@@ -92,22 +92,22 @@ class AcceptanceTests(ArchiveTest):
         restore(self.archive, self.restored)
         self.assertEqual(compare(self.source, self.restored), 0)
 
-    def test_standard_tools_recover_an_encrypted_stream_without_restore_code(self):
+    def test_standard_tools_recover_an_encrypted_dataset_without_restore_code(self):
         key, certificate = self.certificate()
         original = self.data(80000)
         (self.source / "large").write_bytes(original)
         backup(self.source, self.archive, certificate, SMALL)
-        streams = catalog(self.archive, key)
-        stream = next(entry for entry in streams if entry["type"] == "file")
+        datasets = catalog(self.archive, key)
+        dataset = next(entry for entry in datasets if entry["type"] == "file")
         manual = self.root / "manual"
         manual.mkdir()
         for path in self.archive.rglob("archive-*"):
             if not (manual / path.name).exists():
                 shutil.copyfile(path, manual / path.name)
-        chunks = list(manual.glob(f"*_stream-{stream['stream']}_*.cms"))
+        chunks = list(manual.glob(f"*_dataset-{dataset['dataset']}_*.cms"))
         missing = chunks[0]
         missing.unlink()
-        prefix = missing.name.split("_chunk-", 1)[0]
+        prefix = missing.name.split("_dataset-", 1)[0]
         run([executable("par2"), "repair", "-q", "-t1", "-T1", prefix + ".par2"], cwd=manual)
         reconstructed = manual / "reconstructed"
         for chunk in chunks:
@@ -120,7 +120,7 @@ class AcceptanceTests(ArchiveTest):
             offset = int(re.search(r"_offset-([0-9]+)_", chunk.name)[1])
             run(["dd", f"if={plaintext}", f"of={reconstructed}", "bs=1024", "oflag=seek_bytes",
                  f"seek={offset}", "conv=notrunc", "status=none"])
-        self.assertEqual(run(["sha256sum", str(reconstructed)]).split()[0], stream["sha256"])
+        self.assertEqual(run(["sha256sum", str(reconstructed)]).split()[0], dataset["sha256"])
         self.assertEqual(reconstructed.read_bytes(), original)
 
     def test_actual_cli_backup_verify_restore_compare_and_repair(self):
@@ -133,7 +133,7 @@ class AcceptanceTests(ArchiveTest):
         result = command("backup", self.source, self.archive)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(command("verify", self.archive).returncode, 0)
-        next(self.archive.rglob("*_chunk-*.zst")).unlink()
+        next(self.archive.rglob("*_dataset-*.zst")).unlink()
         self.assertEqual(command("verify", self.archive).returncode, 1)
         result = command("restore", self.archive, self.restored)
         self.assertEqual(result.returncode, 0, result.stderr)

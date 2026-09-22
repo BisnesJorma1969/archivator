@@ -1,4 +1,4 @@
-"""Reconstruct verified streams and restore their original filesystem entries."""
+"""Reconstruct verified datasets and restore their original filesystem entries."""
 
 import os
 import shutil
@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 from .common import ArchiveError, BUFFER_SIZE, Hashes, IntegrityError, WORK_DIR, file_hashes, scratch, sha256
 from .external import decrypt, executable
-from .format import parse_chunk
+from .format import parse_datafile
 from .filesystem import empty_destination, ensure_disjoint, relative_path, restore_metadata
 from .recovery import stage_set, discover, open_archive, recover_set, select
 from .progress import progress
@@ -43,7 +43,7 @@ def unpack_chunk(directory, member, output, encrypted, key, certificate, verify_
     if encrypted:
         encoded = directory / "decrypted"
         decrypt(stored, encoded, key, certificate)
-    compressed = parse_chunk(member["filename"])["compressed"]
+    compressed = parse_datafile(member["filename"])["compressed"]
     hashes = Hashes()
     length = 0
     progress.update(f"Decoding and checking chunk: 0/{member['length']:,} plaintext bytes")
@@ -99,21 +99,21 @@ def extract_tar(path, target, inventory):
         if seen != set(expected):
             raise IntegrityError("TAR is missing inventory entries")
     except tarfile.TarError as error:
-        raise IntegrityError(f"Invalid TAR stream: {error}") from error
+        raise IntegrityError(f"Invalid TAR dataset: {error}") from error
 
 
-def finish_stream(path, stream, archive, target):
-    if path.stat().st_size != stream["size"]:
-        raise IntegrityError("Reconstructed stream length mismatch")
+def finish_dataset(path, dataset, archive, target):
+    if path.stat().st_size != dataset["size"]:
+        raise IntegrityError("Reconstructed dataset length mismatch")
     hashes = file_hashes(path)
-    if "sha256" in stream and (hashes["sha256"] != stream["sha256"] or hashes["sha512"] != stream["sha512"]):
-        raise IntegrityError("Reconstructed whole-stream checksum mismatch")
-    if stream["type"] == "file":
-        progress.update(f"Writing restored RAW stream {stream['stream'][:8]}: {stream['size']:,} bytes")
-        with path.open("rb") as source, (target / stream["path"]).open("xb") as output:
+    if "sha256" in dataset and (hashes["sha256"] != dataset["sha256"] or hashes["sha512"] != dataset["sha512"]):
+        raise IntegrityError("Reconstructed whole-dataset checksum mismatch")
+    if dataset["type"] == "file":
+        progress.update(f"Writing restored RAW dataset {dataset['dataset'][:8]}: {dataset['size']:,} bytes")
+        with path.open("rb") as source, (target / dataset["path"]).open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
     else:
-        inventory = stream["inventory"]
+        inventory = dataset["inventory"]
         extract_tar(path, target, inventory)
     path.unlink()
 
@@ -143,45 +143,45 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
             progress.update(f"Creating restored directories: {index:,}/{len(directories):,}")
             (target / entry["path"]).mkdir()
 
-        streams = {stream["stream"]: stream for stream in archive.streams}
+        datasets = {dataset["dataset"]: dataset for dataset in archive.datasets}
         skipped = set()
-        for stream_id, stream in streams.items():
+        for dataset_id, dataset in datasets.items():
             chunks = sorted((member for manifest in archive.manifests for member in manifest["members"]
-                             if member["stream"] == stream_id), key=lambda item: item["offset"])
+                             if member["dataset"] == dataset_id), key=lambda item: item["offset"])
             offset = 0
             for member in chunks:
                 if member["offset"] != offset:
-                    skipped.add(stream_id)
+                    skipped.add(dataset_id)
                 offset = member["offset"] + member["length"]
-            if offset != stream["size"]:
-                skipped.add(stream_id)
+            if offset != dataset["size"]:
+                skipped.add(dataset_id)
         if skipped and archive.catalog_root:
-            raise IntegrityError("Chunk ranges do not cover their streams")
-        for stream_id in skipped:
-            print(f"Skipping incomplete stream {stream_id}: missing or overlapping chunks", flush=True)
+            raise IntegrityError("Chunk ranges do not cover their datasets")
+        for dataset_id in skipped:
+            print(f"Skipping incomplete dataset {dataset_id}: missing or overlapping chunks", flush=True)
         manifests = [manifest for manifest in archive.manifests
-                     if any(member["stream"] not in skipped for member in manifest["members"])]
+                     if any(member["dataset"] not in skipped for member in manifest["members"])]
         owned_paths = set()
         restored_paths = set()
-        for stream in streams.values():
-            if stream["type"] == "tar":
-                owned_paths.update(entry["path"] for entry in stream["inventory"])
+        for dataset in datasets.values():
+            if dataset["type"] == "tar":
+                owned_paths.update(entry["path"] for entry in dataset["inventory"])
             else:
-                owned_paths.add(stream["path"])
-            if stream["type"] == "file" and stream["size"] == 0:
-                (target / stream["path"]).touch(exist_ok=False)
-                restored_paths.add(stream["path"])
-        remaining = dict.fromkeys(streams, 0)
+                owned_paths.add(dataset["path"])
+            if dataset["type"] == "file" and dataset["size"] == 0:
+                (target / dataset["path"]).touch(exist_ok=False)
+                restored_paths.add(dataset["path"])
+        remaining = dict.fromkeys(datasets, 0)
         for manifest in manifests:
             for member in manifest["members"]:
-                remaining[member["stream"]] += 1
-        stream_order = {stream["stream"]: index for index, stream in enumerate(archive.streams)}
-        # Process sets by logical stream position, not their random IDs or the
-        # directory listing. Completed streams can then leave scratch promptly.
+                remaining[member["dataset"]] += 1
+        dataset_order = {dataset["dataset"]: index for index, dataset in enumerate(archive.datasets)}
+        # Process sets by logical dataset position, not their random IDs or the
+        # directory listing. Completed datasets can then leave scratch promptly.
         manifests = sorted(manifests, key=lambda manifest: min(
-            (stream_order[member["stream"]], member["offset"]) for member in manifest["members"]))
-        with scratch("streams-") as temporary:
-            stream_directory = Path(temporary)
+            (dataset_order[member["dataset"]], member["offset"]) for member in manifest["members"]))
+        with scratch("datasets-") as temporary:
+            dataset_directory = Path(temporary)
             for index, manifest in enumerate(manifests, 1):
                 print(f"Restoring recovery set {index}/{len(manifests)}", flush=True)
                 with scratch("restore-set-") as set_temporary:
@@ -196,28 +196,28 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
                         unrecoverable = True
                         print(f"{error}; checking surviving chunks individually.", flush=True)
                     for member in manifest["members"]:
-                        stream_id = member["stream"]
-                        if stream_id in skipped:
+                        dataset_id = member["dataset"]
+                        if dataset_id in skipped:
                             continue
-                        path = stream_directory / stream_id
+                        path = dataset_directory / dataset_id
                         stored = directory / member["filename"]
                         if unrecoverable and (not stored.is_file() or sha256(stored) != member["stored_sha256"]):
-                            skipped.add(stream_id)
+                            skipped.add(dataset_id)
                             path.unlink(missing_ok=True)
-                            print(f"Skipping stream {stream_id}: a required chunk is missing or damaged", flush=True)
+                            print(f"Skipping dataset {dataset_id}: a required chunk is missing or damaged", flush=True)
                             continue
                         mode = "r+b" if path.exists() else "w+b"
                         with path.open(mode) as output:
                             output.seek(member["offset"])
                             unpack_chunk(directory, member, output, encrypted, key, certificate)
-                        remaining[stream_id] -= 1
-                        if remaining[stream_id] == 0:
-                            stream = streams[stream_id]
-                            finish_stream(path, stream, archive, target)
-                            if stream["type"] == "tar":
-                                restored_paths.update(entry["path"] for entry in stream["inventory"])
+                        remaining[dataset_id] -= 1
+                        if remaining[dataset_id] == 0:
+                            dataset = datasets[dataset_id]
+                            finish_dataset(path, dataset, archive, target)
+                            if dataset["type"] == "tar":
+                                restored_paths.update(entry["path"] for entry in dataset["inventory"])
                             else:
-                                restored_paths.add(stream["path"])
+                                restored_paths.add(dataset["path"])
         entries = [entry for entry in archive.entries if entry["type"] == "directory"
                    or entry["path"] in restored_paths or entry["path"] not in owned_paths]
         for entry in entries:
@@ -225,6 +225,6 @@ def restore(root, target, archive_id=None, key=None, certificate=None, scan_inde
                 os.symlink(entry["symlink_target"], target / entry["path"])
         restore_metadata(target, entries)
         complete = archive.catalog_root is not None and not skipped
-    print(f"Restore {'complete' if complete else 'of available streams finished'}: {target}; "
+    print(f"Restore {'complete' if complete else 'of available datasets finished'}: {target}; "
           "content checksums verified. Archive files were not modified.")
     return 0 if complete else 1

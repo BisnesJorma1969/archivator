@@ -1,4 +1,4 @@
-"""Directory-local input, bounded streams/datagroups, and protected local metadata."""
+"""Directory-local input, bounded datasets/datagroups, and protected local metadata."""
 
 import json
 import os
@@ -10,10 +10,11 @@ from itertools import chain
 from .common import ArchiveError, BUFFER_SIZE, Hashes, WORK_DIR, sha256, write_json, write_jsonl
 from .external import ZstdWriter, create_parity, encrypt, executable, normalize_certificate
 from .filesystem import check_unchanged, directory_batches, empty_destination, ensure_disjoint, public_entry
-from .format import Settings, chunk_name, metadata_prefix, new_id, datagroup_prefix, spare_metadata_name, stored_path
+from .format import Settings, datafile_name, metadata_prefix, new_id, datagroup_prefix, spare_metadata_name, stored_path
 from .limits import ceil_div, check_files, input_limit, parity_plan, plan_reservation, stored_bound
 from .metadata import MetadataWriter, json_bytes, store_metadata
 from .progress import progress
+from .seal import seal_reservation, write_seal
 
 
 def tar_info(entry):
@@ -44,11 +45,11 @@ def with_parents(entries):
 
 def inventory_bound(sources):
     # Reserve digests even before reading a file. The bound must stay unchanged
-    # when a completed stream receives its real digests in an open datagroup.
+    # when a completed dataset receives its real digests in an open datagroup.
     digests = {"crc32", "md5", "sha1", "sha256", "sha512"}
     total = 1024
-    for stream, entries in sources.values():
-        for record in [stream or {}] + with_parents(entries):
+    for dataset, entries in sources.values():
+        for record in [dataset or {}] + with_parents(entries):
             unsigned = {key: value for key, value in record.items()
                         if not key.startswith("_") and key not in digests}
             total += len(json_bytes(unsigned)) + 600
@@ -87,7 +88,7 @@ class DatagroupWriter:
                 "compression": "zstd" if self.settings.compression else "none",
                 "encryption": "cms-aes-256-gcm" if self.certificate else "none",
                 "settings": vars(self.settings),
-                "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.par2 else None,
+                "par2": plan_reservation(self.settings.max_file_bytes) if self.settings.datagroup_par2 else None,
                 "members": members,
                 "source_metadata": self.source_name(), "source_sha256": source_digest}
 
@@ -111,13 +112,18 @@ class DatagroupWriter:
         lengths[self.source_name()] = source_length
         prefix = datagroup_prefix(self.archive_id, self.supergroup_id, self.datagroup_id)
         suffix = ".zst" if settings.compression else ""
-        lengths[prefix + "_metadata_index-chunks.json" + suffix] = manifest_length
+        lengths[prefix + "_metadata_index-datafiles.json" + suffix] = manifest_length
         if max(lengths.values()) > settings.max_file_bytes:
             return None
+        seal_name, seal_size = seal_reservation(self.archive_id, self.supergroup_id, self.datagroup_id,
+                                               len(members), settings.max_datagroup_bytes)
+        if seal_size > settings.max_file_bytes:
+            return None
         try:
-            plan = parity_plan(lengths, settings.max_file_bytes, settings.par2,
-                               max_set_bytes=settings.max_datagroup_bytes)
-            total = sum(lengths.values()) + plan.total_bytes
+            plan = parity_plan(lengths, settings.max_file_bytes, settings.datagroup_par2,
+                               max_set_bytes=settings.max_datagroup_bytes - seal_size,
+                               loss_count=settings.datagroup_loss_files, bitrot_percent=settings.datagroup_bitrot_percent)
+            total = sum(lengths.values()) + plan.total_bytes + seal_size
             if total > settings.max_datagroup_bytes:
                 return None
             # The identical central copies need their own parity and a receipt.
@@ -125,37 +131,38 @@ class DatagroupWriter:
             receipt_size = 8192 + len(json_bytes(self.catalog.previous)) + (plan.volumes + 1) * 400
             receipt_name = metadata_prefix(self.archive_id, self.supergroup_id, self.datagroup_id) + "_checksums.json" + suffix
             central = {spare_metadata_name(self.source_name()): source_length,
-                       spare_metadata_name(prefix + "_metadata_index-chunks.json" + suffix): manifest_length,
+                       spare_metadata_name(prefix + "_metadata_index-datafiles.json" + suffix): manifest_length,
                        receipt_name: stored_bound(receipt_size, compression=settings.compression)}
             if max(central.values()) > settings.max_file_bytes:
                 return None
-            protection = parity_plan(central, settings.max_file_bytes, settings.par2,
-                                     max_set_bytes=settings.max_datagroup_bytes)
+            protection = parity_plan(central, settings.max_file_bytes, settings.datagroup_par2,
+                                     max_set_bytes=settings.max_datagroup_bytes,
+                                     loss_count=settings.datagroup_loss_files, bitrot_percent=settings.datagroup_bitrot_percent)
             if sum(central.values()) + protection.total_bytes > settings.max_datagroup_bytes:
                 return None
-            return total, {**lengths, **central}
+            return total, {**lengths, **central, seal_name: seal_size}
         except ArchiveError:
             return None
 
-    def candidate(self, stream, size, number=0, offset=0, length=1):
-        stream_id = stream["stream"]
-        kind = "tar" if stream["type"] == "tar" else "raw"
-        return {"filename": chunk_name(self.archive_id, self.datagroup_id, number, stream_id,
+    def candidate(self, dataset, size, offset=0, length=1):
+        dataset_id = dataset["dataset"]
+        kind = "tar" if dataset["type"] == "tar" else "raw"
+        return {"filename": datafile_name(self.archive_id, self.datagroup_id, dataset_id,
                                         offset, length, bool(self.certificate), kind, self.settings.compression, supergroup=self.supergroup_id),
-                "chunk": number, "stream": stream_id, "kind": kind, "offset": offset, "length": length,
+                "dataset": dataset_id, "kind": kind, "offset": offset, "length": length,
                 "stored_length": size, "stored_sha256": "0" * 64,
                 "plaintext_sha256": "0" * 64, "plaintext_sha512": "0" * 128}
 
-    def proposed(self, chunks, stream, entries):
-        key = stream["stream"] if stream else None
-        if key is not None and key in self.sources and self.sources[key][0] is not stream:
-            raise ArchiveError("Stream ID collision; refusing to replace an existing stream")
+    def proposed(self, chunks, dataset, entries):
+        key = dataset["dataset"] if dataset else None
+        if key is not None and key in self.sources and self.sources[key][0] is not dataset:
+            raise ArchiveError("Dataset ID collision; refusing to replace an existing dataset")
         if key is None and key in self.sources:
             entries = self.sources[key][1] + entries
-        sources = {**self.sources, key: (stream, entries)}
+        sources = {**self.sources, key: (dataset, entries)}
         members = list(self.members)
         for chunk in chunks:
-            member = self.candidate(stream, chunk["stored_length"], len(members),
+            member = self.candidate(dataset, chunk["stored_length"],
                                     chunk["offset"], chunk["length"])
             member.update(stored_sha256=chunk["stored_sha256"],
                           plaintext_sha256=chunk["plaintext_sha256"],
@@ -163,12 +170,12 @@ class DatagroupWriter:
             members.append(member)
         return members, sources
 
-    def can_add(self, chunks, stream, entries):
-        members, sources = self.proposed(chunks, stream, entries)
+    def can_add(self, chunks, dataset, entries):
+        members, sources = self.proposed(chunks, dataset, entries)
         return self.fits(members, sources)
 
-    def append(self, chunks, stream, entries):
-        members, sources = self.proposed(chunks, stream, entries)
+    def append(self, chunks, dataset, entries):
+        members, sources = self.proposed(chunks, dataset, entries)
         reservation = self.reservation(members, sources)
         if reservation is None or not self.catalog.supergroups.fits(self.datagroup_id, reservation[1]):
             raise ArchiveError("Datagroup/supergroup cannot hold the selected content with metadata and parity")
@@ -196,17 +203,17 @@ class DatagroupWriter:
             raise ArchiveError("Datagroup ID collision; refusing to overwrite metadata")
 
         def records():
-            yield {"streams": [stream for stream, _ in self.sources.values() if stream is not None]}
-            for stream_id, (_, entries) in self.sources.items():
+            yield {"datasets": [dataset for dataset, _ in self.sources.values() if dataset is not None]}
+            for dataset_id, (_, entries) in self.sources.items():
                 for entry in with_parents(entries):
-                    yield {"stream": stream_id, "entry": public_entry(entry)}
+                    yield {"dataset": dataset_id, "entry": public_entry(entry)}
 
         write_jsonl(self.staging / source_name, records())
         stored = store_metadata(self.staging / source_name, self.staging, self.certificate, self.settings.compression)
         check_files([self.staging / stored], self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
         os.replace(self.staging / stored, datagroup_directory / stored)
         manifest = self.manifest(self.members, sha256(datagroup_directory / stored))
-        manifest_name = prefix + "_metadata_index-chunks.json"
+        manifest_name = prefix + "_metadata_index-datafiles.json"
         # Plan against an upper bound including the plan fields themselves.
         # Keeping this geometry after compression makes regeneration deterministic.
         stored_manifest_name = manifest_name + (".zst" if self.settings.compression else "")
@@ -214,24 +221,27 @@ class DatagroupWriter:
         lengths[stored] = (datagroup_directory / stored).stat().st_size
         manifest_size = len(json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True).encode("ascii")) + 1
         lengths[stored_manifest_name] = stored_bound(manifest_size, compression=self.settings.compression)
-        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.par2,
-                           max_set_bytes=self.settings.max_datagroup_bytes)
-        manifest["par2"] = plan.record() if self.settings.par2 else None
+        _, seal_size = seal_reservation(self.archive_id, self.supergroup_id, self.datagroup_id,
+                                        len(self.members), self.settings.max_datagroup_bytes)
+        plan = parity_plan(lengths, self.settings.max_file_bytes, self.settings.datagroup_par2,
+                           max_set_bytes=self.settings.max_datagroup_bytes - seal_size,
+                           loss_count=self.settings.datagroup_loss_files, bitrot_percent=self.settings.datagroup_bitrot_percent)
+        manifest["par2"] = plan.record() if self.settings.datagroup_par2 else None
         write_json(self.staging / manifest_name, manifest)
         manifest_name = store_metadata(self.staging / manifest_name, self.staging, compression=self.settings.compression)
         check_files([self.staging / manifest_name], self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
         os.replace(self.staging / manifest_name, datagroup_directory / manifest_name)
         names = [member["filename"] for member in self.members] + [stored, manifest_name]
         lengths = {name: (datagroup_directory / name).stat().st_size for name in names}
-        if sum(lengths.values()) + plan.total_bytes > self.settings.max_datagroup_bytes:
+        if sum(lengths.values()) + plan.total_bytes + seal_size > self.settings.max_datagroup_bytes:
             raise ArchiveError("Datagroup metadata and PAR2 exceed the byte budget")
-        protection = f"{plan.blocks:,} PAR2 recovery blocks of {plan.slice_size:,} bytes" if self.settings.par2 else "PAR2 disabled"
+        protection = f"{plan.blocks:,} PAR2 recovery blocks of {plan.slice_size:,} bytes" if self.settings.datagroup_par2 else "PAR2 disabled"
         print(f"Finalizing datagroup {self.datagroup_id}: {len(self.members):,} chunks, "
               f"{sum(lengths.values()):,} stored bytes; {protection}", flush=True)
         directory = self.staging / "parity"
         directory.mkdir()
         files = []
-        if self.settings.par2:
+        if self.settings.datagroup_par2:
             files = create_parity(datagroup_directory, prefix, names, plan.slice_size, plan.blocks,
                                   directory, plan.volumes)
         total = check_files([*(datagroup_directory / name for name in names), *files],
@@ -241,7 +251,13 @@ class DatagroupWriter:
             parity_hashes[path.name] = sha256(path)
             os.replace(path, datagroup_directory / path.name)
         directory.rmdir()
-        central = self.catalog.add(self.supergroup_id, self.datagroup_id, [datagroup_directory / stored, datagroup_directory / manifest_name], parity_hashes)
+        seal = write_seal(datagroup_directory, self.archive_id, self.supergroup_id, self.datagroup_id,
+                          [member["filename"] for member in self.members], [stored, manifest_name], list(parity_hashes))
+        total = check_files([*(datagroup_directory / name for name in [*names, *parity_hashes]), seal],
+                            self.settings.max_file_bytes, self.settings.max_datagroup_bytes)
+        central = self.catalog.add(self.supergroup_id, self.datagroup_id,
+                                   [datagroup_directory / stored, datagroup_directory / manifest_name], parity_hashes, seal)
+        names.append(seal.name)
         self.catalog.supergroups.add(self.datagroup_id, [datagroup_directory / name for name in names] + central,
                                      {member["filename"]: member["stored_sha256"] for member in self.members})
         print(f"Finished datagroup: {total:,}/{self.settings.max_datagroup_bytes:,} bytes including metadata and enabled parity", flush=True)
@@ -270,9 +286,9 @@ class DatagroupQueue:
         self.created += 1
         return self.make_datagroup()
 
-    def fresh_for(self, chunks, stream, entries):
+    def fresh_for(self, chunks, dataset, entries):
         candidate = self.new_datagroup()
-        if candidate.can_add(chunks, stream, entries):
+        if candidate.can_add(chunks, dataset, entries):
             return candidate
         # A byte/index/PAR2 limit may close a supergroup before its group count.
         # Nothing from this candidate has been published or reserved yet.
@@ -280,7 +296,7 @@ class DatagroupQueue:
         self.planner.catalog.supergroups.finish()
         self.created = 0
         candidate = self.new_datagroup()
-        if not candidate.can_add(chunks, stream, entries):
+        if not candidate.can_add(chunks, dataset, entries):
             raise ArchiveError("Content and its metadata/PAR2 cannot fit an empty datagroup/supergroup")
         return candidate
 
@@ -308,21 +324,21 @@ class DatagroupQueue:
             fullest.finish_set()
         print(f"Datagroup queue: {len(self.waiting)}/{self.settings.waiting_datagroups} waiting", flush=True)
 
-    def place(self, chunks, stream, entries):
+    def place(self, chunks, dataset, entries):
         """Admit an entire RAW file, one complete TAR, or metadata-only entries."""
         for datagroup in list(self.waiting):
-            if datagroup.can_add(chunks, stream, entries):
-                datagroup.append(chunks, stream, entries)
+            if datagroup.can_add(chunks, dataset, entries):
+                datagroup.append(chunks, dataset, entries)
                 return
             if self.close_on_miss(datagroup):
                 self.waiting.remove(datagroup)
                 datagroup.finish_set()
-        if self.active is not None and self.active.can_add(chunks, stream, entries):
-            self.active.append(chunks, stream, entries)
+        if self.active is not None and self.active.can_add(chunks, dataset, entries):
+            self.active.append(chunks, dataset, entries)
             return
         self.retire_active()
-        self.active = self.fresh_for(chunks, stream, entries)
-        self.active.append(chunks, stream, entries)
+        self.active = self.fresh_for(chunks, dataset, entries)
+        self.active.append(chunks, dataset, entries)
 
     def start_large_file(self):
         # The file has exceeded an EMPTY datagroup's budget, not merely the space
@@ -334,12 +350,12 @@ class DatagroupQueue:
         self.retire_active()
         self.active = self.new_datagroup()
 
-    def append_fragment(self, chunk, stream, entries):
-        if not self.active.can_add([chunk], stream, entries):
+    def append_fragment(self, chunk, dataset, entries):
+        if not self.active.can_add([chunk], dataset, entries):
             self.active.finish_set()
             self.active = None
-            self.active = self.fresh_for([chunk], stream, entries)
-        self.active.append([chunk], stream, entries)
+            self.active = self.fresh_for([chunk], dataset, entries)
+        self.active.append([chunk], dataset, entries)
         # The final datagroup stays active when the file ends; subsequent whole
         # files/TARs may fill its remainder. Intermediate datagroups never wait.
 
@@ -352,15 +368,15 @@ class DatagroupQueue:
             self.active = None
 
 
-class StreamWriter:
+class DatasetWriter:
     """Independent zstd/CMS chunks with a conservative plaintext input ceiling."""
 
-    def __init__(self, queue, stream, entries):
+    def __init__(self, queue, dataset, entries):
         self.queue = queue
         self.planner = queue.planner
         self.chunks = []
         self.spanning = False
-        self.stream = stream
+        self.dataset = dataset
         self.entries = entries
         self.size = 0
         self.hashes = Hashes(lookup=True)
@@ -371,16 +387,16 @@ class StreamWriter:
         self.tar_entries = 0
 
     def report_progress(self):
-        kind = "TAR" if self.stream["type"] == "tar" else "RAW"
+        kind = "TAR" if self.dataset["type"] == "tar" else "RAW"
         entries = f"entry {self.tar_entry:,}/{self.tar_entries:,}; " if kind == "TAR" else ""
         progress.update(
-            f"Encoding {kind} {self.stream['stream'][:8]}: {entries}"
-            f"{self.size:,}/{self.stream['size']:,} plaintext bytes; "
+            f"Encoding {kind} {self.dataset['dataset'][:8]}: {entries}"
+            f"{self.size:,}/{self.dataset['size']:,} plaintext bytes; "
             f"chunk {self.chunk_length:,}/{self.planner.input_bytes:,} bytes")
 
     def write(self, data):
         length = len(data)
-        if self.stream["type"] == "tar" and self.size + length > self.planner.input_bytes:
+        if self.dataset["type"] == "tar" and self.size + length > self.planner.input_bytes:
             raise ArchiveError("A complete TAR must fit in one independent chunk")
         remaining = memoryview(data)
         while remaining:
@@ -400,7 +416,7 @@ class StreamWriter:
             self.size += count
             self.report_progress()
             remaining = remaining[count:]
-            if self.chunk_length == self.planner.input_bytes and self.stream["type"] != "tar":
+            if self.chunk_length == self.planner.input_bytes and self.dataset["type"] != "tar":
                 self.finish_chunk()
         return length
 
@@ -420,7 +436,7 @@ class StreamWriter:
             path = encrypted
         check_files([path], self.planner.settings.max_file_bytes, self.planner.settings.max_datagroup_bytes)
         offset = self.size - self.chunk_length
-        staged = self.planner.staging / f"buffer-{self.stream['stream']}-{offset}"
+        staged = self.planner.staging / f"buffer-{self.dataset['dataset']}-{offset}"
         if self.planner.certificate:
             staged = staged.with_name(staged.name + ".cms")
         os.replace(path, staged)
@@ -429,27 +445,27 @@ class StreamWriter:
                  "stored_length": staged.stat().st_size, "stored_sha256": sha256(staged),
                  "plaintext_sha256": hashes["sha256"], "plaintext_sha512": hashes["sha512"]}
         if self.spanning:
-            self.queue.append_fragment(chunk, self.stream, self.entries)
+            self.queue.append_fragment(chunk, self.dataset, self.entries)
         else:
             self.chunks.append(chunk)
-            if not self.planner.can_add(self.chunks, self.stream, self.entries):
-                if self.stream["type"] == "tar":
+            if not self.planner.can_add(self.chunks, self.dataset, self.entries):
+                if self.dataset["type"] == "tar":
                     raise ArchiveError("A complete TAR and its metadata cannot fit an empty datagroup")
                 self.spanning = True
                 self.queue.start_large_file()
                 for pending in self.chunks:
-                    self.queue.append_fragment(pending, self.stream, self.entries)
+                    self.queue.append_fragment(pending, self.dataset, self.entries)
                 self.chunks.clear()
             else:
-                progress.update(f"Buffered stream {self.stream['stream']}: {len(self.chunks):,} stored chunks")
+                progress.update(f"Buffered dataset {self.dataset['dataset']}: {len(self.chunks):,} stored chunks")
         self.chunk_length = 0
         self.chunk_hashes = Hashes()
 
     def finish(self):
-        self.stream.update(self.hashes.values())
+        self.dataset.update(self.hashes.values())
         self.finish_chunk()
         if not self.spanning:
-            self.queue.place(self.chunks, self.stream, self.entries)
+            self.queue.place(self.chunks, self.dataset, self.entries)
             self.chunks.clear()
 
     def close(self):
@@ -553,10 +569,10 @@ def backup(source, archive, certificate=None, settings=None):
         queue = DatagroupQueue(writer)
 
         def direct(entry, accompanying=()):
-            print(f"Archiving RAW stream: {entry['size']:,} plaintext bytes", flush=True)
-            stream = {**public_entry(entry), "stream": new_id()}
+            print(f"Archiving RAW dataset: {entry['size']:,} plaintext bytes", flush=True)
+            dataset = {**public_entry(entry), "dataset": new_id()}
             entries = list(accompanying) + [entry]
-            sink = StreamWriter(queue, stream, entries)
+            sink = DatasetWriter(queue, dataset, entries)
             check_unchanged(source / entry["path"], entry)
             try:
                 with (source / entry["path"]).open("rb") as original:
@@ -579,9 +595,9 @@ def backup(source, archive, certificate=None, settings=None):
                     check_unchanged(source / entry["path"], entry)
                 queue.place([], None, entries)
             else:
-                print(f"Packing TAR stream: {len(files):,} files", flush=True)
-                stream = {"stream": new_id(), "type": "tar", "size": tar_bytes(entries)}
-                sink = StreamWriter(queue, stream, entries)
+                print(f"Packing TAR dataset: {len(files):,} files", flush=True)
+                dataset = {"dataset": new_id(), "type": "tar", "size": tar_bytes(entries)}
+                sink = DatasetWriter(queue, dataset, entries)
                 try:
                     inventory = write_tar(source, entries, sink)
                     sink.entries = inventory
@@ -594,7 +610,7 @@ def backup(source, archive, certificate=None, settings=None):
         pending_tar_bytes = 0
         pending_inventory_bytes = 2048
         planner = queue.planner
-        planned_stream = {"stream": "a" * 20, "type": "tar"}
+        planned_dataset = {"dataset": "a" * 20, "type": "tar"}
 
         def append_if_fits(entry):
             nonlocal pending_tar_bytes, pending_inventory_bytes
@@ -605,7 +621,7 @@ def backup(source, archive, certificate=None, settings=None):
             size = ceil_div(pending_tar_bytes + tar_growth + 1024, tarfile.RECORDSIZE) * tarfile.RECORDSIZE
             if size > planner.input_bytes:
                 return False
-            chunk = planner.candidate(planned_stream, stored_bound(size, overhead, settings.compression), length=size)
+            chunk = planner.candidate(planned_dataset, stored_bound(size, overhead, settings.compression), length=size)
             if not planner.fits([chunk], {}, pending_inventory_bytes + inventory_growth):
                 return False
             pending.append(entry)

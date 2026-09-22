@@ -29,11 +29,11 @@ class CapacityGroup:
     def budget(self, members, sources):
         return sum(members)
 
-    def can_add(self, chunks, stream, entries):
+    def can_add(self, chunks, dataset, entries):
         return sum(self.members) + sum(chunks) <= 100
 
-    def append(self, chunks, stream, entries):
-        assert not self.closed and self.can_add(chunks, stream, entries)
+    def append(self, chunks, dataset, entries):
+        assert not self.closed and self.can_add(chunks, dataset, entries)
         self.members.extend(chunks)
 
     def finish_set(self):
@@ -129,13 +129,13 @@ QUEUE = replace(SMALL, max_datagroup_bytes=512 * 1024, large_file_bytes=1)
 class WholeFilePlacementTests(ArchiveTest):
     def datagroups_by_path(self, archive=None, key=None):
         archive = archive or self.archive
-        descriptions = {stream["stream"]: stream for stream in catalog(archive, key)}
+        descriptions = {dataset["dataset"]: dataset for dataset in catalog(archive, key)}
         result = {}
         for datagroup in manifests(archive):
             for member in datagroup["members"]:
-                stream = descriptions[member["stream"]]
-                if stream["type"] == "file":
-                    result.setdefault(stream["path"], set()).add(datagroup["datagroup"])
+                dataset = descriptions[member["dataset"]]
+                if dataset["type"] == "file":
+                    result.setdefault(dataset["path"], set()).add(datagroup["datagroup"])
         return result
 
     def test_multi_chunk_whole_raw_files_can_share_one_datagroup(self):
@@ -220,8 +220,8 @@ class WholeFilePlacementTests(ArchiveTest):
                 patch("shutil.copyfile", wraps=shutil.copyfile) as copying:
             backup(self.source, self.archive, settings=QUEUE)
         self.assertEqual(len(starts), 1)
-        self.assertEqual(len(compressed), len(list(self.archive.rglob("*_chunk-*"))))
-        self.assertTrue(all("_chunk-" not in str(call.args[0]) and "buffer-" not in str(call.args[0])
+        self.assertEqual(len(compressed), len(list(self.archive.rglob("*_dataset-*"))))
+        self.assertTrue(all("_dataset-" not in str(call.args[0]) and "buffer-" not in str(call.args[0])
                             for call in copying.call_args_list))
         self.assertFalse((self.archive / ".tmp").exists())
         self.assertEqual(verify(self.archive), 0)

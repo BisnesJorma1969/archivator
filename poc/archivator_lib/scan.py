@@ -11,7 +11,7 @@ from pathlib import Path
 from .common import ArchiveError, BUFFER_SIZE, IntegrityError, scratch
 from .external import ZstdWriter, check_parity, executable, run
 from .filesystem import empty_destination, relative_path
-from .format import CHUNK_NAME, ID, parse_chunk, datagroup_prefix
+from .format import DATAFILE_NAME, ID, parse_datafile, datagroup_prefix
 from .progress import progress
 from .recovery import discover, select, stage_existing
 
@@ -31,8 +31,8 @@ def index_names(names, archive_id):
     for name in names:
         if not isinstance(name, str):
             raise IntegrityError("Scan index filenames must be strings")
-        if CHUNK_NAME.fullmatch(name):
-            entry = parse_chunk(name)
+        if DATAFILE_NAME.fullmatch(name):
+            entry = parse_datafile(name)
             if entry["length"] <= 0:
                 raise IntegrityError(f"Invalid chunk length: {name}")
             entry["filename"] = name
@@ -60,13 +60,13 @@ def index_names(names, archive_id):
     return datagroups, chunks, supergroups
 
 
-def stream_problem(chunks):
-    """A contiguous observed range is not proof that the stream's tail survived."""
+def dataset_problem(chunks):
+    """A contiguous observed range is not proof that the dataset's tail survived."""
     kinds = {chunk["kind"] for chunk in chunks}
     if len(kinds) != 1:
         return "inconsistent RAW/TAR types"
     if "tar" in kinds and len(chunks) != 1:
-        return "a TAR stream must be one complete chunk"
+        return "a TAR dataset must be one complete chunk"
     end = 0
     encryption = set()
     compression = set()
@@ -92,19 +92,19 @@ def scan(root, output, archive_id=None):
     for name, path in sorted(archives[selected].items()):
         if path.is_symlink() or not path.is_file():
             continue
-        if CHUNK_NAME.fullmatch(name) or DATA_PARITY_NAME.fullmatch(name) or SUPER_PARITY_NAME.fullmatch(name):
+        if DATAFILE_NAME.fullmatch(name) or DATA_PARITY_NAME.fullmatch(name) or SUPER_PARITY_NAME.fullmatch(name):
             names.append(name)
-        elif "_chunk-" in name:
+        elif "_dataset-" in name:
             print(f"Ignoring unrecognized chunk filename: {name!r}", flush=True)
     if not names:
         raise IntegrityError("No recognizable data chunks or data PAR2 files found")
     datagroups, chunks, supergroups = index_names(names, selected)
-    streams = {}
+    datasets = {}
     for chunk in chunks.values():
-        streams.setdefault(chunk["stream"], []).append(chunk)
-    for stream, members in sorted(streams.items()):
-        problem = stream_problem(members)
-        print(f"Stream {stream}: {len(members):,} chunks; "
+        datasets.setdefault(chunk["dataset"], []).append(chunk)
+    for dataset, members in sorted(datasets.items()):
+        problem = dataset_problem(members)
+        print(f"Dataset {dataset}: {len(members):,} chunks; "
               f"{problem or 'no detected gaps in the observed range'}", flush=True)
     output = Path(output)
     if not output.name.endswith((".json", ".json.zst")):
@@ -125,8 +125,8 @@ def scan(root, output, archive_id=None):
         writer.close()
     print(f"Scan complete: {len(chunks):,} chunks, {len(datagroups):,} datagroups, "
           f"{len(supergroups):,} supergroup PAR2 sets; index: {output}")
-    print("Filename-only index: original large-file paths, hashes, and final stream lengths are unknown.")
-    print("Missing tail chunks or entirely missing streams cannot always be detected.")
+    print("Filename-only index: original large-file paths, hashes, and final dataset lengths are unknown.")
+    print("Missing tail chunks or entirely missing datasets cannot always be detected.")
     return selected
 
 
@@ -157,11 +157,11 @@ def recover_scanned_set(files, names, directory, archive_id, datagroup_id):
     # Verify read-only links first. Without manifests, a repair-needed set has
     # no trusted per-file hashes, so copy its data before allowing PAR2 writes.
     stage_existing(files, names, directory, writable=False)
-    supergroup_id = (CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0]))["supergroup"]
+    supergroup_id = (DATAFILE_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0]))["supergroup"]
     prefix = datagroup_prefix(archive_id, supergroup_id, datagroup_id)
     status = check_parity(directory, prefix) if any(name.endswith(".par2") for name in names) else 4
     if status == 1:
-        data_names = [name for name in names if CHUNK_NAME.fullmatch(name)]
+        data_names = [name for name in names if DATAFILE_NAME.fullmatch(name)]
         for name in data_names:
             (directory / name).unlink(missing_ok=True)
         stage_existing(files, data_names, directory, writable=True)
@@ -176,10 +176,10 @@ def recover_scanned_set(files, names, directory, archive_id, datagroup_id):
     return status == 0
 
 
-def publish_stream(path, target, stream, kind):
+def publish_dataset(path, target, dataset, kind):
     """The filename declares the format; a RAW source can itself contain a TAR."""
     if kind == "raw":
-        destination = target / f"stream-{stream}.raw"
+        destination = target / f"dataset-{dataset}.raw"
         with path.open("rb") as source, destination.open("xb") as output:
             shutil.copyfileobj(source, output, BUFFER_SIZE)
         return
@@ -202,14 +202,14 @@ def publish_stream(path, target, stream, kind):
         with path.open("rb") as source:
             source.seek(end)
             if source.read(1024) != bytes(1024):
-                raise IntegrityError("Recognized TAR stream is missing its end markers")
-        # Per-stream directories prevent collisions without an authoritative catalog.
+                raise IntegrityError("Recognized TAR dataset is missing its end markers")
+        # Per-dataset directories prevent collisions without an authoritative catalog.
         with tempfile.TemporaryDirectory(prefix=".scan-extract-", dir=target) as temporary:
-            progress.update(f"Extracting recovered TAR stream {stream}: {len(members):,} entries")
+            progress.update(f"Extracting recovered TAR dataset {dataset}: {len(members):,} entries")
             bundle.extractall(temporary, members=members, filter="data")
-            Path(temporary).rename(target / f"stream-{stream}")
+            Path(temporary).rename(target / f"dataset-{dataset}")
     # Keep the independent TAR available for recovery with ordinary tools.
-    with path.open("rb") as source, (target / f"stream-{stream}.tar").open("xb") as output:
+    with path.open("rb") as source, (target / f"dataset-{dataset}.tar").open("xb") as output:
         shutil.copyfileobj(source, output, BUFFER_SIZE)
 
 
@@ -225,7 +225,7 @@ def scanned_datagroups(files, selected, datagroups, supergroups, cache):
     outer.load(None)
     by_supergroup = {}
     for gid, names in datagroups.items():
-        match = CHUNK_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0])
+        match = DATAFILE_NAME.fullmatch(names[0]) or DATA_PARITY_NAME.fullmatch(names[0])
         by_supergroup.setdefault(match["supergroup"], {})[gid] = list(names)
     for sid in supergroups:
         local = by_supergroup.setdefault(sid, {})
@@ -238,7 +238,7 @@ def scanned_datagroups(files, selected, datagroups, supergroups, cache):
                 print(f"Cannot read supergroup {sid} file list: {error}", flush=True)
                 names = []
         for name in names:
-            if match := CHUNK_NAME.fullmatch(name):
+            if match := DATAFILE_NAME.fullmatch(name):
                 members = local.setdefault(match["datagroup"], [])
                 if name not in members:
                     members.append(name)
@@ -275,11 +275,11 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
         raise ArchiveError("Encrypted archive requires --decrypt-key")
     empty_destination(target)
     print("Filename-only restore: using chunk lengths and whichever zstd checks, CMS authentication, and PAR2 are present.")
-    print("Original metadata hashes and final stream lengths are unavailable; completeness is not guaranteed.")
+    print("Original metadata hashes and final dataset lengths are unavailable; completeness is not guaranteed.")
     print("Plain chunks without PAR2 have no content integrity check in filename-only recovery.")
     restored = skipped = 0
     unresolved_sets = []
-    with scratch("scan-streams-") as temporary:
+    with scratch("scan-datasets-") as temporary:
         decoded = Path(temporary)
         usable = {}
         for number, (datagroup_id, names, view, outer_verified) in enumerate(
@@ -294,9 +294,9 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                     verified = recover_scanned_set(view, names, directory, selected, datagroup_id)
                 recovered = []
                 for path in sorted(directory.iterdir()):
-                    if not CHUNK_NAME.fullmatch(path.name):
+                    if not DATAFILE_NAME.fullmatch(path.name):
                         continue
-                    chunk = parse_chunk(path.name)
+                    chunk = parse_datafile(path.name)
                     if chunk["archive"] != selected or chunk["datagroup"] != datagroup_id:
                         raise IntegrityError("PAR2 recovered a chunk belonging to a different set")
                     if chunk["length"] <= 0:
@@ -321,35 +321,35 @@ def restore_scanned(root, target, index_path, archive_id, key, certificate):
                         print(f"Unreadable chunk {chunk['filename']}: {error}", flush=True)
                     else:
                         usable[chunk["filename"]] = plaintext
-        streams = {}
+        datasets = {}
         for chunk in known.values():
-            streams.setdefault(chunk["stream"], []).append(chunk)
-        for stream, chunks in sorted(streams.items()):
+            datasets.setdefault(chunk["dataset"], []).append(chunk)
+        for dataset, chunks in sorted(datasets.items()):
             chunks.sort(key=lambda chunk: (chunk["offset"], chunk["filename"]))
-            problem = stream_problem(chunks)
+            problem = dataset_problem(chunks)
             if not problem and any(chunk["filename"] not in usable for chunk in chunks):
                 problem = "a required chunk is missing or unreadable"
             if problem:
                 skipped += 1
-                print(f"Skipping stream {stream}: {problem}", flush=True)
+                print(f"Skipping dataset {dataset}: {problem}", flush=True)
                 continue
             assembled = decoded / "assembled"
-            progress.update(f"Assembling recovered stream {stream}: {len(chunks):,} chunks")
+            progress.update(f"Assembling recovered dataset {dataset}: {len(chunks):,} chunks")
             with assembled.open("wb") as output:
                 for chunk in chunks:
                     with usable[chunk["filename"]].open("rb") as source:
                         shutil.copyfileobj(source, output, BUFFER_SIZE)
                     usable[chunk["filename"]].unlink()
             try:
-                publish_stream(assembled, target, stream, chunks[0]["kind"])
+                publish_dataset(assembled, target, dataset, chunks[0]["kind"])
             except (IntegrityError, tarfile.TarError) as error:
                 skipped += 1
-                print(f"Skipping stream {stream}: {error}", flush=True)
+                print(f"Skipping dataset {dataset}: {error}", flush=True)
             else:
                 restored += 1
-                print(f"Recovered stream {stream} ({assembled.stat().st_size:,} bytes)", flush=True)
+                print(f"Recovered dataset {dataset} ({assembled.stat().st_size:,} bytes)", flush=True)
             assembled.unlink()
-    print(f"Filename-only restore: {restored:,} streams recovered; {skipped:,} skipped; "
+    print(f"Filename-only restore: {restored:,} datasets recovered; {skipped:,} skipped; "
           f"{len(unresolved_sets):,} unresolved parity sets. Archive files unchanged.")
     print("Original backup completeness remains unverified without the catalog.")
     return 1 if skipped or unresolved_sets or not restored else 0
